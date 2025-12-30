@@ -1,0 +1,97 @@
+name: Deploy API + CRA to one App Service (OIDC)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  NODE_VERSION: '20'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with: 
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.REACT_APP_RECAPTCHA_SITE_KEY }}" ]; then
+            echo "❌ Missing secret REACT_APP_RECAPTCHA_SITE_KEY"; exit 1; fi
+          if [ -z "${{ secrets.REACT_APP_GOOGLE_CLIENT_ID }}" ]; then
+            echo "❌ Missing secret REACT_APP_GOOGLE_CLIENT_ID"; exit 1; fi
+
+      - name: Build React app
+        run: npm run build
+        env:
+          REACT_APP_API_URL: https://cartsmart.com
+          REACT_APP_GOOGLE_CLIENT_ID: ${{ secrets.REACT_APP_GOOGLE_CLIENT_ID }}
+          REACT_APP_RECAPTCHA_SITE_KEY: ${{ secrets.REACT_APP_RECAPTCHA_SITE_KEY }}
+          CI: false
+
+      - name: Verify React build
+        run: |
+          if [ ! -f "build/index.html" ]; then
+            echo "❌ React build failed - build/index.html not found"
+            exit 1
+          fi
+          echo "✅ React build present"
+
+      - name: Copy React build into API wwwroot
+        run: |
+          rm -rf CartSmart.API/wwwroot
+          mkdir -p CartSmart.API/wwwroot
+            # copy preserving structure
+          cp -r build/* CartSmart.API/wwwroot/
+          echo "✅ Copied React build to CartSmart.API/wwwroot"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore .NET
+        run: dotnet restore CartSmart.API/CartSmart.API.csproj
+
+      - name: Build .NET
+        run: dotnet build CartSmart.API/CartSmart.API.csproj -c Release --no-restore
+
+      - name: Publish .NET
+        run: dotnet publish CartSmart.API/CartSmart.API.csproj -c Release -o ./publish --no-restore --no-build /p:SkipClientBuild=true
+
+      - name: Verify publish
+        run: |
+          test -f "./publish/CartSmart.API.dll" || (echo "❌ Publish failed" && exit 1)
+          echo "✅ .NET publish OK"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: cartsmart-site
+          package: ./publish
+
+      - name: Done
+        run: echo "🚀 Deployment complete"

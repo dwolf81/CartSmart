@@ -1,0 +1,46 @@
+{
+    "inputs": [
+      {
+        "type": "promptString",
+        "id": "supabase-access-token",
+        "description": "Supabase personal access token",
+        "password": true
+      },
+      {
+        "type": "promptString",
+        "id": "supabase-url",
+        "description": "Supabase project URL (e.g. https://xxxx.supabase.co)",
+        "password": false
+      },
+      {
+        "type": "promptString",
+        "id": "supabase-service-role-key",
+        "description": "Supabase service_role key (read/write; keep local)",
+        "password": true
+      }
+    ],
+    "servers": {
+      "supabase": {
+        "command": "cmd",
+        "args": ["/c", "npx", "-y", "@supabase/mcp-server-supabase@latest"],
+        "env": {
+          "SUPABASE_ACCESS_TOKEN": "${input:supabase-access-token}"
+        }
+      },
+      "supabase_local_rw": {
+        "command": "cmd",
+        "args": [
+          "/c",
+          "npm",
+          "--prefix",
+          "tools/supabase-mcp-rw",
+          "run",
+          "start"
+        ],
+        "env": {
+          "SUPABASE_URL": "${input:supabase-url}",
+          "SUPABASE_SERVICE_ROLE_KEY": "${input:supabase-service-role-key}"
+        }
+      }
+    }
+  }

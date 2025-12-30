@@ -1,0 +1,52 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CartSmart.Core.Worker", "CartSmart.Core.Worker\CartSmart.Core.Worker.csproj", "{8C8A2A7C-8C7B-4C07-9F5E-3E4B1B5A1E01}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CartSmart.Providers", "CartSmart.Providers\CartSmart.Providers.csproj", "{5B5F3C43-1E2A-4E13-8B38-7B7E99E4C2A2}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CartSmart.Scraping", "CartSmart.Scraping\CartSmart.Scraping.csproj", "{A1B2C3D4-1111-2222-3333-444455556666}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CartSmart.Functions", "CartSmart.Functions\CartSmart.Functions.csproj", "{77777777-8888-9999-AAAA-BBBBBBBBBBBB}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "CartSmart.Tests", "CartSmart.Tests\CartSmart.Tests.csproj", "{12345678-90AB-CDEF-1234-567890ABCDEF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CartSmart.Models", "CartSmart.Models\CartSmart.Models.csproj", "{6AD34B67-E2B1-49C4-BAE8-B1465BA4EB43}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8C8A2A7C-8C7B-4C07-9F5E-3E4B1B5A1E01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C8A2A7C-8C7B-4C07-9F5E-3E4B1B5A1E01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C8A2A7C-8C7B-4C07-9F5E-3E4B1B5A1E01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C8A2A7C-8C7B-4C07-9F5E-3E4B1B5A1E01}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5B5F3C43-1E2A-4E13-8B38-7B7E99E4C2A2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5B5F3C43-1E2A-4E13-8B38-7B7E99E4C2A2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5B5F3C43-1E2A-4E13-8B38-7B7E99E4C2A2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5B5F3C43-1E2A-4E13-8B38-7B7E99E4C2A2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-1111-2222-3333-444455556666}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-1111-2222-3333-444455556666}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-1111-2222-3333-444455556666}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-1111-2222-3333-444455556666}.Release|Any CPU.Build.0 = Release|Any CPU
+		{77777777-8888-9999-AAAA-BBBBBBBBBBBB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{77777777-8888-9999-AAAA-BBBBBBBBBBBB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{77777777-8888-9999-AAAA-BBBBBBBBBBBB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{77777777-8888-9999-AAAA-BBBBBBBBBBBB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{12345678-90AB-CDEF-1234-567890ABCDEF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{12345678-90AB-CDEF-1234-567890ABCDEF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{12345678-90AB-CDEF-1234-567890ABCDEF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{12345678-90AB-CDEF-1234-567890ABCDEF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6AD34B67-E2B1-49C4-BAE8-B1465BA4EB43}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6AD34B67-E2B1-49C4-BAE8-B1465BA4EB43}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6AD34B67-E2B1-49C4-BAE8-B1465BA4EB43}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6AD34B67-E2B1-49C4-BAE8-B1465BA4EB43}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

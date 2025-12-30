@@ -1,0 +1,10 @@
+node_modules
+.env
+# Ignore local settings
+appsettings.Development.json
+appsettings.Local.json
+
+CartSmart.API/appsettings.Development.json
+CartSmart.API/appsettings.json
+CartSmart.API/bin/
+CartSmart.API/obj/

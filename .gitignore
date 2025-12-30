@@ -1,0 +1,23 @@
+# .NET
+**/bin/
+**/obj/
+**/.vs/
+
+# Node
+**/node_modules/
+**/build/
+**/dist/
+
+# Local settings / secrets
+**/local.settings.json
+**/.env
+**/.env.*
+
+# Azurite dev storage
+**/__blobstorage__/
+**/__queuestorage__/
+**/__azurite_db*.json
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" Version="1.0.5" />
+    <PackageReference Include="AngleSharp.Css" Version="0.17.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.56.0" />
+  </ItemGroup>
+  <ItemGroup>
+        <ProjectReference Include="..\CartSmart.Core.Worker\CartSmart.Core.Worker.csproj" />
+  </ItemGroup>
+</Project>
