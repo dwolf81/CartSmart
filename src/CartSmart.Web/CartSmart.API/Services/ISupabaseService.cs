@@ -11,6 +11,7 @@ namespace CartSmart.API.Services
         Task<T> UpdateAsync<T>(T model) where T : BaseModel, new();
         Task DeleteAsync<T>(int id) where T : BaseModel, new();
         Supabase.Client GetClient();
+        Supabase.Client GetServiceRoleClient();
         Task<ISupabaseTable<T, Supabase.Realtime.RealtimeChannel>> QueryTable<T>() where T : BaseModel, new();
         Task<string> UploadFileWithServiceRoleAsync(string bucket, string path, Stream fileStream, Supabase.Storage.FileOptions options);
         string GetPublicUrl(string bucket, string path);

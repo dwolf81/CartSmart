@@ -61,6 +61,8 @@ namespace CartSmart.API.Models.DTOs
 
         public bool Active { get; set; } = false;
 
+        public bool Admin { get; set; } = false;
+
     }
 
     public class UserResponse

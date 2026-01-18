@@ -16,7 +16,7 @@ namespace CartSmart.API.Models
         public int DealId { get; set; }
 
         [Column("deal_product_id")]
-        public int DealProductId { get; set; }
+        public int? DealProductId { get; set; }
 
         [Column("deal_status_id")]
         public int DealStatusId { get; set; }

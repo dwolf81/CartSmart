@@ -105,6 +105,146 @@ public class DealService : IDealService
         return ha.Equals(hb, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static List<Dictionary<int, int>> ExpandVariantCombinations(List<DealVariantAttributeSelectionDTO>? selections)
+    {
+        if (selections == null || selections.Count == 0)
+            return new();
+
+        var filtered = selections
+            .Where(s => s != null && s.AttributeId > 0)
+            .Select(s => new
+            {
+                s.AttributeId,
+                EnumValueIds = (s.EnumValueIds ?? new List<int>()).Where(v => v > 0).Distinct().ToList()
+            })
+            .Where(s => s.EnumValueIds.Count > 0)
+            .ToList();
+
+        if (filtered.Count == 0)
+            return new();
+
+        // Cartesian product across attributes (one enum value per attribute per variant)
+        var combos = new List<Dictionary<int, int>> { new() };
+        foreach (var sel in filtered)
+        {
+            var next = new List<Dictionary<int, int>>();
+            foreach (var combo in combos)
+            {
+                foreach (var enumValueId in sel.EnumValueIds)
+                {
+                    var clone = new Dictionary<int, int>(combo)
+                    {
+                        [sel.AttributeId] = enumValueId
+                    };
+                    next.Add(clone);
+                }
+            }
+            combos = next;
+        }
+
+        // Deduplicate identical combos
+        return combos
+            .GroupBy(c => string.Join("|", c.OrderBy(kvp => kvp.Key).Select(kvp => $"{kvp.Key}:{kvp.Value}")))
+            .Select(g => g.First())
+            .ToList();
+    }
+
+    private static string BuildVariantKey(Dictionary<int, int> attributeToEnumValueId)
+    {
+        return string.Join("|", attributeToEnumValueId.OrderBy(kvp => kvp.Key).Select(kvp => $"a{kvp.Key}=e{kvp.Value}"));
+    }
+
+    private async Task<long?> ResolveOrCreateVariantIdAsync(long productId, Dictionary<int, int> attributeToEnumValueId)
+    {
+        if (attributeToEnumValueId == null || attributeToEnumValueId.Count == 0)
+            return null;
+
+        // Use service-role for derived-data writes/reads (variants/attributes), to avoid RLS issues.
+        var client = _supabase.GetServiceRoleClient();
+
+        var variantsResp = await client
+            .From<ProductVariant>()
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+            .Select("id,product_id")
+            .Get();
+
+        var variants = variantsResp.Models ?? new List<ProductVariant>();
+        if (variants.Count > 0)
+        {
+            var variantIds = variants.Select(v => v.Id).Cast<object>().ToArray();
+            var attrsResp = await client
+                .From<ProductVariantAttribute>()
+                .Filter("product_variant_id", Supabase.Postgrest.Constants.Operator.In, variantIds)
+                .Select("product_variant_id,attribute_id,enum_value_id")
+                .Get();
+
+            var attrs = attrsResp.Models ?? new List<ProductVariantAttribute>();
+            var desired = attributeToEnumValueId.OrderBy(k => k.Key).ToList();
+
+            foreach (var variant in variants)
+            {
+                var vAttrs = attrs
+                    .Where(a => a.ProductVariantId == variant.Id && a.EnumValueId != null)
+                    .Select(a => new KeyValuePair<int, int>(a.AttributeId, a.EnumValueId!.Value))
+                    .OrderBy(kvp => kvp.Key)
+                    .ToList();
+
+                if (vAttrs.Count != desired.Count)
+                    continue;
+
+                var match = true;
+                for (var i = 0; i < desired.Count; i++)
+                {
+                    if (vAttrs[i].Key != desired[i].Key || vAttrs[i].Value != desired[i].Value)
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (match)
+                    return variant.Id;
+            }
+        }
+
+        var key = BuildVariantKey(attributeToEnumValueId);
+        var now = DateTime.UtcNow;
+
+        var newVariant = new ProductVariant
+        {
+            ProductId = productId,
+            VariantName = null,
+            UnitCount = null,
+            UnitType = null,
+            DisplayName = key,
+            NormalizedTitle = key,
+            IsDefault = false,
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        var insertedVariantResp = await client.From<ProductVariant>().Insert(newVariant);
+        var insertedVariant = insertedVariantResp.Models?.FirstOrDefault();
+        if (insertedVariant == null)
+            throw new Exception("Failed to create product_variant");
+
+        var variantId = insertedVariant.Id;
+        foreach (var kvp in attributeToEnumValueId)
+        {
+            await client.From<ProductVariantAttribute>().Insert(new ProductVariantAttribute
+            {
+                ProductVariantId = variantId,
+                AttributeId = kvp.Key,
+                EnumValueId = kvp.Value,
+                ValueNum = null,
+                ValueText = null,
+                ValueBool = null
+            });
+        }
+        return variantId;
+    }
+
     private async Task<int?> ResolveStoreIdFromUrlAsync(string? url)
     {
         var host = ExtractHost(url);
@@ -253,7 +393,7 @@ public class DealService : IDealService
         // Needed for store-grouped ProductPage deals UI
         "store_id", "StoreId",
         "store_name", "StoreName",
-        "store_logo_url", "StoreLogoUrl",
+        "store_image_url", "StoreImageUrl",
         "store_deal_count", "StoreDealCount",
         "additional_deal_count", "AdditionalDealCount"
     };
@@ -359,17 +499,23 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         if (currentUserId != null)
         {
             var me = Convert.ToInt32(currentUserId);
-            var dpIds = pagedDeals.Select(d => d.deal_product_id).Distinct().ToArray();
+            var dpIds = pagedDeals
+                .Select(d => d.deal_product_id)
+                .Where(id => id.HasValue && id.Value > 0)
+                .Select(id => id!.Value)
+                .Distinct()
+                .ToArray();
+
             if (dpIds.Length > 0)
             {
                 var flags = await _supabase.GetAllAsync<DealFlag>();
                 var flaggedSet = flags
-                    .Where(f => f.UserId == me && dpIds.Contains(f.DealProductId))
-                    .Select(f => f.DealProductId)
+                    .Where(f => f.UserId == me && f.DealProductId.HasValue && dpIds.Contains(f.DealProductId.Value))
+                    .Select(f => f.DealProductId!.Value)
                     .ToHashSet();
 
                 foreach (var d in pagedDeals)
-                    d.user_flagged = flaggedSet.Contains(d.deal_product_id);
+                    d.user_flagged = d.deal_product_id.HasValue && flaggedSet.Contains(d.deal_product_id.Value);
             }
         }
 
@@ -392,10 +538,29 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         long? storeId = null,
         int? dealTypeId = null,
         int? conditionId = null,
-        int? userId = null)
+        int? userId = null,
+        List<ProductAttributeFilterDTO>? attributeFilters = null)
     {
         var currentUserId = _authService.GetCurrentUserId();
         var client = _supabase.GetClient();
+
+        // Normalize filters:
+        // - remove empty / invalid entries to avoid sending a 1-item "blank" array
+        // - serialize as snake_case dictionaries so RPC jsonb matches SQL expectations
+        var rpcAttributeFilters = attributeFilters
+            ?.Where(f => f != null
+                && f.AttributeId > 0
+                && f.EnumValueIds != null
+                && f.EnumValueIds.Any(v => v > 0))
+            .Select(f => new Dictionary<string, object>
+            {
+                ["attribute_id"] = f.AttributeId,
+                ["enum_value_ids"] = f.EnumValueIds.Where(v => v > 0).ToList()
+            })
+            .ToList();
+
+        if (rpcAttributeFilters != null && rpcAttributeFilters.Count == 0)
+            rpcAttributeFilters = null;
 
         var deals = await client
             .Rpc<List<DealDisplayDTO>>("f_get_product_deals_2", new
@@ -404,24 +569,31 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                 p_user_id = userId,
                 p_store_id = storeId,
                 p_deal_type_id = dealTypeId,
-                p_condition_id = conditionId
+                p_condition_id = conditionId,
+                p_attribute_filters = rpcAttributeFilters
             });
 
         // If authenticated, annotate which deals this user already flagged
         if (currentUserId != null)
         {
             var me = Convert.ToInt32(currentUserId);
-            var dpIds = deals.Select(d => d.deal_product_id).Distinct().ToArray();
+            var dpIds = deals
+                .Select(d => d.deal_product_id)
+                .Where(id => id.HasValue && id.Value > 0)
+                .Select(id => id!.Value)
+                .Distinct()
+                .ToArray();
+
             if (dpIds.Length > 0)
             {
                 var flags = await _supabase.GetAllAsync<DealFlag>();
                 var flaggedSet = flags
-                    .Where(f => f.UserId == me && dpIds.Contains(f.DealProductId))
-                    .Select(f => f.DealProductId)
+                    .Where(f => f.UserId == me && f.DealProductId.HasValue && dpIds.Contains(f.DealProductId.Value))
+                    .Select(f => f.DealProductId!.Value)
                     .ToHashSet();
 
                 foreach (var d in deals)
-                    d.user_flagged = flaggedSet.Contains(d.deal_product_id);
+                    d.user_flagged = d.deal_product_id.HasValue && flaggedSet.Contains(d.deal_product_id.Value);
             }
         }
 
@@ -686,7 +858,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             CreatedAt = DateTime.UtcNow,
             Deleted = false,
             StoreId = primaryStore?.Id,
-            ExternalOfferStoreId = dto.DealTypeId == 4 ? externalStore?.Id : null
+            ExternalOfferStoreId = dto.DealTypeId == 4 ? externalStore?.Id : null,
+            StoreWide = dto.DealTypeId == 2 || dto.DealTypeId == 4
         };
 
         // Admin auto-approve
@@ -697,31 +870,264 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
         var createdDeal = await _supabase.InsertAsync(deal);
 
-        await _supabase.InsertAsync(new DealProduct
+        var combos = ExpandVariantCombinations(dto.VariantAttributes);
+        if (combos.Count == 0)
         {
-            DealId = createdDeal.Id,
-            ProductId = dto.ProductId,
-            Price = dto.Price ?? 0,
-            Url = dto.Url,
-            FreeShipping = dto.FreeShipping,
-            ConditionId = dto.ConditionId ?? 1,
-            CreatedAt = DateTime.UtcNow,
-            Deleted = false,
-            Primary = true,
-            DealStatusId = user?.Admin == true ? 2 : 1
-        });
+            await _supabase.InsertAsync(new DealProduct
+            {
+                DealId = createdDeal.Id,
+                ProductId = dto.ProductId,
+                ProductVariantId = null,
+                Price = dto.Price ?? 0,
+                Url = dto.Url,
+                FreeShipping = dto.FreeShipping,
+                ConditionId = dto.ConditionId ?? 1,
+                CreatedAt = DateTime.UtcNow,
+                Deleted = false,
+                Primary = true,
+                DealStatusId = user?.Admin == true ? 2 : 1
+            });
+        }
+        else
+        {
+            for (var i = 0; i < combos.Count; i++)
+            {
+                var combo = combos[i];
+                var variantId = await ResolveOrCreateVariantIdAsync(dto.ProductId, combo);
+
+                await _supabase.InsertAsync(new DealProduct
+                {
+                    DealId = createdDeal.Id,
+                    ProductId = dto.ProductId,
+                    ProductVariantId = variantId,
+                    Price = dto.Price ?? 0,
+                    Url = dto.Url,
+                    FreeShipping = dto.FreeShipping,
+                    ConditionId = dto.ConditionId ?? 1,
+                    CreatedAt = DateTime.UtcNow,
+                    Deleted = false,
+                    Primary = i == 0,
+                    DealStatusId = user?.Admin == true ? 2 : 1
+                });
+            }
+        }
 
         //If this is an admin user run "f_update_product_best_deal" after inserting the deal
         if (user?.Admin == true)
         {
             await client
                 .Rpc("f_update_product_best_deal", new { p_product_id = dto.ProductId });
+
+            // Admin deals are auto-approved, so count them as posted immediately.
+            var serviceRoleClient = _supabase.GetServiceRoleClient();
+            var uResp = await serviceRoleClient
+                .From<User>()
+                .Select("id, deals_posted")
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, deal.UserId)
+                .Limit(1)
+                .Get();
+            var u = uResp.Models.FirstOrDefault();
+            if (u != null)
+            {
+                await serviceRoleClient
+                    .From<User>()
+                    .Where(x => x.Id == u.Id)
+                    .Set(x => x.DealsPosted, u.DealsPosted + 1)
+                    .Update();
+            }
         }
 
         // Invalidate cache entries affected by new deal submission
         _cache.Remove("bestDeals");
         _cache.Remove($"product:id:{dto.ProductId}");
         return createdDeal;
+    }
+
+    public async Task<Deal> CreateStoreWideDealAsync(StoreWideDealDTO dto)
+    {
+        var userId = _authService.GetCurrentUserId();
+        if (userId == null) throw new InvalidOperationException("Not authenticated");
+
+        await EnforceDailySubmissionLimitAsync(Convert.ToInt32(userId));
+
+        if (dto == null) throw new InvalidOperationException("Invalid request");
+        if (dto.StoreId <= 0) throw new InvalidOperationException("storeId is required");
+        if (dto.DealTypeId is not (1 or 2 or 4))
+            throw new InvalidOperationException("Only direct, coupon, and external store-wide deals are supported.");
+
+        // Ensure store exists
+        var svc = _supabase.GetServiceRoleClient();
+        var storeResp = await svc
+            .From<Store>()
+            .Select("id, url")
+            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dto.StoreId)
+            .Limit(1)
+            .Get();
+        var store = storeResp.Models.FirstOrDefault();
+        if (store == null) throw new InvalidOperationException("Store not found");
+
+        // Basic duplicate prevention: same store + type + key fields.
+        // (Keeps logic lightweight and avoids requiring deal_product.)
+        var client = _supabase.GetClient();
+        var existingResp = await client
+            .From<Deal>()
+            .Select("id, deal_type_id, coupon_code, external_offer_url, store_id, deleted")
+            .Filter("store_id", Supabase.Postgrest.Constants.Operator.Equals, dto.StoreId)
+            .Filter("store_wide", Supabase.Postgrest.Constants.Operator.Equals, "true")
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Get();
+
+        var existing = existingResp.Models ?? new List<Deal>();
+        Deal? dup = null;
+        if (dto.DealTypeId == 2 && !string.IsNullOrWhiteSpace(dto.CouponCode))
+        {
+            var code = dto.CouponCode.Trim();
+            dup = existing.FirstOrDefault(d => d.DealTypeId == 2 && !string.IsNullOrWhiteSpace(d.CouponCode)
+                && string.Equals(d.CouponCode.Trim(), code, StringComparison.OrdinalIgnoreCase));
+        }
+        else if (dto.DealTypeId == 4 && !string.IsNullOrWhiteSpace(dto.ExternalOfferUrl))
+        {
+            var urlNorm = NormalizeUrl(dto.ExternalOfferUrl);
+            dup = existing.FirstOrDefault(d => d.DealTypeId == 4 && NormalizeUrl(d.ExternalOfferUrl) == urlNorm);
+        }
+
+        if (dup != null)
+            throw new DuplicateDealException("A store-wide deal like this already exists.", dup.Id);
+
+        // External offer store resolution (only when external)
+        Store? externalStore = null;
+        if (dto.DealTypeId == 4)
+        {
+            if (string.IsNullOrWhiteSpace(dto.ExternalOfferUrl))
+                throw new InvalidOperationException("External offer URL is required for external deals.");
+            externalStore = await ResolveOrCreateStoreFromUrlAsync(dto.ExternalOfferUrl);
+        }
+
+        // Sanitize external offer URL
+        string? cleanExternal = null;
+        if (!string.IsNullOrWhiteSpace(dto.ExternalOfferUrl))
+        {
+            if (dto.DealTypeId == 4)
+            {
+                cleanExternal = externalStore != null
+                    ? _urlSanitizer.CleanForStore(dto.ExternalOfferUrl, externalStore, injectAffiliate: true)
+                    : _urlSanitizer.Clean(dto.ExternalOfferUrl, injectAffiliate: true);
+            }
+            else
+            {
+                cleanExternal = _urlSanitizer.Clean(dto.ExternalOfferUrl, injectAffiliate: true);
+            }
+        }
+
+        var deal = new Deal
+        {
+            UserId = Convert.ToInt32(userId),
+            DealTypeId = dto.DealTypeId,
+            AdditionalDetails = dto.AdditionalDetails,
+            CouponCode = string.IsNullOrWhiteSpace(dto.CouponCode) ? null : dto.CouponCode.Trim(),
+            DiscountPercent = dto.DiscountPercent,
+            ExpirationDate = dto.ExpirationDate,
+            ExternalOfferUrl = string.IsNullOrWhiteSpace(cleanExternal) ? null : cleanExternal.Trim(),
+            CreatedAt = DateTime.UtcNow,
+            Deleted = false,
+            StoreId = dto.StoreId,
+            ExternalOfferStoreId = dto.DealTypeId == 4 ? externalStore?.Id : null,
+            StoreWide = true
+        };
+
+        // Admin auto-approve
+        var users = await _supabase.GetAllAsync<User>();
+        var user = users.FirstOrDefault(u => u.Id == deal.UserId);
+        deal.DealStatusId = user?.Admin == true ? 2 : 1;
+
+        var created = await _supabase.InsertAsync(deal);
+
+        if (user?.Admin == true)
+        {
+            // Admin deals are auto-approved, so count them as posted immediately.
+            var serviceRoleClient = _supabase.GetServiceRoleClient();
+            var uResp = await serviceRoleClient
+                .From<User>()
+                .Select("id, deals_posted")
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, deal.UserId)
+                .Limit(1)
+                .Get();
+            var u = uResp.Models.FirstOrDefault();
+            if (u != null)
+            {
+                await serviceRoleClient
+                    .From<User>()
+                    .Where(x => x.Id == u.Id)
+                    .Set(x => x.DealsPosted, u.DealsPosted + 1)
+                    .Update();
+            }
+        }
+
+        _cache.Remove("bestDeals");
+        return created;
+    }
+
+    public async Task<Deal?> UpdateStoreWideDealAsync(int dealId, StoreWideDealDTO dto)
+    {
+        var userId = _authService.GetCurrentUserId();
+        if (userId == null) throw new InvalidOperationException("Not authenticated");
+
+        if (dto == null) throw new InvalidOperationException("Invalid request");
+        if (dealId <= 0) throw new InvalidOperationException("dealId is required");
+        if (dto.DealTypeId is not (1 or 2 or 4))
+            throw new InvalidOperationException("Only direct, coupon, and external store-wide deals are supported.");
+
+        var deal = (await _supabase.GetAllAsync<Deal>()).FirstOrDefault(d => d.Id == dealId);
+        if (deal == null) return null;
+        if (deal.UserId != Convert.ToInt32(userId)) return null;
+
+        // Store-wide edits should remain store-wide
+        deal.StoreWide = true;
+
+        // If storeId supplied, prevent accidental store changes.
+        if (dto.StoreId > 0 && deal.StoreId.HasValue && dto.StoreId != deal.StoreId.Value)
+            throw new InvalidOperationException("Cannot change store for an existing store-wide deal.");
+
+        // External offer store resolution (only when external)
+        Store? externalStore = null;
+        if (dto.DealTypeId == 4)
+        {
+            if (string.IsNullOrWhiteSpace(dto.ExternalOfferUrl))
+                throw new InvalidOperationException("External offer URL is required for external deals.");
+            externalStore = await ResolveOrCreateStoreFromUrlAsync(dto.ExternalOfferUrl);
+        }
+
+        string? cleanExternal = null;
+        if (!string.IsNullOrWhiteSpace(dto.ExternalOfferUrl))
+        {
+            if (dto.DealTypeId == 4)
+                cleanExternal = externalStore != null
+                    ? _urlSanitizer.CleanForStore(dto.ExternalOfferUrl, externalStore, injectAffiliate: true)
+                    : _urlSanitizer.Clean(dto.ExternalOfferUrl, injectAffiliate: true);
+            else
+                cleanExternal = _urlSanitizer.Clean(dto.ExternalOfferUrl, injectAffiliate: true);
+        }
+
+        // Reset review status unless admin
+        var users = await _supabase.GetAllAsync<User>();
+        var u = users.FirstOrDefault(x => x.Id == deal.UserId);
+        deal.DealStatusId = u?.Admin == true ? 2 : 5;
+
+        var client = _supabase.GetClient();
+        await client.From<DealReview>().Where(r => r.DealId == deal.Id).Delete();
+
+
+        deal.DealTypeId = dto.DealTypeId;
+        deal.AdditionalDetails = dto.AdditionalDetails;
+        deal.CouponCode = string.IsNullOrWhiteSpace(dto.CouponCode) ? null : dto.CouponCode.Trim();
+        deal.DiscountPercent = dto.DiscountPercent;
+        deal.ExpirationDate = dto.ExpirationDate;
+        deal.ExternalOfferUrl = string.IsNullOrWhiteSpace(cleanExternal) ? null : cleanExternal.Trim();
+        deal.ExternalOfferStoreId = dto.DealTypeId == 4 ? externalStore?.Id : null;
+
+        var updated = await _supabase.UpdateAsync(deal);
+        _cache.Remove("bestDeals");
+        return updated;
     }
 
     public async Task<List<DealCombo>> CreateDealComboAsync(List<DealCombo> dealCombos, bool? deleteExisting = false)
@@ -765,6 +1171,10 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         deal.DiscountPercent = dto.DiscountPercent;
         deal.ExpirationDate = dto.ExpirationDate;
         deal.ExternalOfferUrl = string.IsNullOrWhiteSpace(dto.ExternalOfferUrl) ? null : dto.ExternalOfferUrl.Trim();
+
+        // Coupon + external offers default to store-wide
+        if (dto.DealTypeId == 2 || dto.DealTypeId == 4)
+            deal.StoreWide = true;
 
       
 
@@ -850,6 +1260,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             deal.ExternalOfferStoreId = externalStore?.Id;
             deal.StoreId = primaryStore?.Id;
         }
+
+        // ...existing logic continues...
         else if (dto.DealTypeId != 3)
         {
             deal.StoreId = primaryStore?.Id;
@@ -859,7 +1271,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         // Reset review status unless admin
         var users = await _supabase.GetAllAsync<User>();
         var u = users.FirstOrDefault(x => x.Id == deal.UserId);
-        deal.DealStatusId = u?.Admin == true ? 2 : 1;
+        deal.DealStatusId = u?.Admin == true ? 2 : 5;
 
         var client = _supabase.GetClient();
         await client.From<DealReview>().Where(r => r.DealId == deal.Id && r.DealProductId == dto.DealProductId).Delete();
@@ -867,31 +1279,51 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         var dealUpdate = await _supabase.UpdateAsync(deal);
         if (dealUpdate == null) return null;
 
-        var dealProducts = await _supabase.GetAllAsync<DealProduct>();
-        var dp = dealProducts.FirstOrDefault(x => x.DealId == deal.Id && x.ProductId == dto.ProductId && !x.Deleted);
-        if (dp == null)
+        var combos = ExpandVariantCombinations(dto.VariantAttributes);
+        if (combos.Count == 0)
         {
-            dp = await _supabase.InsertAsync(new DealProduct
-            {
-                DealId = deal.Id,
-                ProductId = dto.ProductId,
-                Price = dto.Price ?? 0,
-                Url = dto.Url,
-                FreeShipping = dto.FreeShipping,
-                ConditionId = dto.ConditionId ?? 1,
-                CreatedAt = DateTime.UtcNow,
-                Deleted = false,
-                DealStatusId = u?.Admin == true ? 2 : 1
-            });
+            // Update the specific deal_product row being edited
+            if (dto.Price.HasValue) dealProduct.Price = dto.Price.Value;
+            dealProduct.Url = dto.Url;
+            dealProduct.FreeShipping = dto.FreeShipping;
+            dealProduct.ConditionId = dto.ConditionId ?? dealProduct.ConditionId;
+            dealProduct.DealStatusId = u?.Admin == true ? 2 : 5;
+            await _supabase.UpdateAsync(dealProduct);
         }
         else
         {
-            if (dto.Price.HasValue) dp.Price = dto.Price.Value;
-            dp.Url = dto.Url;
-            dp.FreeShipping = dto.FreeShipping;
-            dp.ConditionId = dto.ConditionId ?? dp.ConditionId;
-            dp.DealStatusId = u?.Admin == true ? 2 : 1;
-            await _supabase.UpdateAsync(dp);
+            // Soft-delete all existing active deal_product rows for this deal/product, then insert new variant-resolved rows.
+            var dealProducts = await _supabase.GetAllAsync<DealProduct>();
+            var existing = dealProducts
+                .Where(x => x.DealId == deal.Id && x.ProductId == dto.ProductId && !x.Deleted)
+                .ToList();
+
+            foreach (var row in existing)
+            {
+                row.Deleted = true;
+                await _supabase.UpdateAsync(row);
+            }
+
+            for (var i = 0; i < combos.Count; i++)
+            {
+                var combo = combos[i];
+                var variantId = await ResolveOrCreateVariantIdAsync(dto.ProductId, combo);
+
+                await _supabase.InsertAsync(new DealProduct
+                {
+                    DealId = deal.Id,
+                    ProductId = dto.ProductId,
+                    ProductVariantId = variantId,
+                    Price = dto.Price ?? 0,
+                    Url = dto.Url,
+                    FreeShipping = dto.FreeShipping,
+                    ConditionId = dto.ConditionId ?? 1,
+                    CreatedAt = DateTime.UtcNow,
+                    Deleted = false,
+                    Primary = i == 0,
+                    DealStatusId = u?.Admin == true ? 2 : 5
+                });
+            }
         }
 
         //If this is an admin user run "f_update_product_best_deal" after inserting the deal
@@ -1003,16 +1435,19 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         return true;
     }
 
-    public async Task<bool> FlagDealAsync(int dealProductId, int? dealIssueTypeId, string? comments)
+    public async Task<bool> FlagDealAsync(long dealId, long? dealProductId, int? dealIssueTypeId, string? comments)
     {
         var userId = _authService.GetCurrentUserId();
         if (userId == null) return false;
 
-        // Upsert logic (prevent duplicate flag by same user on same deal_product)
+        if (dealId <= 0) return false;
+
+        // Upsert logic (prevent duplicate flag by same user on same deal)
         var flags = await _supabase.GetAllAsync<DealFlag>();
         var existing = flags.FirstOrDefault(f =>
             f.UserId == Convert.ToInt32(userId) &&
-            f.DealProductId == dealProductId);
+            ((f.DealId.HasValue && f.DealId.Value == dealId) ||
+             (dealProductId.HasValue && dealProductId.Value > 0 && f.DealProductId.HasValue && f.DealProductId.Value == dealProductId.Value)));
 
         if (existing == null)
         {
@@ -1020,6 +1455,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             var newFlag = new DealFlag
             {
                 UserId = Convert.ToInt32(userId),
+                DealId = dealId,
                 DealProductId = dealProductId,
                 CreatedAt = DateTime.UtcNow,
                 DealIssueTypeId = dealIssueTypeId,
@@ -1028,15 +1464,18 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             await _supabase.InsertAsync(newFlag);
         }
 
-        // Possible requeue
-        var client = _supabase.GetClient();
-        await client.Rpc<int>("f_maybe_requeue_deal", new { p_deal_product_id = dealProductId });
+        // Possible requeue (only applies when we have a deal_product_id)
+        if (dealProductId.HasValue && dealProductId.Value > 0)
+        {
+            var client = _supabase.GetClient();
+            await client.Rpc<int>("f_maybe_requeue_deal", new { p_deal_product_id = dealProductId.Value });
+        }
         
 
         return true;
     }
 
-    public async Task<bool> ReviewDealAsync(int dealId, int dealProductId, int dealStatusId, int? dealIssueTypeId, string? comment)
+    public async Task<bool> ReviewDealAsync(int dealId, int? dealProductId, int dealStatusId, int? dealIssueTypeId, string? comment)
     {
         var userId = _authService.GetCurrentUserId();
         if (userId == null) return false;
@@ -1055,8 +1494,18 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         await _supabase.InsertAsync(dealReview);
 
         // Recompute aggregate status
-        var client = _supabase.GetClient();
-        await client.Rpc<int>("f_update_deal_status", new { p_deal_product_id = dealProductId });
+        if (dealProductId.HasValue && dealProductId.Value > 0)
+        {
+            var client = _supabase.GetClient();
+            await client.Rpc<int>("f_update_deal_status", new { p_deal_product_id = dealProductId.Value });
+        }
+        else
+        {
+            // Store-wide deals don't have a deal_product row.
+            // Use f_update_deal_status(NULL, dealId) so parent status + reputation/trust-score logic runs.
+            var client = _supabase.GetClient();
+            await client.Rpc<int>("f_update_deal_status", new { p_deal_product_id = (int?)null, p_deal_id = dealId });
+        }
 
         return true;
         }

@@ -255,7 +255,8 @@ public class UserService : IUserService
             DealsPosted = user.DealsPosted,
             DisplayName = user.DisplayName,
             AllowReview = user.AllowReview,
-            Email = user.Email
+            Email = user.Email,
+            Admin = user.Admin
         };
     }
 
@@ -287,7 +288,8 @@ public class UserService : IUserService
             EmailOptIn = user.EmailOptIn,
             DealsPosted = user.DealsPosted,
             DisplayName = user.DisplayName,
-            AllowReview = user.AllowReview
+            AllowReview = user.AllowReview,
+            Admin = user.Admin
         };
     }
 

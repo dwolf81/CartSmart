@@ -13,7 +13,10 @@ namespace CartSmart.API.Models
         public int UserId { get; set; }
 
         [Column("deal_product_id")]
-        public int DealProductId { get; set; }
+        public int? DealProductId { get; set; }
+
+        [Column("deal_id")]
+        public int? DealId { get; set; }
 
         [Column("event_type")]
         public string EventType { get; set; } = string.Empty;

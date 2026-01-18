@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import SubmitDealModal from './SubmitDealModal';
 import ComboDealModal from './ComboDealModal';
 import { useProducts } from '../hooks/useProducts';
@@ -11,6 +11,7 @@ import RatingSourcesModal from './RatingSourcesModal';
 import { FaTag, FaTicketAlt, FaLink, FaLayerGroup, FaFlag, FaPlus } from 'react-icons/fa';
 import { Flag } from "lucide-react";
 import { useScrollLock } from '../hooks/useScrollLock';
+import AdminProductModal from './AdminProductModal';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 const SITE_URL = process.env.REACT_APP_SITE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
@@ -70,9 +71,18 @@ const useIsMobile = (bp = 768) => {
 const ProductPage = () => {
   const { productSlug } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { getProductBySlug } = useProducts();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user, authFetch } = useAuth();
   // Terms consent gating removed; actions proceed directly
+
+  const storeIdFromQuery = useMemo(() => {
+    const raw = searchParams.get('storeId');
+    if (!raw) return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n;
+  }, [searchParams]);
 
   const [product, setProduct] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -83,8 +93,17 @@ const ProductPage = () => {
     conditionId: null
   });
 
+  // If navigated with `?storeId=123`, initialize the store filter once.
+  useEffect(() => {
+    if (!storeIdFromQuery) return;
+    setDealFilters((prev) => {
+      if (prev.storeId != null) return prev;
+      return { ...prev, storeId: storeIdFromQuery };
+    });
+  }, [storeIdFromQuery]);
+
   const [collapsedStoreDeals, setCollapsedStoreDeals] = useState([]); // 1 row per store (primary)
-  const [availableStores, setAvailableStores] = useState([]); // [{ store_id, store_name, store_logo_url }]
+  const [availableStores, setAvailableStores] = useState([]); // [{ store_id, store_name, store_image_url }]
   const [expandedStoreIds, setExpandedStoreIds] = useState([]); // number[]
   const [expandedStoreDealsById, setExpandedStoreDealsById] = useState({}); // { [storeId]: rows }
   const expandedStoreCacheRef = useRef(new Map()); // key: `${productId}:${storeId}:${dealTypeId}:${conditionId}` -> rows
@@ -102,6 +121,24 @@ const ProductPage = () => {
   const [dealToFlag, setDealToFlag] = useState(null);
   const [activatedExternal, setActivatedExternal] = useState({}); // deal_id -> bool
   const [expandedStackedSteps, setExpandedStackedSteps] = useState({}); // { `${parentId}:${stepId}`: true }
+
+  // --- ADMIN EDIT (Product + Variants) ---
+  const [isAdminEditOpen, setIsAdminEditOpen] = useState(false);
+  const [adminEditLoading, setAdminEditLoading] = useState(false);
+  const [adminEditSaving, setAdminEditSaving] = useState(false);
+  const [adminEditError, setAdminEditError] = useState('');
+  const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '' });
+  const [adminAttributes, setAdminAttributes] = useState([]);
+  const [adminAvailableAttributes, setAdminAvailableAttributes] = useState([]);
+  const [adminAddAttributeId, setAdminAddAttributeId] = useState('');
+  const [adminNewAttributeDraft, setAdminNewAttributeDraft] = useState({ name: '', dataType: 'enum', description: '', isRequired: false });
+  const [adminCreateAttrExpanded, setAdminCreateAttrExpanded] = useState(false);
+  // drafts for existing enum values: { [enumValueId]: { displayName, sortOrder, isActive } }
+  const [adminEnumDrafts, setAdminEnumDrafts] = useState({});
+  // drafts for adding enum values: { [attributeId]: { enumKey, displayName, sortOrder, isActive } }
+  const [adminNewEnumDrafts, setAdminNewEnumDrafts] = useState({});
+  // per-attribute UI collapse state (expanded=false means collapsed)
+  const [adminAttrExpanded, setAdminAttrExpanded] = useState({});
   // derive image gallery (fall back to single image / placeholder)
   const galleryImages = (product?.images && product.images.length)
     ? product.images
@@ -151,7 +188,7 @@ const ProductPage = () => {
 
   const storeLabel = (storeId) => {
     if (!storeId) return 'All';
-    const found = availableStores.find(s => s.store_id === storeId);
+    const found = availableStores.find(s => Number(s.store_id) === Number(storeId));
     return found?.store_name || 'Store';
   };
 
@@ -165,26 +202,53 @@ const ProductPage = () => {
     });
   };
 
-  const buildDeals2Params = ({ storeId }) => {
-    const params = new URLSearchParams();
-    if (storeId) params.append('storeId', storeId.toString());
-    if (dealFilters.dealTypeId) params.append('dealTypeId', dealFilters.dealTypeId.toString());
-    if (dealFilters.conditionId) params.append('conditionId', dealFilters.conditionId.toString());
-    return params;
+  // Backend expects jsonb payload with keys: attribute_id, enum_value_ids
+  // - OR within each attribute (any enum_value_id matches)
+  // - AND across attributes (every attribute must match)
+  const buildAttributeFiltersPayload = (selections) => {
+    const s = selections || {};
+    return Object.keys(s)
+      .map(k => Number(k))
+      .filter(attributeId => !Number.isNaN(attributeId) && attributeId > 0)
+      .sort((a, b) => a - b)
+      .map(attributeId => {
+        const raw = Array.isArray(s?.[attributeId.toString()]) ? s[attributeId.toString()] : [];
+        const enumValueIds = raw
+          .map(Number)
+          .filter(v => !Number.isNaN(v) && v > 0)
+          .sort((a, b) => a - b);
+        return { attribute_id: attributeId, enum_value_ids: enumValueIds };
+      })
+      .filter(x => Array.isArray(x.enum_value_ids) && x.enum_value_ids.length > 0);
   };
+
+  const appliedAttributeFiltersKey = useMemo(() => {
+    const payload = buildAttributeFiltersPayload(appliedVariantFilterSelections);
+    return payload.length ? JSON.stringify(payload) : 'none';
+  }, [appliedVariantFilterSelections]);
 
   const cacheKeyFor = ({ storeId }) => {
     const pid = product?.id ?? 0;
     const dt = dealFilters.dealTypeId ?? 'all';
     const c = dealFilters.conditionId ?? 'all';
     const s = storeId ?? 'all';
-    return `${pid}:${s}:${dt}:${c}`;
+    const vf = appliedAttributeFiltersKey;
+    return `${pid}:${s}:${dt}:${c}:${vf}`;
   };
 
   const fetchDeals2 = async ({ storeId }) => {
-    const params = buildDeals2Params({ storeId });
-    const resp = await fetch(`${API_URL}/api/deals/product2/${product.id}?${params.toString()}`, {
-      credentials: 'include'
+    const body = {
+      storeId: storeId ?? null,
+      dealTypeId: dealFilters.dealTypeId ?? null,
+      conditionId: dealFilters.conditionId ?? null,
+      attributeFilters: buildAttributeFiltersPayload(appliedVariantFilterSelections)
+    };
+
+    const resp = await fetch(`${API_URL}/api/deals/product2/${product.id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(body)
     });
     if (!resp.ok) throw new Error('Failed to fetch deals');
     const data = await resp.json();
@@ -214,10 +278,12 @@ const ProductPage = () => {
   const clearAppliedVariantFilters = () => {
     setVariantFilterSelections({});
     setAppliedVariantFilterSelections({});
+    expandedStoreCacheRef.current.clear();
   };
 
   const applyVariantFilters = () => {
     setAppliedVariantFilterSelections(variantFilterSelections || {});
+    expandedStoreCacheRef.current.clear();
   };
 
   const closeMorePanel = () => {
@@ -272,48 +338,20 @@ const ProductPage = () => {
     setVariantFilterError(null);
   }, [product?.id]);
 
-  const selectedVariantIdSet = useMemo(() => {
-    const selectionKeys = Object.keys(appliedVariantFilterSelections || {});
-    if (selectionKeys.length === 0) return null;
-
-    const rows = (variantFilterOptions?.variantAttributeValues || variantFilterOptions?.VariantAttributeValues || []);
-    if (!Array.isArray(rows) || rows.length === 0) return new Set();
-
-    // Build lookup: variantId -> attributeId -> enumValueId
-    const byVariant = new Map();
-    for (const r of rows) {
-      const variantId = Number(r.productVariantId ?? r.ProductVariantId);
-      const attributeId = Number(r.attributeId ?? r.AttributeId);
-      const enumValueId = r.enumValueId ?? r.EnumValueId;
-      if (Number.isNaN(variantId) || variantId <= 0) continue;
-      if (Number.isNaN(attributeId) || attributeId <= 0) continue;
-      if (!byVariant.has(variantId)) byVariant.set(variantId, new Map());
-      byVariant.get(variantId).set(attributeId, enumValueId == null ? null : Number(enumValueId));
-    }
-
-    const ids = new Set();
-    for (const [variantId, attrMap] of byVariant.entries()) {
-      let ok = true;
-      for (const k of selectionKeys) {
-        const attributeId = Number(k);
-        const wanted = (appliedVariantFilterSelections?.[k] || []).map(Number);
-        if (wanted.length === 0) continue;
-        const actual = attrMap.has(attributeId) ? attrMap.get(attributeId) : null;
-        if (actual == null) { ok = false; break; }
-        if (!wanted.includes(Number(actual))) { ok = false; break; }
-      }
-      if (ok) ids.add(variantId);
-    }
-
-    return ids;
-  }, [variantFilterOptions, appliedVariantFilterSelections]);
+  // Preload variant filters so we can hide the "More" button when none exist
+  useEffect(() => {
+    if (!product?.id) return;
+    if (variantFilterOptions !== null) return;
+    loadVariantFilterOptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product?.id, variantFilterOptions]);
 
 
   useEffect(() => {
     const loadProduct = async () => {
       try {
         setLoading(true);
-        const productData = await getProductBySlug(productSlug);
+        const productData = await getProductBySlug(productSlug, { cacheBust: true });
         if (!productData) {
           setError('Product not found');
           return;
@@ -339,6 +377,15 @@ const ProductPage = () => {
     loadProduct();
   }, [productSlug]);
 
+  const refreshProduct = async () => {
+    try {
+      const fresh = await getProductBySlug(productSlug, { cacheBust: true });
+      if (fresh) setProduct(fresh);
+    } catch (e) {
+      console.error('Failed to refresh product after admin update:', e);
+    }
+  };
+
   // Load deals (collapsed or store-filtered) whenever product or filters change
   useEffect(() => {
     if (!product) return;
@@ -350,6 +397,25 @@ const ProductPage = () => {
       try {
         // If store filter is set, show that store's deals (up to 5) and ignore global expanded state
         if (dealFilters.storeId) {
+          // When deep-linking with `?storeId=...`, availableStores may be empty because we never ran the
+          // collapsed fetch. Populate it so the Store dropdown/labels work correctly.
+          if (!availableStores || availableStores.length === 0) {
+            const collapsedAll = await fetchDeals2({ storeId: null });
+            if (cancelled) return;
+            setAvailableStores(
+              collapsedAll
+                .filter(d => d.store_id)
+                .map(d => ({ store_id: Number(d.store_id), store_name: d.store_name, store_image_url: d.store_image_url }))
+                .filter((s, idx, arr) => arr.findIndex(x => x.store_id === s.store_id) === idx)
+            );
+
+            const anchor = collapsedAll.find(d => Number(d.store_id) === Number(dealFilters.storeId));
+            if (anchor) {
+              setCollapsedStoreDeals([anchor]);
+              seedFlaggedDealsFromBatch([anchor]);
+            }
+          }
+
           const expanded = await ensureExpandedStoreDeals(dealFilters.storeId);
           if (cancelled) return;
           setExpandedStoreDealsById({ [dealFilters.storeId]: expanded });
@@ -368,7 +434,7 @@ const ProductPage = () => {
           setAvailableStores(
             collapsed
               .filter(d => d.store_id)
-              .map(d => ({ store_id: d.store_id, store_name: d.store_name, store_logo_url: d.store_logo_url }))
+              .map(d => ({ store_id: d.store_id, store_name: d.store_name, store_image_url: d.store_image_url }))
               .filter((s, idx, arr) => arr.findIndex(x => x.store_id === s.store_id) === idx)
           );
         }
@@ -388,7 +454,7 @@ const ProductPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [product?.id, dealFilters.storeId, dealFilters.dealTypeId, dealFilters.conditionId]);
+  }, [product?.id, dealFilters.storeId, dealFilters.dealTypeId, dealFilters.conditionId, appliedAttributeFiltersKey]);
 
   // Refresh expanded store results when non-store filters change (but only in collapsed view)
   useEffect(() => {
@@ -421,7 +487,7 @@ const ProductPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [product?.id, dealFilters.storeId, dealFilters.dealTypeId, dealFilters.conditionId, expandedStoreIds.join(',')]);
+  }, [product?.id, dealFilters.storeId, dealFilters.dealTypeId, dealFilters.conditionId, appliedAttributeFiltersKey, expandedStoreIds.join(',')]);
 
   useEffect(() => {
     if (!product) return;
@@ -478,12 +544,18 @@ const ProductPage = () => {
   });
   */
 
-  const handleFlagDeal = async (dealProductId) => {
+  const handleFlagDeal = async () => {
     if (!isAuthenticated) {
       alert('Please log in to flag a deal.');
       return;
     }
-    if (flaggedDeals[dealProductId]) return;
+    const dealId = dealToFlag?.dealId;
+    const dealProductId = dealToFlag?.dealProductId ?? null;
+    if (!dealId) {
+      alert('Missing deal id.');
+      return;
+    }
+    if (dealProductId && flaggedDeals[dealProductId]) return;
     if (!flagReasonId) {
       alert('Please select a reason.');
       return;
@@ -494,17 +566,21 @@ const ProductPage = () => {
     }
     try {
       setFlagSubmitting(true);
-      const resp = await fetch(`${API_URL}/api/deals/${dealProductId}/flag`, {
+      const resp = await fetch(`${API_URL}/api/deals/flag`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          dealId,
+          dealProductId,
           dealIssueTypeId: flagReasonId,
           comment: flagComment.trim() || null
         })
       });
       if (!resp.ok) throw new Error('Flag request failed');
-      setFlaggedDeals(p => ({ ...p, [dealProductId]: true }));
+      if (dealProductId) {
+        setFlaggedDeals(p => ({ ...p, [dealProductId]: true }));
+      }
       setIsFlagModalOpen(false);
       setDealToFlag(null);
       setFlagComment('');
@@ -518,18 +594,18 @@ const ProductPage = () => {
   };
 
   // Add this function to handle opening the flag modal
-  const openFlagModal = (dealProductId) => {
+  const openFlagModal = ({ dealId, dealProductId = null }) => {
     if (!isAuthenticated) {
-      navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`, { replace: true });
+      navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
       return;
     }
-    setDealToFlag(dealProductId);
+    setDealToFlag({ dealId, dealProductId });
     setFlagComment('');
     setIsFlagModalOpen(true);
   };
 
   // Lock scroll when any modal is open
-  useScrollLock(isModalOpen || isComboModalOpen || isImageOpen || isRatingModalOpen || isFlagModalOpen);
+  useScrollLock(isModalOpen || isComboModalOpen || isImageOpen || isRatingModalOpen || isFlagModalOpen || isAdminEditOpen);
 
   // Add this utility function at the top of your component, after the imports
   const formatPrice = (price) => {
@@ -556,6 +632,258 @@ const ProductPage = () => {
     if (!deal?.external_offer_url) return;
     window.open(deal.external_offer_url, '_blank', 'noopener,noreferrer');
     setActivatedExternal(prev => ({ ...prev, [deal.deal_id]: true }));
+  };
+
+  const openAdminEdit = async () => {
+    if (!isAuthenticated) {
+      navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+      return;
+    }
+    if (!user?.admin) return;
+
+    setIsAdminEditOpen(true);
+  };
+
+  const closeAdminEdit = () => {
+    setIsAdminEditOpen(false);
+    setAdminEditError('');
+    setAdminEditSaving(false);
+    setAdminAttrExpanded({});
+  };
+
+  const refreshAdminEditData = async () => {
+    const res = await authFetch(`${API_URL}/api/products/${product.id}/admin/edit`);
+    if (!res.ok) throw new Error('Failed to reload admin edit data');
+    const data = await res.json();
+    const attrs = Array.isArray(data?.attributes) ? data.attributes : [];
+    const available = Array.isArray(data?.availableAttributes) ? data.availableAttributes : [];
+    setAdminAttributes(attrs);
+    setAdminAvailableAttributes(available);
+    setAdminProductDraft({
+      name: data?.product?.name ?? '',
+      msrp: data?.product?.msrp ?? '',
+      description: data?.product?.description ?? ''
+    });
+
+    // Re-seed enum drafts but preserve any in-progress edits where possible
+    setAdminEnumDrafts(prev => {
+      const next = { ...prev };
+      attrs.forEach(a => {
+        (a.options || []).forEach(o => {
+          const key = String(o.id);
+          if (!next[key]) {
+            next[key] = {
+              displayName: o.displayName ?? '',
+              sortOrder: o.sortOrder ?? 0,
+              isActive: !!o.isActive
+            };
+          }
+        });
+      });
+      return next;
+    });
+
+    setAdminNewEnumDrafts(prev => {
+      const next = { ...prev };
+      attrs.forEach(a => {
+        const key = String(a.attributeId);
+        if (!next[key]) {
+          next[key] = { enumKey: '', displayName: '', sortOrder: 0, isActive: true };
+        }
+      });
+      return next;
+    });
+
+    // Preserve any expanded state during refresh; default collapsed for new attributes.
+    setAdminAttrExpanded(prev => {
+      const next = {};
+      attrs.forEach(a => {
+        const key = String(a.attributeId);
+        next[key] = prev[key] ?? false;
+      });
+      return next;
+    });
+  };
+
+  const handleAdminSaveProduct = async () => {
+    setAdminEditError('');
+    setAdminEditSaving(true);
+    try {
+      const msrpValue = adminProductDraft.msrp === '' ? null : Number(adminProductDraft.msrp);
+      const res = await authFetch(`${API_URL}/api/products/${product.id}/admin`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: adminProductDraft.name,
+          msrp: msrpValue,
+          description: adminProductDraft.description
+        })
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => '');
+        throw new Error(msg || 'Failed to save product');
+      }
+      const updated = await res.json();
+      setProduct(p => ({
+        ...p,
+        name: updated?.name ?? p.name,
+        msrp: updated?.msrp ?? p.msrp,
+        description: updated?.description ?? p.description
+      }));
+      closeAdminEdit();
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to save product.');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleAdminAddAttribute = async () => {
+    setAdminEditError('');
+    if (!adminAddAttributeId) return;
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${product.id}/admin/product-attributes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attributeId: Number(adminAddAttributeId), isRequired: false })
+      });
+      if (!res.ok) throw new Error('Failed to add attribute');
+      await refreshAdminEditData();
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to add attribute.');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleAdminCreateAttribute = async () => {
+    setAdminEditError('');
+    const name = (adminNewAttributeDraft.name || '').trim();
+    if (!name) {
+      setAdminEditError('Attribute name is required.');
+      return;
+    }
+
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${product.id}/admin/attributes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          dataType: adminNewAttributeDraft.dataType,
+          description: adminNewAttributeDraft.description,
+          isRequired: !!adminNewAttributeDraft.isRequired
+        })
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => '');
+        throw new Error(msg || 'Failed to create attribute');
+      }
+
+      setAdminNewAttributeDraft({ name: '', dataType: 'enum', description: '', isRequired: false });
+      await refreshAdminEditData();
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to create attribute.');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleAdminRemoveAttribute = async (attributeId) => {
+    setAdminEditError('');
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${product.id}/admin/product-attributes/${attributeId}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Failed to remove attribute');
+      await refreshAdminEditData();
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to remove attribute.');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleAdminToggleAttributeRequired = async (attributeId, isRequired) => {
+    setAdminEditError('');
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${product.id}/admin/product-attributes/${attributeId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attributeId, isRequired: !!isRequired })
+      });
+      if (!res.ok) throw new Error('Failed to update required flag');
+      await refreshAdminEditData();
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to update attribute.');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleAdminSaveEnumValue = async (attributeId, enumValueId) => {
+    setAdminEditError('');
+    setAdminEditSaving(true);
+    try {
+      const d = adminEnumDrafts[String(enumValueId)] || {};
+      const res = await authFetch(`${API_URL}/api/products/${product.id}/admin/attributes/${attributeId}/enum-values/${enumValueId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          displayName: d.displayName,
+          sortOrder: Number(d.sortOrder) || 0,
+          isActive: !!d.isActive
+        })
+      });
+      if (!res.ok) throw new Error('Failed to update enum value');
+      await refreshAdminEditData();
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to save value.');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleAdminAddEnumValue = async (attributeId) => {
+    setAdminEditError('');
+    setAdminEditSaving(true);
+    try {
+      const d = adminNewEnumDrafts[String(attributeId)] || {};
+      const res = await authFetch(`${API_URL}/api/products/${product.id}/admin/attributes/${attributeId}/enum-values`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enumKey: d.enumKey,
+          displayName: d.displayName,
+          sortOrder: d.sortOrder === '' ? 0 : Number(d.sortOrder) || 0,
+          isActive: d.isActive !== false
+        })
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => '');
+        throw new Error(msg || 'Failed to create enum value');
+      }
+      await refreshAdminEditData();
+      setAdminNewEnumDrafts(prev => ({
+        ...prev,
+        [String(attributeId)]: { enumKey: '', displayName: '', sortOrder: 0, isActive: true }
+      }));
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to add value.');
+    } finally {
+      setAdminEditSaving(false);
+    }
   };
 
   const toggleStackedStep = (parentId, stepId) => {
@@ -624,6 +952,9 @@ const ProductPage = () => {
   const desc = (product.description || '').replace(/\s+/g, ' ').slice(0, 155);
   const firstImage = (product?.imageUrl || (Array.isArray(galleryImages) && galleryImages[0])) || '';
   const imageAbs = firstImage && firstImage.startsWith('http') ? firstImage : (firstImage ? `${siteUrl}${firstImage.startsWith('/') ? '' : '/'}${firstImage}` : '');
+
+  const variantFilterAttrs = (variantFilterOptions?.attributes || variantFilterOptions?.Attributes || []);
+  const hasVariantFilters = Array.isArray(variantFilterAttrs) && variantFilterAttrs.length > 0;
 
   return (
         <div className="container mx-auto px-4 py-8">
@@ -765,7 +1096,18 @@ const ProductPage = () => {
                 </div>
               </div>
             )}
-            <h1 className="text-2xl font-bold mb-4">{product.name}</h1>
+            <div className="flex items-start justify-between gap-3">
+              <h1 className="text-2xl font-bold mb-4">{product.name}</h1>
+              {isAuthenticated && user?.admin && (
+                <button
+                  type="button"
+                  onClick={openAdminEdit}
+                  className="h-10 px-4 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors"
+                >
+                  Edit Product
+                </button>
+              )}
+            </div>
             <div className="mb-4">
               <span className="text-gray-600">Brand: </span>
               <span className="font-semibold">{product.brandName}</span>
@@ -810,33 +1152,43 @@ const ProductPage = () => {
         <div className="md:w-1/2">
           <div className="bg-white rounded-lg shadow-lg p-6">
             {/* Submit Deal Button */}
-            {isAuthenticated && (
-              <div className="mb-6 flex flex-row gap-4">
-                <button
-                  onClick={() => setIsModalOpen(true)}
-                  className="flex-1 bg-[#4CAF50] text-white px-4 py-3 rounded-lg hover:bg-[#3d8b40] transition-colors flex items-center justify-center space-x-2"
-                >
-                  <FaPlus className="w-4 h-4" />
-                  <span>Add Deal</span>
-                </button>
-                <button
-                  onClick={() => setIsComboModalOpen(true)}
-                  className="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center space-x-2"
-                >
-                  <FaPlus className="w-4 h-4" />
-                  <span>Stack Deals</span>
-                </button>
-              </div>
-            )}
+            <div className="mb-6 flex flex-row gap-4">
+              <button
+                onClick={() => {
+                  if (!isAuthenticated) {
+                    navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+                    return;
+                  }
+                  setIsModalOpen(true);
+                }}
+                className="flex-1 bg-[#4CAF50] text-white px-4 py-3 rounded-lg hover:bg-[#3d8b40] transition-colors flex items-center justify-center space-x-2"
+              >
+                <FaPlus className="w-4 h-4" />
+                <span>Add Deal</span>
+              </button>
+              <button
+                onClick={() => {
+                  if (!isAuthenticated) {
+                    navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+                    return;
+                  }
+                  setIsComboModalOpen(true);
+                }}
+                className="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center space-x-2"
+              >
+                <FaPlus className="w-4 h-4" />
+                <span>Stack Deals</span>
+              </button>
+            </div>
 
             {/* Filters */}
-            <div className="mb-6 flex items-center space-x-4">
+            <div className="mb-6 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
 
 
-                <div className="relative z-30" data-dropdown-root="true">
+                <div className={`relative w-full sm:w-auto ${openDropdown === 'store' ? 'z-50' : 'z-30'}`} data-dropdown-root="true">
                   <button
                     onClick={() => setOpenDropdown(openDropdown === 'store' ? null : 'store')}
-                    className="px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center space-x-2"
+                    className="w-full sm:w-auto px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center justify-between gap-2"
                   >
                     <span>Store: {storeLabel(dealFilters.storeId)}</span>
                     <svg className="w-4 h-4 text-[#4CAF50]" fill="currentColor" viewBox="0 0 24 24">
@@ -844,7 +1196,7 @@ const ProductPage = () => {
                     </svg>
                   </button>
                   {openDropdown === 'store' && (
-                    <div className="absolute z-30 mt-1 w-64 bg-white rounded-lg shadow-lg border">
+                    <div className="absolute z-50 mt-1 w-full sm:w-64 bg-white rounded-lg shadow-lg border">
                       <button
                         key="all"
                         onClick={() => {
@@ -874,10 +1226,10 @@ const ProductPage = () => {
                 </div>
 
 
-                <div className="relative z-30" data-dropdown-root="true">
+                <div className={`relative w-full sm:w-auto ${openDropdown === 'dealType' ? 'z-50' : 'z-30'}`} data-dropdown-root="true">
                   <button
                     onClick={() => setOpenDropdown(openDropdown === 'dealType' ? null : 'dealType')}
-                    className="px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center space-x-2"
+                    className="w-full sm:w-auto px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center justify-between gap-2"
                   >
                     <span>Deal Type: {dealTypeLabel(dealFilters.dealTypeId)}</span>
                     <svg className="w-4 h-4 text-[#4CAF50]" fill="currentColor" viewBox="0 0 24 24">
@@ -885,7 +1237,7 @@ const ProductPage = () => {
                     </svg>
                   </button>
                   {openDropdown === 'dealType' && (
-                    <div className="absolute z-30 mt-1 w-64 bg-white rounded-lg shadow-lg border">
+                    <div className="absolute z-50 mt-1 w-full sm:w-64 bg-white rounded-lg shadow-lg border">
                       <button
                         key="all"
                         onClick={() => {
@@ -915,10 +1267,10 @@ const ProductPage = () => {
                   )}
                 </div>
 
-                <div className="relative z-30" data-dropdown-root="true">
+                <div className={`relative w-full sm:w-auto ${openDropdown === 'condition' ? 'z-50' : 'z-30'}`} data-dropdown-root="true">
                   <button
                     onClick={() => setOpenDropdown(openDropdown === 'condition' ? null : 'condition')}
-                    className="px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center space-x-2"
+                    className="w-full sm:w-auto px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center justify-between gap-2"
                   >
                     <span>Condition: {conditionLabel(dealFilters.conditionId)}</span>
                     <svg className="w-4 h-4 text-[#4CAF50]" fill="currentColor" viewBox="0 0 24 24">
@@ -926,7 +1278,7 @@ const ProductPage = () => {
                     </svg>
                   </button>
                   {openDropdown === 'condition' && (
-                    <div className="absolute z-30 mt-1 w-48 bg-white rounded-lg shadow-lg border">
+                    <div className="absolute z-50 mt-1 w-full sm:w-48 bg-white rounded-lg shadow-lg border">
                       {[
                         { id: null, label: 'All' },
                         { id: 1, label: 'New' },
@@ -948,41 +1300,43 @@ const ProductPage = () => {
                     </div>
                   )}
                 </div>
-               <div className="relative z-30" data-dropdown-root="true">
-                  <button
-                    onClick={async () => {
-                      setOpenDropdown(null);
-                      const next = !isMoreOpen;
-                      setIsMoreOpen(next);
-                      if (next) {
-                        setVariantFilterSelections(appliedVariantFilterSelections || {});
-                        await loadVariantFilterOptions();
-                      }
-                    }}
-                    className="px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center space-x-2"
-                    type="button"
-                  >
-                    {(() => {
-                      const totalSelected = Object.values(appliedVariantFilterSelections || {}).reduce((sum, arr) => {
-                        return sum + (Array.isArray(arr) ? arr.length : 0);
-                      }, 0);
+               {hasVariantFilters && (
+                 <div className={`relative w-full sm:w-auto ${isMoreOpen ? 'z-50' : 'z-30'}`} data-dropdown-root="true">
+                    <button
+                      onClick={async () => {
+                        setOpenDropdown(null);
+                        const next = !isMoreOpen;
+                        setIsMoreOpen(next);
+                        if (next) {
+                          setVariantFilterSelections(appliedVariantFilterSelections || {});
+                          await loadVariantFilterOptions();
+                        }
+                      }}
+                      className="w-full sm:w-auto px-4 py-2 border rounded-lg bg-white hover:bg-gray-50 flex items-center justify-between gap-2"
+                      type="button"
+                    >
+                      {(() => {
+                        const totalSelected = Object.values(appliedVariantFilterSelections || {}).reduce((sum, arr) => {
+                          return sum + (Array.isArray(arr) ? arr.length : 0);
+                        }, 0);
 
-                      return (
-                        <>
-                          <span>More</span>
-                          {totalSelected > 0 && (
-                            <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-[#e8f5e9] text-[#4CAF50] text-xs font-semibold">
-                              {totalSelected}
-                            </span>
-                          )}
-                        </>
-                      );
-                    })()}
-                    <svg className="w-4 h-4 text-[#4CAF50]" fill="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </button>
-                </div>
+                        return (
+                          <>
+                            <span>More</span>
+                            {totalSelected > 0 && (
+                              <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-[#e8f5e9] text-[#4CAF50] text-xs font-semibold">
+                                {totalSelected}
+                              </span>
+                            )}
+                          </>
+                        );
+                      })()}
+                      <svg className="w-4 h-4 text-[#4CAF50]" fill="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                  </div>
+               )}
 
 
                 {/* Product Attribute Filters - Consistent Dropdowns */}
@@ -1063,7 +1417,15 @@ const ProductPage = () => {
                               const attributeId = Number(attr.attributeId ?? attr.AttributeId);
                               if (Number.isNaN(attributeId) || attributeId <= 0) return null;
 
-                              const label = (attr.label ?? attr.Label ?? attr.attributeKey ?? attr.AttributeKey ?? `Attribute ${attributeId}`).toString();
+                              const label = (
+                                attr.description ??
+                                attr.Description ??
+                                attr.label ??
+                                attr.Label ??
+                                attr.attributeKey ??
+                                attr.AttributeKey ??
+                                `Attribute ${attributeId}`
+                              ).toString();
                               const options = (attr.options ?? attr.Options ?? [])
                                 .map(o => ({
                                   id: Number(o.id ?? o.Id),
@@ -1161,13 +1523,7 @@ const ProductPage = () => {
                         : [primaryDeal];
 
                       const visibleDealsForStore = rawDealsForStore
-                        .map((deal, rawIndex) => ({ deal, rawIndex }))
-                        .filter(({ deal }) => {
-                          if (!selectedVariantIdSet) return true;
-                          const vid = Number(deal?.product_variant_id);
-                          if (Number.isNaN(vid) || vid <= 0) return false;
-                          return selectedVariantIdSet.has(vid);
-                        });
+                        .map((deal, rawIndex) => ({ deal, rawIndex }));
 
                       if (visibleDealsForStore.length === 0) return null;
 
@@ -1199,9 +1555,9 @@ const ProductPage = () => {
                         <div key={storeId ?? primaryDeal.deal_id} className="border rounded-lg p-4">
                           <div className="flex items-center justify-between mb-4">
                             <div className="flex items-center gap-3">
-                              {primaryDeal.store_logo_url && (
+                              {primaryDeal.store_image_url && (
                                 <img
-                                  src={primaryDeal.store_logo_url}
+                                  src={primaryDeal.store_image_url}
                                   alt={storeName}
                                   className="w-8 h-8 rounded"
                                 />
@@ -1576,7 +1932,7 @@ const ProductPage = () => {
                                 </div>
 
                                 <button
-                                  onClick={() => openFlagModal(deal.deal_product_id)}
+                                  onClick={() => openFlagModal({ dealId: deal.deal_id, dealProductId: deal.deal_product_id })}
                                   disabled={isDealFlagged(deal)}
                                   title={isDealFlagged(deal) ? 'Deal flagged' : 'Flag this deal'}
                                   aria-label={isDealFlagged(deal) ? 'Deal flagged' : 'Flag this deal'}
@@ -1713,7 +2069,7 @@ const ProductPage = () => {
               </button>
               <button
                 type="button"
-                onClick={() => handleFlagDeal(dealToFlag)}
+                onClick={() => handleFlagDeal()}
                 disabled={
                   flagSubmitting ||
                   !flagReasonId ||
@@ -1727,6 +2083,18 @@ const ProductPage = () => {
           </div>
         </div>
       )}
+
+      {/* Admin Edit Modal */}
+      <AdminProductModal
+        isOpen={isAdminEditOpen}
+        onClose={closeAdminEdit}
+        mode="edit"
+        productId={product?.id}
+        onUpdated={() => {
+          refreshProduct();
+          closeAdminEdit();
+        }}
+      />
     </div>
   );
 };

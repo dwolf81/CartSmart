@@ -96,7 +96,7 @@ useEffect(() => {
               The Smart Way to Buy Golf Equipment.
             </h1>
             <p className="text-xl md:text-2xl mb-8">
-           CartSmart evaluates every legitimate way to save — retail pricing, resale, certified pre-owned, deals, and coupons — and shows golfers the lowest real cost.
+           CartSmart evaluates every legitimate way to save — retail pricing, pre-owned, third party offers and coupons — and shows golfers the lowest real cost.
                 {/*Deal hunters compete to find you the cheapest way to get your favorite products.*/}
                  {/*Don’t hunt deals — CartSmart builds the deal for you.*/}
             </p>

@@ -32,6 +32,14 @@ const truncateUrl = (u, max = 100) => {
   return u.length <= max ? u : u.slice(0, max - 3) + '...';
 };
 
+const ensureHttps = (u) => {
+  if (!u) return u;
+  const s = String(u).trim();
+  if (!s) return s;
+  if (s.startsWith('http://') || s.startsWith('https://')) return s;
+  return `https://${s.replace(/^\/+/, '')}`;
+};
+
 // UPDATED modal to use numeric reasonId
 function RejectModal({ show, onClose, comment, onCommentChange, onConfirm, reasonId, onReasonIdChange }) {
   if (!show) return null;
@@ -125,7 +133,7 @@ const DealReviewPage = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!loading && !isAuthenticated) navigate('/login', { replace: true });
+    if (!loading && !isAuthenticated) navigate('/login');
   }, [loading, isAuthenticated, navigate]);
 
   useEffect(() => {
@@ -244,7 +252,7 @@ const copyCoupon = (code, event) => {
   const handleDealAction = async (dealId, dealProductId, action, comment = '') => {
     if (action === 3) {
       if (!rejectReasonId) {
-        setSelectedDealId(dealId + '|' + dealProductId);
+        setSelectedDealId(String(dealId) + '|' + (dealProductId ?? ''));
         setShowRejectModal(true);
         return;
       }
@@ -255,9 +263,13 @@ const copyCoupon = (code, event) => {
     try {
       const params = new URLSearchParams({
         dealId: String(dealId),
-        dealProductId: String(dealProductId),
         dealStatusId: String(action)
       });
+
+      // Store-wide deals have no deal_product_id
+      if (dealProductId != null && String(dealProductId) !== '' && !Number.isNaN(Number(dealProductId))) {
+        params.append('dealProductId', String(dealProductId));
+      }
       if (action === 3) {
         params.append('dealIssueTypeId', String(rejectReasonId));
         if (rejectComment.trim()) params.append('comment', rejectComment.trim());
@@ -289,7 +301,7 @@ const copyCoupon = (code, event) => {
   const handleRejectConfirm = () => {
     if (selectedDealId) {
       const [dealId, dealProductId] = selectedDealId.split('|');
-      handleDealAction(dealId, dealProductId, 3, rejectComment);
+      handleDealAction(dealId, dealProductId ? Number(dealProductId) : null, 3, rejectComment);
     }
   };
 
@@ -330,16 +342,35 @@ const DEAL_TYPE_META = {
   }
 };
 
-  const DealCard = ({ deal, type }) => (
+  const DealCard = ({ deal, type }) => {
+    const isStoreDeal = !deal?.deal_product_id && (deal?.store_url || deal?.store_name || deal?.store_id);
+    const imageSrc = isStoreDeal
+      ? (deal?.store_image_url || 'https://placehold.co/112x112')
+      : (deal?.product_image_url || 'https://placehold.co/112x112');
+    const primaryUrl = isStoreDeal
+      ? `/stores/${deal.store_slug}`
+      : `/products/${deal?.slug}`;
+
+    return (
     <div className="bg-white rounded-lg shadow-md p-6 mb-4">
       <div className="flex gap-4 items-start">
-        <Link to={`/products/${deal.slug}`} className="block hover:opacity-90 transition-opacity">
-          <img
-            src={deal.product_image_url || 'https://placehold.co/112x112'}
-            alt={deal.name}
-            className="w-24 h-24 object-cover rounded-lg border mt-1"
-          />
-        </Link>
+        {isStoreDeal ? (
+          <a href={primaryUrl || '#'} target="_blank" rel="noopener noreferrer" className="block hover:opacity-90 transition-opacity">
+            <img
+              src={imageSrc}
+              alt={deal?.store_name || 'Store'}
+              className="w-24 h-24 object-cover rounded-lg border mt-1"
+            />
+          </a>
+        ) : (
+          <Link to={primaryUrl} className="block hover:opacity-90 transition-opacity">
+            <img
+              src={imageSrc}
+              alt={deal?.product_name || 'Product'}
+              className="w-24 h-24 object-cover rounded-lg border mt-1"
+            />
+          </Link>
+        )}
         <div className="flex-1 flex flex-row justify-between items-start">
    
           <div>
@@ -354,7 +385,12 @@ const DEAL_TYPE_META = {
                 </div>
          
               <div className="text-sm mb-2">
-                <span className="font-medium">Product:</span> <a href={`/products/${deal.slug}`}  rel="noopener noreferrer" className="text-blue-600 no-underline hover:underline break-all">{deal.product_name}</a>
+                <span className="font-medium">{isStoreDeal ? 'Store:' : 'Product:'}</span>{' '}
+                {isStoreDeal ? (
+                  <a href={`/stores/${deal.store_slug}`} rel="noopener noreferrer" className="text-blue-600 no-underline hover:underline break-all">{deal.store_name}</a>
+                ) : (
+                  <a href={`/products/${deal.slug}`} rel="noopener noreferrer" className="text-blue-600 no-underline hover:underline break-all">{deal.product_name}</a>
+                )}
               </div>
             
              {/*
@@ -362,14 +398,16 @@ const DEAL_TYPE_META = {
               <span className="font-medium">Deal Type:</span> {deal.deal_type_name}
             </div>
             */}
-            <div className="flex flex-row gap-4 mb-2">
-              <div className="text-sm">
-                <span className="font-medium">Condition:</span> {deal.condition_name}
+            {!isStoreDeal && (
+              <div className="flex flex-row gap-4 mb-2">
+                <div className="text-sm">
+                  <span className="font-medium">Condition:</span> {deal.condition_name}
+                </div>
+                <div className="text-sm">
+                  <span className="font-medium">Free Shipping:</span> {deal.free_shipping ? 'Yes' : 'No'}
+                </div>
               </div>
-              <div className="text-sm">
-                <span className="font-medium">Free Shipping:</span> {deal.free_shipping ? 'Yes' : 'No'}
-              </div>
-            </div>
+            )}
 
             {/* Stacked/Combo Deal Details */}
             {deal.deal_type_id === 3 ? (
@@ -396,16 +434,16 @@ const DEAL_TYPE_META = {
                   </div>
                 )}
                 <div className="text-sm mb-2">
-                  <span className="font-medium">Product URL:</span>{' '}
-                  {deal.url ? (
+                  <span className="font-medium">{isStoreDeal ? 'Store URL:' : 'Product URL:'}</span>{' '}
+                  {((deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url) ? (
                     <a
-                      href={deal.url}
+                      href={(deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      title={deal.url}
+                      title={(deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url}
                       className="text-blue-600 no-underline hover:underline break-all"
                     >
-                      {truncateUrl(deal.url)}
+                      {truncateUrl((deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url)}
                     </a>
                   ) : 'N/A'}
                 </div>
@@ -432,17 +470,22 @@ const DEAL_TYPE_META = {
             )}
           </div>
           <div className="text-right min-w-[100px] ml-4">
-            <div className="text-2xl font-bold text-green-600">                      
-              {/* Price in top right, keep slightly larger for emphasis */}
-                        {deal.discount_percent > 0 && (
-                          <span className="bg-green-100 text-green-700 text-xs font-semibold px-2 py-1 rounded-full">
-                            {deal.discount_percent}% Off
-                          </span>
-                        )}
-                        <span className="font-bold text-green-600 text-xl">{formatPrice(deal.price)}</span>
-
-                      </div>
-            <div className="text-sm text-gray-500 line-through">{formatPrice(deal.msrp)}</div>
+            <div className="text-2xl font-bold text-green-600">
+              {/* Store-wide deals: show discount badge only (no price/MSRP). */}
+              {deal.discount_percent > 0 && (
+                <span className="bg-green-100 text-green-700 text-xs font-semibold px-2 py-1 rounded-full">
+                  {deal.discount_percent}% Off
+                </span>
+              )}
+              {!isStoreDeal && (
+                <>
+                  <span className="font-bold text-green-600 text-xl">{formatPrice(deal.price)}</span>
+                </>
+              )}
+            </div>
+            {!isStoreDeal && (
+              <div className="text-sm text-gray-500 line-through">{formatPrice(deal.msrp)}</div>
+            )}
           </div>
         </div>
       </div>
@@ -548,6 +591,7 @@ const DEAL_TYPE_META = {
       </div>
     </div>
   );
+  };
 
   return (
     <div className="container mx-auto px-4 py-8">

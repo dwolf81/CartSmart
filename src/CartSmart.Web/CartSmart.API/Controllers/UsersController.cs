@@ -90,6 +90,7 @@ namespace CartSmart.API.Controllers
                 displayName = dto.DisplayName,
                 imageUrl = dto.ImageUrl,     // add avatar for header/profile
                 allowReview = dto.AllowReview, // add review access for menu gating
+                admin = dto.Admin,
                 level = dto.Level,
                 optedIntoEmails = dto.EmailOptIn,
                 dealsPosted = dto.DealsPosted,

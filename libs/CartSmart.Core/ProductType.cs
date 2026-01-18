@@ -15,5 +15,8 @@ namespace CartSmart.API.Models
         [Column("name")]
         public string? Name { get; set; }
 
+        [Column("slug")]
+        public string? Slug { get; set; }
+
     }
 }

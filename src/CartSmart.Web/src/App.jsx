@@ -11,6 +11,10 @@ import ProfilePage from './components/ProfilePage';
 import FeedPage from './components/FeedPage';
 import SettingsPage from './components/SettingsPage';
 import Footer from './components/Footer';
+import CategoriesPage from './components/CategoriesPage';
+import CategoryProductsPage from './components/CategoryProductsPage';
+import StoresPage from './components/StoresPage';
+import StorePage from './components/StorePage';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import ProtectedRoute from "./components/ProtectedRoute";
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -56,6 +60,42 @@ function App() {
                     <HomePage />
                   </>
                 } 
+              />
+              <Route
+                path="/categories"
+                element={
+                  <>
+                    <Header />
+                    <CategoriesPage />
+                  </>
+                }
+              />
+              <Route
+                path="/categories/:productType"
+                element={
+                  <>
+                    <Header />
+                    <CategoryProductsPage />
+                  </>
+                }
+              />
+              <Route
+                path="/stores"
+                element={
+                  <>
+                    <Header />
+                    <StoresPage />
+                  </>
+                }
+              />
+              <Route
+                path="/stores/:slug"
+                element={
+                  <>
+                    <Header />
+                    <StorePage />
+                  </>
+                }
               />
               <Route 
                 path="products/:productSlug" 

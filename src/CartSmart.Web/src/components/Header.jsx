@@ -254,23 +254,22 @@ const Header = () => {
                 <div className="md:hidden border-t border-gray-200 bg-white">
                     <div className="px-4 py-4 space-y-6">
                         {/* Navigation section */}
-                       {/* <nav aria-label="Primary" className="flex flex-col space-y-1">
+                        <nav aria-label="Primary" className="flex flex-col space-y-1">
                             <Link
-                                to="/products"
-                                onClick={() => setMobileOpen(false)}
+                                to="/categories"
+                                onClick={() => { setMobileOpen(false); setMobileNotifOpen(false); }}
                                 className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
                             >
-                                Products
+                                Categories
                             </Link>
                             <Link
                                 to="/stores"
-                                onClick={() => setMobileOpen(false)}
+                                onClick={() => { setMobileOpen(false); setMobileNotifOpen(false); }}
                                 className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
                             >
                                 Stores
                             </Link>
                         </nav>
-*/}
                         {/* Notifications (moved below navigation for consistency) */}
                         {isAuthenticated && (
                             <div>

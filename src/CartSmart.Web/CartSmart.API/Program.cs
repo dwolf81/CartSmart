@@ -130,6 +130,7 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IDealService, DealService>();
 builder.Services.AddScoped<IProductService, ProductService>();
+builder.Services.AddScoped<IStoreDealsService, StoreDealsService>();
 builder.Services.AddScoped<IUserReputationService, UserReputationService>();
 // Unified email service: choose SendGrid if configured else fallback to SMTP
 builder.Services.AddScoped<IEmailService, SendGridEmailService>();
@@ -182,11 +183,11 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-// Use CORS before routing
-app.UseCors("AllowReactApp");
-
-// Use routing before endpoints
+// Use routing before CORS/endpoints
 app.UseRouting();
+
+// CORS must run between routing and endpoints to apply to controllers
+app.UseCors("AllowReactApp");
 app.UseMiddleware<ActiveUserMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();

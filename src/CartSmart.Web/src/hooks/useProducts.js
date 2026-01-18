@@ -29,10 +29,16 @@ export const useProducts = () => {
     }
   }, []);
 
-  const getProductBySlug = useCallback(async (slug) => {
+  const getProductBySlug = useCallback(async (slug, options = {}) => {
     try {
-      const response = await fetch(`${API_URL}/api/products/getproduct/${slug}`, {
-        credentials: 'include'
+      const cacheBust = !!options?.cacheBust;
+      const url = cacheBust
+        ? `${API_URL}/api/products/getproduct/${slug}?_=${Date.now()}`
+        : `${API_URL}/api/products/getproduct/${slug}`;
+
+      const response = await fetch(url, {
+        credentials: 'include',
+        cache: cacheBust ? 'no-store' : 'default'
       });
 
       if (!response.ok) {

@@ -10,6 +10,7 @@ namespace CartSmart.API.Services;
 public class SupabaseService : ISupabaseService
 {
     private readonly Client _supabaseClient;
+    private Client? _serviceRoleClient;
     private readonly string _serviceRoleKey;
     private readonly string _url;
 
@@ -28,6 +29,28 @@ public class SupabaseService : ISupabaseService
     }
 
     public Client GetClient() => _supabaseClient;
+
+    public Client GetServiceRoleClient()
+    {
+        if (_serviceRoleClient != null) return _serviceRoleClient;
+
+        // If no service role key is configured, fall back to the normal client.
+        // (Admin endpoints may then be subject to RLS and appear to "not save".)
+        if (string.IsNullOrWhiteSpace(_serviceRoleKey))
+            return _supabaseClient;
+
+        _serviceRoleClient = new Supabase.Client(
+            _url,
+            _serviceRoleKey,
+            new Supabase.SupabaseOptions
+            {
+                AutoRefreshToken = true,
+                AutoConnectRealtime = false
+            }
+        );
+
+        return _serviceRoleClient;
+    }
 
     // Fetch all rows from a table (Generic method)
     public async Task<List<T>> GetAllAsync<T>() where T : BaseModel, new()

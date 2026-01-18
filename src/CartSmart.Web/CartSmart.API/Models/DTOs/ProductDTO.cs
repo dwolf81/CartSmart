@@ -1,3 +1,6 @@
+using Newtonsoft.Json;
+using System.Text.Json.Serialization;
+
 namespace CartSmart.API.Models.DTOs
 {
     public class ProductDTO
@@ -24,32 +27,33 @@ namespace CartSmart.API.Models.DTOs
         public string url { get; set; }
         public string additional_details { get; set; }
         public string condition_name { get; set; }
-        public long condition_id { get; set; }
-        public float price { get; set; }
-        public int level { get; set; } // User level
+        public long? condition_id { get; set; }
+        public float? price { get; set; }
+        public int? level { get; set; } // User level
         public string user_name { get; set; } // User name
         public string display_name { get; set; } // Display name
         public string slug { get; set; } // Product slug
         public string product_name { get; set; } // Product name
         public long deal_id { get; set; } // Deal ID
-        public long product_id { get; set; } // Product ID
+        public long? product_id { get; set; } // Product ID (null for store-wide deals)
         public long? store_id { get; set; } // Store ID
         public string? store_name { get; set; } // Store name
-        public string? store_logo_url { get; set; } // Store logo
-        public long deal_product_id { get; set; } // Deal Product ID
+        public string? store_image_url { get; set; } // Store logo
+        public string? store_slug { get; set; } // Store slug
+        public long? deal_product_id { get; set; } // Deal Product ID (null for store-wide deals)
         public int? product_variant_id { get; set; } // Product Variant ID (enriched from deal_product)
-        public float discount_amt { get; set; } // Calculated discount amount
+        public float? discount_amt { get; set; } // Calculated discount amount
         public float? discount_percent { get; set; } // Calculated discount percent
         public string? product_image_url { get; set; } // Product name
-        public float msrp { get; set; } // msrp amount
+        public float? msrp { get; set; } // msrp amount
         public string brand_name { get; set; } // Brand name
         public string? user_image_url { get; set; } // User image URL
         public string? deal_type_name { get; set; } // deal type name
         public string? coupon_code { get; set; } // deal type name
-        public bool free_shipping { get; set; } // Free Shipping
-        public int deal_status_id { get; set; }
+        public bool? free_shipping { get; set; } // Free Shipping
+        public int? deal_status_id { get; set; }
         public string deal_status_name { get; set; } // deal status name
-        public int deal_type_id { get; set; }
+        public int? deal_type_id { get; set; }
         public DateTime created_at { get; set; }
         public DateTime? expiration_date { get; set; }
         public bool user_flagged { get; set; }  // default false if anonymous
@@ -63,11 +67,32 @@ namespace CartSmart.API.Models.DTOs
         public string? external_store_url { get; set; } // external store url
         public float? external_upfront_cost { get; set; }
         public int? external_upfront_cost_term_id { get; set; }
-        public long parent_deal_id { get; set; } // Deal ID for the parent store record
+        public long? parent_deal_id { get; set; } // Deal ID for the parent store record
         public List<DealDisplayDTO> steps { get; set; } = new List<DealDisplayDTO>();
         public List<ReviewDisplayDTO> reviews { get; set; } = new List<ReviewDisplayDTO>();
         public int? store_deal_count { get; set; }
         public int? additional_deal_count { get; set; }
+    }
+
+    // Used by /categories/{productType} to show all products in that product type.
+    // Fields intentionally match the existing deal-card shape used on the Home page.
+    public class CategoryProductCardDTO
+    {
+        public long product_id { get; set; }
+        public string? product_name { get; set; }
+        public string? slug { get; set; }
+        public string? description { get; set; }
+        public string? product_image_url { get; set; }
+        public float? msrp { get; set; }
+        public float? price { get; set; }
+        public float? discount_amt { get; set; }
+
+        // Optional best-deal enrichment (may be null if the product has no deals)
+        public long? deal_id { get; set; }
+        public long? store_id { get; set; }
+        public string? user_name { get; set; }
+        public string? user_image_url { get; set; }
+        public int? level { get; set; }
     }
 
         public class ReviewDisplayDTO
@@ -111,6 +136,23 @@ namespace CartSmart.API.Models.DTOs
         public float? UpfrontCost { get; set; }
         public int? UpfrontCostTermId { get; set; }
         public List<int> DealIds { get; set; } = new List<int>();  // List of existing Deal IDs to link to (for type=3)
+
+        // Optional: selected product attributes (enum values) used to resolve/create product_variant(s).
+        // Multiple enumValueIds per attribute means "this URL covers multiple options".
+        [JsonProperty("variantAttributes")]
+        [JsonPropertyName("variantAttributes")]
+        public List<DealVariantAttributeSelectionDTO>? VariantAttributes { get; set; }
+    }
+
+    public class DealVariantAttributeSelectionDTO
+    {
+        [JsonProperty("attributeId")]
+        [JsonPropertyName("attributeId")]
+        public int AttributeId { get; set; }
+
+        [JsonProperty("enumValueIds")]
+        [JsonPropertyName("enumValueIds")]
+        public List<int> EnumValueIds { get; set; } = new();
     }
 
     public class PagedDealsResultDTO<T>

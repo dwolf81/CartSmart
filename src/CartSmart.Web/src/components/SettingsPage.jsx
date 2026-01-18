@@ -57,7 +57,7 @@ const SettingsPage = () => {
   }, [isAuthenticated, authLoading, user]);
 
   useEffect(() => {
-    if (!authLoading && !isAuthenticated) navigate('/login', { replace: true });
+    if (!authLoading && !isAuthenticated) navigate('/login');
   }, [authLoading, isAuthenticated, navigate]);
 
   // Load profile (and email opt-in if the API returns it) from API instead of cookie

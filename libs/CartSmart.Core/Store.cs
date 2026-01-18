@@ -1,5 +1,6 @@
 using Supabase.Postgrest.Attributes;
 using Supabase.Postgrest.Models;
+using Newtonsoft.Json;
 
 
 namespace CartSmart.API.Models
@@ -44,12 +45,24 @@ namespace CartSmart.API.Models
 
         // JSONB configuration for scraping selectors (e.g. {"price_selectors":["#price",".offer-price"]})
         [Column("scrape_config")]
+        [JsonConverter(typeof(JsonStringOrObjectConverter))]
         public string? ScrapeConfig { get; set; }
 
         [Column("required_query_vars")]
         public string? RequiredQueryVars { get; set; } // comma-delimited list; if null/empty keep all params
         // ...existing columns... // FK -> upfront_cost_term.id
 
+        [Column("slug")]
+        public string? Slug { get; set; }
+
+        [Column("approved")]
+        public bool Approved { get; set; }
+
+        [Column("image_url")]
+        public string? ImageUrl { get; set; }       
+
+        [Column("description")]
+        public string? Description { get; set; }
 
     }
 } 

@@ -13,7 +13,7 @@ namespace CartSmart.API.Models
         public int UserId { get; set; }
 
         [Column("deal_product_id")]
-        public long DealProductId { get; set; }
+        public long? DealProductId { get; set; }
 
         [Column("created_at")]
         public DateTime CreatedAt { get; set; }
@@ -23,5 +23,8 @@ namespace CartSmart.API.Models
 
         [Column("comments")]
         public string? Comments { get; set; }
+
+        [Column("deal_id")]
+        public long? DealId { get; set; }
     }
 }

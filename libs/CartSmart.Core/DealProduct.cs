@@ -18,7 +18,7 @@ namespace CartSmart.API.Models
         public int ProductId { get; set; }
                 
         [Column("product_variant_id")]
-        public int ProductVariantId { get; set; }
+        public long? ProductVariantId { get; set; }
 
         [Column("price")]
         public decimal Price { get; set; }

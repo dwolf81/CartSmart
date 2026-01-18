@@ -50,6 +50,9 @@ namespace CartSmart.API.Models
         [Column("expiration_date")]
         public DateTime? ExpirationDate { get; set; }
 
+        [Column("store_wide")]
+        public bool StoreWide { get; set; }        
+
 
     }
 }

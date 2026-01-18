@@ -1,12 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import LoadingSpinner from './LoadingSpinner';
 import { FaTag, FaTicketAlt, FaLink, FaLayerGroup } from 'react-icons/fa';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create', deal = null, onSubmitted }) => {
+const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null, scope = 'product', mode = 'create', deal = null, onSubmitted }) => {
   const { user } = useAuth();
+
+  const isStoreDeal = scope === 'store';
+  const effectiveStoreId = storeId ?? (deal?.store_id || deal?.storeId) ?? null;
 
 
   const [urlError, setUrlError] = useState('');
@@ -34,12 +37,10 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
   const [lastChanged, setLastChanged] = useState(null); // 'price' | 'discountPercent' | null
 
   // --- DYNAMIC PRODUCT ATTRIBUTE FIELDS FOR DEAL SUBMISSION ---
-  const [productAttributes, setProductAttributes] = useState([
-    // Example fallback/test data; replace with API data
-    { name: "Pack Size", values: ["12", "24", "36"] },
-    { name: "Color", values: ["White", "Yellow"] }
-  ]);
-  const [dealAttributes, setDealAttributes] = useState({});
+  const [productAttributes, setProductAttributes] = useState([]); // VariantFilterAttributeDTO[]
+  const [dealAttributes, setDealAttributes] = useState({}); // { [attributeId]: number[] }
+  const dealAttributesTouchedRef = useRef(false);
+  const dealAttributesAutoInitializedRef = useRef(false);
   // Baseline override price (current site price) if a direct approved deal exists below MSRP
   const [baselinePrice, setBaselinePrice] = useState(null);
 
@@ -71,18 +72,80 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
   }, [formData.url, user]);
 
   useEffect(() => {
-    // Fetch product attributes from backend (replace with real API when ready)
-    async function fetchAttributes() {
-      if (!productId) return;
-      try {
-        // const res = await fetch(`${API_URL}/api/products/${productId}/attributes`);
-        // const attrs = await res.json();
-        // setProductAttributes(attrs);
-        // For now, use test data above
-      } catch (e) { /* handle error */ }
+    // Fetch product attributes + allowed enum values for this product
+    if (!isOpen) return;
+
+    // When editing/creating store-wide deals, ensure product-specific state is cleared
+    // so we don't leak UI from a previously edited product deal.
+    if (isStoreDeal || !productId)
+    {
+      setProductAttributes([]);
+      setDealAttributes({});
+      dealAttributesTouchedRef.current = false;
+      dealAttributesAutoInitializedRef.current = false;
+      return;
     }
-    fetchAttributes();
-  }, [productId]);
+    let aborted = false;
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/products/${productId}/variant-filters`, { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null);
+        if (aborted || !data) return;
+        const attrs = data.attributes || data.Attributes || [];
+        setProductAttributes(Array.isArray(attrs) ? attrs : []);
+      } catch {
+        if (!aborted) setProductAttributes([]);
+      }
+    })();
+
+    return () => {
+      aborted = true;
+    };
+  }, [isOpen, isStoreDeal, productId]);
+
+  // Default-select ALL product options unless the listing is eBay.
+  // Rationale: most listings allow choosing variants on the store site, so deals should match all filters.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (isStoreDeal) return;
+    if (!productId) return;
+    if (!Array.isArray(productAttributes) || productAttributes.length === 0) return;
+
+    const domain = extractDomain(formData.url || '');
+    const isEbayListing = !!domain && /(^|\.)ebay\./i.test(domain);
+
+    const hasAnySelection = Object.values(dealAttributes || {}).some(v => Array.isArray(v) && v.length > 0);
+
+    // If the URL is eBay and we only auto-initialized selections, clear them.
+    if (isEbayListing)
+    {
+      if (dealAttributesAutoInitializedRef.current && !dealAttributesTouchedRef.current)
+      {
+        setDealAttributes({});
+        dealAttributesAutoInitializedRef.current = false;
+      }
+      return;
+    }
+
+    // Non-eBay: if nothing selected yet and user hasn't made selections, select all.
+    if (!hasAnySelection && !dealAttributesTouchedRef.current)
+    {
+      const next = {};
+      productAttributes.forEach((attr) => {
+        const attributeId = attr.attributeId ?? attr.AttributeId;
+        const options = attr.options ?? attr.Options ?? [];
+        if (!attributeId || !Array.isArray(options) || options.length === 0) return;
+        const allIds = options
+          .map(o => Number(o.id ?? o.Id))
+          .filter(n => !Number.isNaN(n) && n > 0);
+        if (allIds.length > 0) next[attributeId] = allIds;
+      });
+      setDealAttributes(next);
+      dealAttributesAutoInitializedRef.current = true;
+    }
+  }, [isOpen, isStoreDeal, productId, productAttributes, formData.url, dealAttributes]);
 
   // Derive baseline price for coupon/external deals based on existing direct approved deals for this product & domain
   useEffect(() => {
@@ -141,22 +204,47 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
     const mapDealType = (id) => (id === 1 ? 'direct' : id === 2 ? 'coupon' : id === 4 ? 'external' : 'direct');
     const mapCondition = (id) => (id === 2 ? 'used' : id === 3 ? 'refurbished' : 'new');
 
+    if (isStoreDeal) {
+      setUrlError('');
+      setFormData({
+        ...(deal?.deal_id ? { id: deal.deal_id } : {}),
+        dealType: mapDealType(deal.deal_type_id || deal.dealTypeId),
+        // store-wide edits: only store-wide fields
+        price: '',
+        freeShipping: false,
+        url: '',
+        externalOfferUrl: deal.external_offer_url || deal.externalOfferUrl || '',
+        additionalDetails: deal.additional_details || '',
+        couponCode: deal.coupon_code || deal.couponCode || '',
+        condition: 'new',
+        discountPercent: deal.discount_percent != null
+          ? Math.round(deal.discount_percent)
+          : (deal.discountPercent != null ? Math.round(deal.discountPercent) : ''),
+        expirationDate: deal.expiration_date
+          ? new Date(deal.expiration_date).toISOString().slice(0, 16)
+          : (deal.expirationDate ? new Date(deal.expirationDate).toISOString().slice(0, 16) : ''),
+      });
+      return;
+    }
+
     setFormData({
       ...(deal?.deal_id ? { id: deal.deal_id } : {}),
       dealType: mapDealType(deal.deal_type_id || deal.dealTypeId),
       price: deal.price ?? '',
       freeShipping: !!(deal.free_shipping ?? deal.freeShipping),
-      url: deal.url  || '',
+      url: deal.url || '',
       externalOfferUrl: deal.external_offer_url || deal.externalOfferUrl || '',
       additionalDetails: deal.additional_details || '',
       couponCode: deal.coupon_code || deal.couponCode || '',
       condition: mapCondition(deal.condition_id || deal.conditionId),
-      discountPercent: deal.discount_percent != null ? Math.round(deal.discount_percent) : (deal.discountPercent != null ? Math.round(deal.discountPercent) : ''),
+      discountPercent: deal.discount_percent != null
+        ? Math.round(deal.discount_percent)
+        : (deal.discountPercent != null ? Math.round(deal.discountPercent) : ''),
       expirationDate: deal.expiration_date
         ? new Date(deal.expiration_date).toISOString().slice(0, 16)
         : (deal.expirationDate ? new Date(deal.expirationDate).toISOString().slice(0, 16) : ''),
     });
-  }, [isOpen, mode, deal]);
+  }, [isOpen, mode, deal, isStoreDeal]);
 
   const round2 = v => (v == null || v === '' || isNaN(v)) ? '' : (Math.round(v * 100) / 100).toFixed(2);
   const clampPct = v => Math.min(Math.max(v, 0), 100);
@@ -247,10 +335,14 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
 
   const validateUrls = () => {
     let ok = true;
-    // Product URL required
-    if (!isValidUrl(formData.url)) {
-      setUrlError(formData.url ? 'Invalid product URL.' : 'Product URL is required.');
-      ok = false;
+    // Product URL required for product-scoped deals only
+    if (!isStoreDeal) {
+      if (!isValidUrl(formData.url)) {
+        setUrlError(formData.url ? 'Invalid product URL.' : 'Product URL is required.');
+        ok = false;
+      } else {
+        setUrlError('');
+      }
     } else {
       setUrlError('');
     }
@@ -277,6 +369,9 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
     setDetailsTouched(false);
     setDealDomain('');
     setUserDeals([]);
+    setDealAttributes({});
+    dealAttributesTouchedRef.current = false;
+    dealAttributesAutoInitializedRef.current = false;
   };
 
   const handleSubmit = async (e) => {
@@ -299,6 +394,86 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
         case 'external': dealTypeId = 4; break;
       }
       // Use baselinePrice for discount calculations only client-side; submission still sends entered price & discount.
+      const variantAttributes = Object.entries(dealAttributes)
+        .map(([attributeId, enumValueIds]) => ({
+          attributeId: Number(attributeId),
+          enumValueIds: (Array.isArray(enumValueIds) ? enumValueIds : []).map(Number).filter(n => !Number.isNaN(n) && n > 0)
+        }))
+        .filter(x => x.attributeId > 0 && x.enumValueIds.length > 0);
+
+      if (isStoreDeal) {
+        // StoreId is required for creating store-wide deals.
+        // For editing an existing store-wide deal, the backend already knows the store and
+        // ignores StoreId when it's <= 0, so we don't hard-fail the UI if the list payload
+        // didn't include store_id.
+        const isEditingExistingStoreWide = mode === 'edit' && !!deal?.deal_id;
+        if (!isEditingExistingStoreWide && !effectiveStoreId) throw new Error('Missing store');
+
+        const body = {
+          storeId: effectiveStoreId ?? 0,
+          dealTypeId,
+          additionalDetails: formData.additionalDetails || '',
+          couponCode: formData.dealType === 'coupon' ? formData.couponCode : null,
+          discountPercent: formData.discountPercent === '' ? null : parseInt(formData.discountPercent, 10),
+          expirationDate: formData.expirationDate || null,
+          externalOfferUrl: formData.dealType === 'external' ? formData.externalOfferUrl : null,
+        };
+
+        if (mode === 'edit' && deal?.deal_id) {
+          const response = await fetch(`${API_URL}/api/deals/store-wide/${deal.deal_id}` , {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(body),
+          });
+          if (!response.ok) {
+            if (response.status === 409) {
+              const conflict = await response.json().catch(() => ({}));
+              throw new Error(conflict.message || 'This deal already exists.');
+            }
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.message || 'Failed to update deal');
+          }
+          const updated = await response.json().catch(() => null);
+          alert('Deal updated. It will be reviewed if required.');
+          resetForm();
+          if (typeof onSubmitted === 'function') {
+            await onSubmitted(updated);
+          } else {
+            onClose?.();
+          }
+          return;
+        }
+
+        const response = await fetch(`${API_URL}/api/deals/store-wide`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+          if (response.status === 409) {
+            const conflict = await response.json().catch(() => ({}));
+            throw new Error(conflict.message || 'This deal already exists.');
+          }
+          if (response.status === 429) {
+            const rate = await response.json().catch(() => ({}));
+            throw new Error(rate.message || 'You have reached your daily submission limit.');
+          }
+          const error = await response.json().catch(() => ({}));
+          throw new Error(error.message || 'Failed to submit deal');
+        }
+        const created = await response.json().catch(() => null);
+        alert('Deal submitted successfully and will be reviewed.');
+        resetForm();
+        if (typeof onSubmitted === 'function') {
+          await onSubmitted(created);
+        } else {
+          onClose?.();
+        }
+        return;
+      }
+
       const body = {
         // only send id on edit when it exists
         ...(mode === 'edit' && deal?.deal_id ? { dealId: deal.deal_id } : {}),
@@ -314,6 +489,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
         conditionId,
         discountPercent: formData.discountPercent === '' ? null : parseFloat(formData.discountPercent),
         expirationDate: formData.expirationDate || null,
+        ...(variantAttributes.length > 0 ? { variantAttributes } : {}),
       };
 
       if (mode === 'edit' && deal?.deal_product_id) {
@@ -431,19 +607,15 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
               </svg>
             </button>
           </div>
-
-          {submitError && ( // MOVED TOP
-            <div className="mb-4 text-sm bg-red-50 border border-red-300 text-red-700 p-3 rounded">
-              {submitError}
-            </div>
-          )}
-
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Deal Type */}
+            {!!submitError && (
+              <div className="p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-700">
+                {submitError}
+              </div>
+            )}
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Deal Type
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Deal Type</label>
               <select
                 name="dealType"
                 value={formData.dealType}
@@ -462,23 +634,24 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
               </div>
             </div>
 
-
+            {!isStoreDeal && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Product URL
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Product URL</label>
                 <input
                   type="url"
                   name="url"
                   value={formData.url}
                   onChange={handleChange}
-                  onBlur={() => { if (formData.url) validateUrls(); }}
+                  onBlur={() => {
+                    if (formData.url) validateUrls();
+                  }}
                   className={`w-full px-3 py-2 border rounded-md ${urlError ? 'border-red-400' : 'border-gray-300'}`}
                   required
                   placeholder="https://"
                 />
                 {urlError && <p className="mt-1 text-xs text-red-600">{urlError}</p>}
               </div>
+            )}
       
             {/* Coupon Code (conditional) */}
             {formData.dealType === 'coupon' && (
@@ -522,7 +695,8 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
 
 
           {/* Pricing Row: Discount % (when applicable) + Deal Price */}
-          <div className="flex flex-col md:flex-row md:items-start gap-4">
+          {!isStoreDeal && (
+            <div className="flex flex-col md:flex-row md:items-start gap-4">
                         <div className={`w-full ${ (formData.dealType === 'external' || formData.dealType === 'coupon') ? 'md:w-1/2' : 'md:w-full'}`}>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Deal Price ($)
@@ -562,11 +736,34 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
               </div>
           
 
+            </div>
+          )}
 
-          </div>
+          {isStoreDeal && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Discount Percentage (%)
+              </label>
+              <input
+                type="number"
+                name="discountPercent"
+                value={formData.discountPercent === '' ? '' : formData.discountPercent}
+                onChange={handleChange}
+                onBlur={handleDiscountBlur}
+                min="0"
+                max="100"
+                step="1"
+                inputMode="numeric"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                placeholder="e.g. 15"
+                required={formData.dealType === 'external' || formData.dealType === 'coupon'}
+              />
+            </div>
+          )}
 
             {/* Condition + Free Shipping Row */}
-            <div className="flex flex-col md:flex-row items-start md:items-end gap-6">
+            {!isStoreDeal && (
+              <div className="flex flex-col md:flex-row items-start md:items-end gap-6">
               <div className="w-full md:w-1/2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Condition
@@ -595,7 +792,8 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
                   className="h-6 w-6 border border-gray-300 rounded-md"
                 />
               </div>
-            </div>
+              </div>
+            )}
         
 
 
@@ -645,23 +843,105 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, mode = 'create
               )}
             </div>
 
-            {/* Product Attributes - Dynamic Fields */}
-            {/*productAttributes.map(attr => (
-              <div key={attr.name}>
-                <label className="block text-sm font-medium text-gray-700 mb-2">{attr.name}</label>
-                <select
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  value={dealAttributes[attr.name] || ''}
-                  onChange={e => setDealAttributes(a => ({ ...a, [attr.name]: e.target.value }))}
-                  required
-                >
-                  <option value="">Select {attr.name}</option>
-                  {attr.values.map(val => (
-                    <option key={val} value={val}>{val}</option>
-                  ))}
-                </select>
+            {/* Product Attributes (Optional) */}
+            {Array.isArray(productAttributes) && productAttributes.length > 0 && (
+              <div className="mt-2 space-y-3">
+                <div className="flex items-center gap-2">
+                  <FaLayerGroup className="text-slate-600" />
+                  <h3 className="text-sm font-semibold text-slate-800">Product Options (Optional)</h3>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Select one or more options per attribute if the listing applies to multiple variants.
+                </p>
+
+                {productAttributes.map((attr) => {
+                  const attributeId = attr.attributeId ?? attr.AttributeId;
+                  const label = (
+                    attr.description ??
+                    attr.Description ??
+                    attr.label ??
+                    attr.Label ??
+                    attr.attributeKey ??
+                    attr.AttributeKey ??
+                    'Attribute'
+                  );
+                  const options = attr.options ?? attr.Options ?? [];
+                  const selectedIds = (dealAttributes[attributeId] || [])
+                    .map((v) => Number(v))
+                    .filter((n) => !Number.isNaN(n) && n > 0);
+                  const selectedSet = new Set(selectedIds);
+
+                  if (!attributeId || !Array.isArray(options) || options.length === 0) return null;
+
+                  return (
+                    <div key={attributeId}>
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <label className="block text-sm font-medium text-gray-700">{label}</label>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500">{selectedIds.length} selected</span>
+                          <button
+                            type="button"
+                            className="text-xs text-slate-600 hover:text-slate-800 underline"
+                            onClick={() => {
+                              dealAttributesTouchedRef.current = true;
+                              dealAttributesAutoInitializedRef.current = false;
+                              const allIds = options
+                                .map(o => Number(o.id ?? o.Id))
+                                .filter(n => !Number.isNaN(n) && n > 0);
+                              setDealAttributes(prev => ({ ...prev, [attributeId]: allIds }));
+                            }}
+                          >
+                            Select all
+                          </button>
+                          <button
+                            type="button"
+                            className="text-xs text-slate-600 hover:text-slate-800 underline"
+                            onClick={() => {
+                              dealAttributesTouchedRef.current = true;
+                              dealAttributesAutoInitializedRef.current = false;
+                              setDealAttributes(prev => ({ ...prev, [attributeId]: [] }));
+                            }}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                      <div className="w-full px-3 py-2 border border-gray-300 rounded-md max-h-40 overflow-auto space-y-2">
+                        {options.map((opt) => {
+                          const id = opt.id ?? opt.Id;
+                          const idNum = Number(id);
+                          const name = opt.displayName ?? opt.DisplayName ?? opt.enumKey ?? opt.EnumKey ?? String(id);
+                          if (!id || Number.isNaN(idNum) || idNum <= 0) return null;
+                          const checked = selectedSet.has(idNum);
+
+                          return (
+                            <label key={idNum} className="flex items-start gap-2 text-sm text-slate-700">
+                              <input
+                                type="checkbox"
+                                className="mt-1"
+                                checked={checked}
+                                onChange={() => {
+                                  dealAttributesTouchedRef.current = true;
+                                  dealAttributesAutoInitializedRef.current = false;
+                                  setDealAttributes((prev) => {
+                                    const current = Array.isArray(prev?.[attributeId]) ? prev[attributeId] : [];
+                                    const next = current.includes(idNum)
+                                      ? current.filter((x) => Number(x) !== idNum)
+                                      : [...current, idNum];
+                                    return { ...prev, [attributeId]: next };
+                                  });
+                                }}
+                              />
+                              <span className="leading-5">{name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            ))*/}
+            )}
 
             {/* Expiration Date (Optional) */}
             <div>
