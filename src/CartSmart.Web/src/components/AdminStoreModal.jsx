@@ -16,6 +16,24 @@ const resolveApiBaseUrl = () => {
 
 const API_URL = resolveApiBaseUrl();
 
+const slugify = (value) => {
+  const input = (value || '').trim();
+  if (!input) return '';
+
+  // Normalize unicode (remove diacritics) and keep only [a-z0-9-]
+  const normalized = input
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  return normalized
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+};
+
 export default function AdminStoreModal({
   isOpen,
   onClose,
@@ -36,6 +54,8 @@ export default function AdminStoreModal({
   const [error, setError] = useState('');
 
   const [brands, setBrands] = useState([]);
+
+  const [slugEdited, setSlugEdited] = useState(false);
 
   const [draft, setDraft] = useState({
     name: '',
@@ -77,6 +97,7 @@ export default function AdminStoreModal({
     setSelectedFile(null);
     setPreviewUrl('');
     setStoreImageUrl('');
+    setSlugEdited(false);
 
     setDraft({
       name: '',
@@ -118,6 +139,7 @@ export default function AdminStoreModal({
     });
 
     setStoreImageUrl(s?.imageUrl ?? '');
+    setSlugEdited(true);
     setSelectedFile(null);
     if ((previewUrl || '').startsWith('blob:')) {
       try {
@@ -359,6 +381,13 @@ export default function AdminStoreModal({
                   <input
                     value={draft.name}
                     onChange={(e) => setDraft((p) => ({ ...p, name: e.target.value }))}
+                    onBlur={() => {
+                      if (internalMode !== 'add') return;
+                      if (slugEdited) return;
+                      if ((draft.slug || '').trim()) return;
+                      const next = slugify(draft.name);
+                      if (next) setDraft((p) => ({ ...p, slug: next }));
+                    }}
                     className="w-full px-3 py-2 border rounded-md text-sm"
                     disabled={saving}
                   />
@@ -368,7 +397,10 @@ export default function AdminStoreModal({
                   <label className="block text-sm font-medium text-gray-700 mb-1">Slug</label>
                   <input
                     value={draft.slug}
-                    onChange={(e) => setDraft((p) => ({ ...p, slug: e.target.value }))}
+                    onChange={(e) => {
+                      setSlugEdited(true);
+                      setDraft((p) => ({ ...p, slug: e.target.value }));
+                    }}
                     className="w-full px-3 py-2 border rounded-md text-sm"
                     placeholder="e.g. best-buy"
                     disabled={saving}
