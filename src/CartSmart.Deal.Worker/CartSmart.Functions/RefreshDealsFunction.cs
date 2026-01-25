@@ -17,7 +17,7 @@ public class RefreshDealsFunction
 
     // DEBUG schedule: fires every 10 seconds. Revert to "0 */5 * * * *" for production cadence.
     [Function("RefreshDeals")]
-    public async Task Run([TimerTrigger("0 */30 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
+    public async Task Run([TimerTrigger("30 * * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
     {
         _logger.LogInformation("Deal refresh started at {Time}", DateTime.UtcNow);
         var result = await _orchestrator.RefreshDealsAsync(batchSize:50, ct);

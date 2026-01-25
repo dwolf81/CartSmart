@@ -204,6 +204,40 @@ namespace CartSmart.API.Controllers
             if (inserted == null)
                 return StatusCode(500, new { message = "Failed to create product" });
 
+            // Ensure every product starts with at least one placeholder variant.
+            // This variant intentionally has no attributes; it represents the "no variant" case.
+            var now = DateTime.UtcNow;
+            var placeholderVariant = new ProductVariant
+            {
+                ProductId = inserted.Id,
+                VariantName = null,
+                UnitCount = null,
+                UnitType = null,
+                DisplayName = "Default",
+                NormalizedTitle = NormalizeTitle("Default"),
+                IsDefault = true,
+                IsActive = true,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+
+            try
+            {
+                await client.From<ProductVariant>().Insert(placeholderVariant);
+            }
+            catch
+            {
+                // Best-effort cleanup: don't leave a half-created product without a default variant.
+                try
+                {
+                    inserted.Deleted = true;
+                    await client.From<ProductAdminInsertRow>().Update(inserted);
+                }
+                catch { }
+
+                return StatusCode(500, new { message = "Failed to create default product variant" });
+            }
+
             InvalidateProductCaches(inserted.Id, inserted.Slug);
             InvalidateCategoryProductsCache(request.ProductTypeId);
 

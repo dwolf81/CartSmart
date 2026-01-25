@@ -129,7 +129,8 @@ var host = new HostBuilder()
             var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<CartSmart.Providers.EbayStoreClient>>();
             var auth = sp.GetRequiredService<CartSmart.Providers.IEbayAuthService>();
             var stopWordsProvider = sp.GetRequiredService<IStopWordsProvider>();
-            return new CartSmart.Providers.EbayStoreClient(http, logger, auth, stopWordsProvider);
+            var supabase = sp.GetRequiredService<Supabase.Client>();
+            return new CartSmart.Providers.EbayStoreClient(http, logger, auth, stopWordsProvider, supabase);
         });
         services.AddSingleton<IDealUpdateOrchestrator>(sp => new DealUpdateOrchestrator(
             sp.GetRequiredService<IDealRepository>(),

@@ -126,7 +126,7 @@ const StoresPage = () => {
                         </div>
 
                         {imageUrl && (
-                          <div className="w-20 h-20 bg-gray-100 rounded-lg overflow-hidden flex items-start justify-center shrink-0">
+                          <div className="w-20 h-20 bg-white rounded-lg overflow-hidden flex items-start justify-center shrink-0">
                             <img
                               src={imageUrl}
                               alt={name ? `${name} logo` : 'Store'}

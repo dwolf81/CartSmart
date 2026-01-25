@@ -21,7 +21,7 @@ public class IngestNewListingsFunction
     }
 
     [Function("IngestNewListings")]
-    public async Task Run([TimerTrigger("*/30 * * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
+    public async Task Run([TimerTrigger("0 */30 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
     {
         var storesRaw = _config["Values:IngestStores"] ?? _config["IngestStores"] ?? "ebay";
         var storeKeys = storesRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)

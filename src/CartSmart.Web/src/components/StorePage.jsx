@@ -438,7 +438,7 @@ const StorePage = () => {
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
               <div className="flex items-center gap-4">
                 {storeImageUrl ? (
-                  <div className="w-24 h-24 bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center shrink-0">
+                  <div className="w-24 h-24 bg-white rounded-lg overflow-hidden flex items-center justify-center shrink-0">
                     <img
                       src={storeImageUrl}
                       alt={storeName ? `${storeName} logo` : 'Store'}

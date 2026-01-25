@@ -8,6 +8,7 @@ namespace CartSmart.Core.Worker;
 public interface IDealRepository
 {
     Task<IReadOnlyList<Deal>> GetActiveDealsForRefreshAsync(int batchSize, TimeSpan minInterval, CancellationToken ct);
+    Task<Deal?> GetDealByIdAsync(int dealId, CancellationToken ct);
     Task UpdateDealsAsync(IEnumerable<Deal> deals, CancellationToken ct);
     Task AppendPriceHistoryAsync(int dealId, decimal newPrice, string? currency, DateTime changedUtc, CancellationToken ct);
     Task<IReadOnlyList<Deal>> GetExpiredActiveDealsAsync(CancellationToken ct);
@@ -30,6 +31,13 @@ public interface IStoreClient
     bool SupportsApi { get; }
     Task<StoreProductData?> GetByUrlAsync(string productUrl, CancellationToken ct);
     Task<IReadOnlyList<NewListing>> SearchNewListingsAsync(string query, int? preferredConditionCategoryId, CancellationToken ct);
+}
+
+// Optional capability interface (implemented only by store clients that can infer product variants from listing metadata)
+public interface IVariantResolvingStoreClient
+{
+    Task<bool> HasActiveVariantsAsync(long productId, CancellationToken ct);
+    Task<long?> TryResolveProductVariantIdAsync(long productId, NewListing listing, CancellationToken ct);
 }
 
 public interface IHtmlScraper
@@ -56,7 +64,8 @@ public sealed record NewListing(
     string? MPN,
     string? Brand,
     int? ConditionCategoryId,
-    bool? FreeShipping
+    bool? FreeShipping,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? Aspects = null
 );
 
 public sealed record NewListingQuery(

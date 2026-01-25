@@ -62,6 +62,16 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         return response.Models;
     }
 
+    public async Task<Deal?> GetDealByIdAsync(int dealId, CancellationToken ct)
+    {
+        if (dealId <= 0) return null;
+        var resp = await _client.From<Deal>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+            .Limit(1)
+            .Get(ct);
+        return resp.Models?.FirstOrDefault();
+    }
+
     public async Task<IReadOnlyList<DealProduct>> GetDueDealProductsAsync(int batchSize, CancellationToken ct)
     {
         // Select active, non-deleted products that are due now.
@@ -72,7 +82,27 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             .Filter("next_check_at", Supabase.Postgrest.Constants.Operator.LessThanOrEqual, nowIso)
             .Limit(batchSize)
             .Get(ct);
-        return response.Models;
+
+        var due = response.Models ?? new List<DealProduct>();
+        if (due.Count == 0) return due;
+
+        // Also ensure the parent deal itself is not deleted.
+        var dealIds = due
+            .Select(dp => dp.DealId)
+            .Distinct()
+            .ToList();
+
+        if (dealIds.Count == 0) return due;
+
+        var dealIdObjects = dealIds.Cast<object>().ToArray();
+        var dealsResp = await _client.From<Deal>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.In, dealIdObjects)
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Select("id")
+            .Get(ct);
+
+        var allowed = (dealsResp.Models ?? new List<Deal>()).Select(d => d.Id).ToHashSet();
+        return due.Where(dp => allowed.Contains(dp.DealId)).ToList();
     }
 
     public async Task<IReadOnlyList<Deal>> GetExpiredActiveDealsAsync(CancellationToken ct)

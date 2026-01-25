@@ -18,8 +18,8 @@ public class DealUpdateOrchestratorTests
     public async Task ReturnsErrorWhenNoUrl()
     {
         var deal = new Deal { Id = 1, ExternalOfferUrl = null! };
-        _repo.Setup(r => r.GetActiveDealsForRefreshAsync(It.IsAny<int>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<Deal> { deal });
+        _repo.Setup(r => r.GetDealByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(deal);
         var orch = new DealUpdateOrchestrator(_repo.Object, _clients, NullLogger<DealUpdateOrchestrator>.Instance, _scraper.Object);
         var res = await orch.RefreshDealsAsync(10, CancellationToken.None);
         res.Errors.Should().Be(1);

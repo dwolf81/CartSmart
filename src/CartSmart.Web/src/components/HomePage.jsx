@@ -93,7 +93,7 @@ useEffect(() => {
           <div className="max-w-3xl mx-auto text-center">
             <h1 className="text-4xl md:text-6xl font-bold mb-6">
              {/* Never Pay Full Price Again */}
-              The Smart Way to Buy Golf Equipment.
+              The Lowest Price Possible on Golf Equipment.
             </h1>
             <p className="text-xl md:text-2xl mb-8">
            CartSmart evaluates every legitimate way to save — retail pricing, pre-owned, coupons and third party offers — and shows golfers the lowest real cost.

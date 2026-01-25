@@ -145,12 +145,44 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 }
             }
 
-            // From candidates, pick lowest priced up to topPerProduct
-            var validListings = candidates.Where(l => l.Price.HasValue)
-                .OrderBy(l => l.Price!.Value)
-                .Take(topPerProduct)
-                .ToList();
-            foreach (var listing in validListings)
+            // From candidates, pick lowest priced listings.
+            // For eBay: select top N per resolved product variant.
+            // If the product has variants and we can't confidently resolve a variant from the listing, skip it.
+
+            var variantClient = client as IVariantResolvingStoreClient;
+            var hasVariants = variantClient != null && await variantClient.HasActiveVariantsAsync(q.ProductId, ct);
+
+            var resolved = new List<(NewListing Listing, long? VariantId)>();
+            foreach (var l in candidates.Where(x => x.Price.HasValue))
+            {
+                long? variantId = null;
+                if (variantClient != null)
+                    variantId = await variantClient.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
+
+                if (hasVariants && !variantId.HasValue)
+                    continue;
+
+                resolved.Add((l, variantId));
+            }
+
+            List<(NewListing Listing, long? VariantId)> selected;
+            if (hasVariants)
+            {
+                selected = resolved
+                    .Where(x => x.VariantId.HasValue)
+                    .GroupBy(x => x.VariantId!.Value)
+                    .SelectMany(g => g.OrderBy(x => x.Listing.Price!.Value).Take(topPerProduct))
+                    .ToList();
+            }
+            else
+            {
+                selected = resolved
+                    .OrderBy(x => x.Listing.Price!.Value)
+                    .Take(topPerProduct)
+                    .ToList();
+            }
+
+            foreach (var (listing, variantId) in selected)
             {
                 if (listing.ItemId != null && await repoImpl.ExistsDealByStoreItemAsync(listing.ItemId, ct))
                     continue;
@@ -169,6 +201,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 {
                     DealId = deal.Id,
                     ProductId = q.ProductId,
+                    ProductVariantId = variantId,
                     Price = listing.Price ?? 0,
                     DealStatusId = 2,
                     Url = listing.Url,
@@ -201,11 +234,14 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             var repoImpl = _repo as SupabaseDealRepository;
             if (repoImpl == null) return DealProcessOutcome.Error;
 
-            // Load parent deal (simple fetch using existing method, ideally have GetDealById)
-            var parentDeals = await _repo.GetActiveDealsForRefreshAsync(100, _minRefreshInterval, ct);
-            var deal = parentDeals.FirstOrDefault(d => d.Id == dealProduct.DealId);
+            // Load the parent deal reliably (do not depend on a limited refresh batch).
+            var deal = await _repo.GetDealByIdAsync(dealProduct.DealId, ct);
             var url = dealProduct.Url ?? deal?.ExternalOfferUrl;
-            if (string.IsNullOrWhiteSpace(url)) return DealProcessOutcome.Error;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                _logger.LogWarning("Missing URL for deal_product {DealProductId} (deal_id={DealId}). deal_product.url and deal.external_offer_url are null/empty.", dealProduct.Id, dealProduct.DealId);
+                return DealProcessOutcome.Error;
+            }
 
             
             var storeType = InferStoreType(url);
@@ -278,11 +314,14 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 catch { /* ignore malformed JSON */ }
             }
 
-            var useApi = store?.ApiEnabled == true && client != null;
+            // eBay sold/in-stock status should come from the API (HTML scraping is unreliable).
+            var forceApi = storeType == StoreType.Ebay && client != null && client.SupportsApi;
+            var useApi = forceApi || (store?.ApiEnabled == true && client != null);
+
             if (useApi)
             {
                 data = await client!.GetByUrlAsync(url, ct);
-                if (data == null && store?.ScrapeEnabled == true && overrideSelectors != null && overrideSelectors.Length > 0)
+                if (!forceApi && data == null && store?.ScrapeEnabled == true && overrideSelectors != null && overrideSelectors.Length > 0)
                 {
                     // fallback to scraping (only if enabled)
                     data = await FallbackScrapeAsync(url, overrideSelectors, ct);
