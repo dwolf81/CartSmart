@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import LoadingSpinner from './LoadingSpinner';
 import { FaTag, FaTicketAlt, FaLink, FaLayerGroup } from 'react-icons/fa';
+import { appendAffiliateParam, getAffiliateFields } from '../utils/affiliateUrl';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 // Replace REJECT / ISSUE constants with IDs
@@ -351,6 +352,23 @@ const DEAL_TYPE_META = {
       ? `/stores/${deal.store_slug}`
       : `/products/${deal?.slug}`;
 
+    const affiliate = getAffiliateFields(deal, 'normal');
+    const affiliateCodeVar = affiliate.affiliateCodeVar;
+    const affiliateCode = affiliate.affiliateCode;
+    const externalAffiliate = getAffiliateFields(deal, 'external');
+    const externalAffiliateCodeVar = externalAffiliate.affiliateCodeVar;
+    const externalAffiliateCode = externalAffiliate.affiliateCode;
+    const productOrStoreUrl = appendAffiliateParam(
+      (deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url,
+      affiliateCodeVar,
+      affiliateCode
+    );
+    const externalOfferUrl = appendAffiliateParam(
+      deal.external_offer_url,
+      externalAffiliateCodeVar,
+      externalAffiliateCode
+    );
+
     return (
     <div className="bg-white rounded-lg shadow-md p-6 mb-4">
       <div className="flex gap-4 items-start">
@@ -435,15 +453,15 @@ const DEAL_TYPE_META = {
                 )}
                 <div className="text-sm mb-2">
                   <span className="font-medium">{isStoreDeal ? 'Store URL:' : 'Product URL:'}</span>{' '}
-                  {((deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url) ? (
+                  {productOrStoreUrl ? (
                     <a
-                      href={(deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url}
+                      href={productOrStoreUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      title={(deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url}
+                      title={productOrStoreUrl}
                       className="text-blue-600 no-underline hover:underline break-all"
                     >
-                      {truncateUrl((deal.store_url ? ensureHttps(deal.store_url) : null) || deal.url)}
+                      {truncateUrl(productOrStoreUrl)}
                     </a>
                   ) : 'N/A'}
                 </div>
@@ -451,13 +469,13 @@ const DEAL_TYPE_META = {
                   <div className="text-sm mb-2">
                     <span className="font-medium">External Offer URL:</span>{' '}
                     <a
-                      href={deal.external_offer_url}
+                      href={externalOfferUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      title={deal.external_offer_url}
+                      title={externalOfferUrl}
                       className="text-blue-600 no-underline hover:underline break-all"
                     >
-                      {truncateUrl(deal.external_offer_url)}
+                      {truncateUrl(externalOfferUrl)}
                     </a>
                   </div>
                 )}                
@@ -491,7 +509,13 @@ const DEAL_TYPE_META = {
       </div>
       {deal.steps && (
   <div className="mt-2 flex flex-col gap-4">
-    {deal.steps.map((step, idx) => (
+    {deal.steps.map((step, idx) => {
+      const stepAffiliate = getAffiliateFields(step, 'normal');
+      const stepAffiliateCodeVar = stepAffiliate.affiliateCodeVar || affiliateCodeVar;
+      const stepAffiliateCode = stepAffiliate.affiliateCode || affiliateCode;
+      const stepUrl = appendAffiliateParam(step.url, stepAffiliateCodeVar, stepAffiliateCode);
+
+      return (
       <div key={idx} className="relative rounded-xl border bg-gray-50 p-3">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -513,15 +537,15 @@ const DEAL_TYPE_META = {
 
         <div className="text-sm mb-1">
           <span className="font-medium">Source:</span>{' '}
-          {step.url ? (
+          {stepUrl ? (
             <a
-              href={step.url}
+              href={stepUrl}
               target="_blank"
               rel="noopener noreferrer"
-              title={step.url}
+              title={stepUrl}
               className="text-blue-600 no-underline hover:underline break-all"
             >
-              {truncateUrl(step.url, 100)}
+              {truncateUrl(stepUrl, 100)}
             </a>
           ) : 'N/A'}
         </div>
@@ -543,7 +567,8 @@ const DEAL_TYPE_META = {
           </div>
         )}
       </div>
-    ))}
+    );
+    })}
   </div>
 )}
       {/* User Info and Action Buttons Row */}

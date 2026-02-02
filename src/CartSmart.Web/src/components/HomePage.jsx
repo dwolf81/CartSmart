@@ -135,7 +135,7 @@ useEffect(() => {
                       <div className="text-lg text-gray-900 line-through">{formatPrice(bestDeal.msrp)}                   </div>
                     </div>
                     <div className="text-right">
-                      <span className="text-sm text-gray-500">Best price</span>
+                      <span className="text-sm text-gray-500">Lowest price</span>
                       <div className="text-2xl font-bold text-green-600">{formatPrice(bestDeal.price)}</div>
                       <div>
                         <span className="text-sm text-red-600 font-semibold">
@@ -194,7 +194,7 @@ useEffect(() => {
           <div className="grid md:grid-cols-3 gap-8">
             <div className="text-center">
               <div className="text-4xl mb-4">💰</div>
-              <h3 className="text-xl font-semibold mb-2">Best Prices</h3>
+              <h3 className="text-xl font-semibold mb-2">Lowest Prices</h3>
               <p className="text-gray-600">We find and verify the lowest possible prices through various methods</p>
             </div>
             <div className="text-center">

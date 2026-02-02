@@ -30,7 +30,7 @@ public interface IStoreClient
     bool SupportsSoldStatus { get; }
     bool SupportsApi { get; }
     Task<StoreProductData?> GetByUrlAsync(string productUrl, CancellationToken ct);
-    Task<IReadOnlyList<NewListing>> SearchNewListingsAsync(string query, int? preferredConditionCategoryId, CancellationToken ct);
+    Task<IReadOnlyList<NewListing>> SearchNewListingsAsync(long productId, string query, int? preferredConditionCategoryId, CancellationToken ct);
 }
 
 // Optional capability interface (implemented only by store clients that can infer product variants from listing metadata)

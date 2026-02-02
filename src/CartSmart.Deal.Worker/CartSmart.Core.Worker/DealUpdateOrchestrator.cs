@@ -12,6 +12,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
     private readonly TimeSpan _minRefreshInterval;
     private readonly SemaphoreSlim _semaphore;
     private readonly IHtmlScraper _scraper;
+    private readonly RefreshSchedulingOptions _scheduling;
     private HashSet<string>? _stopWords;
 
     private readonly Dictionary<StoreType, IStoreClient> _clientMap;
@@ -21,6 +22,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         IEnumerable<IStoreClient> storeClients,
         ILogger<DealUpdateOrchestrator> logger,
         IHtmlScraper scraper,
+        RefreshSchedulingOptions? schedulingOptions = null,
         TimeProvider? timeProvider = null,
         int maxParallel = 5,
         TimeSpan? minRefreshInterval = null)
@@ -29,6 +31,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         _storeClients = storeClients;
         _logger = logger;
         _scraper = scraper;
+        _scheduling = schedulingOptions ?? new RefreshSchedulingOptions();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _minRefreshInterval = minRefreshInterval ?? TimeSpan.FromMinutes(5);
         _semaphore = new SemaphoreSlim(maxParallel);
@@ -42,7 +45,82 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             _logger.LogError("Repository implementation missing for product-centric refresh");
             return new DealRefreshResult(0,0,0,0,1);
         }
-        var products = await repoImpl.GetDueDealProductsAsync(batchSize, ct);
+
+        // Priority scheduling: fetch a larger due candidate pool, score, then process only the top N.
+        // This keeps "fresh where it counts" while staying within the batchSize budget.
+        var multiplier = _scheduling.CandidatePoolMultiplier <= 0 ? 10 : _scheduling.CandidatePoolMultiplier;
+        var maxPool = _scheduling.CandidatePoolMax <= 0 ? 500 : _scheduling.CandidatePoolMax;
+        var candidateLimit = Math.Clamp(batchSize * multiplier, batchSize, maxPool);
+        var dueCandidates = await repoImpl.GetDueDealProductsAsync(candidateLimit, ct);
+        if (dueCandidates.Count == 0)
+            return new DealRefreshResult(0, 0, 0, 0, 0);
+
+        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        var productIds = dueCandidates
+            .Select(dp => dp.ProductId)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+
+        var productMap = await repoImpl.GetProductsByIdsAsync(productIds, ct);
+        var clicks7dByProduct = await repoImpl.GetClickCountsByProductAsync(productIds, TimeSpan.FromDays(7), ct);
+        var clicks5mByProduct = await repoImpl.GetClickCountsByProductAsync(productIds, TimeSpan.FromMinutes(5), ct);
+
+        var maxClicks7d = clicks7dByProduct.Count > 0 ? clicks7dByProduct.Values.Max() : 0;
+
+        double Score(DealProduct dp)
+        {
+            var score = 0.0;
+
+            var storeType = InferStoreType(dp.Url ?? string.Empty);
+            var volatileMultiplier = storeType == StoreType.Ebay ? _scheduling.VolatileStalenessMultiplier : 1.0;
+
+            var clicks7d = clicks7dByProduct.TryGetValue(dp.ProductId, out var c7) ? c7 : 0;
+            var clicks5m = clicks5mByProduct.TryGetValue(dp.ProductId, out var c5) ? c5 : 0;
+
+            // User-facing weight
+            if (clicks5m > 0)
+                score += _scheduling.RecentClicks5mBoost; // "on product page now" proxy
+
+            if (productMap.TryGetValue(dp.ProductId, out var product) && product != null && product.DealId == dp.DealId)
+                score += _scheduling.BestDealBoost; // best deal currently shown for the product
+
+            // Store primary (often what we show first for a deal)
+            if (dp.Primary)
+                score += _scheduling.PrimaryBoost;
+
+            // Popularity proxy (clicks instead of page views)
+            if (maxClicks7d > 0)
+                score += (double)clicks7d / maxClicks7d * _scheduling.Clicks7dNormalizedMaxBoost;
+            if (clicks7d >= _scheduling.Clicks7dThreshold)
+                score += _scheduling.Clicks7dThresholdBoost;
+
+            // Staleness (minutes since last check)
+            var minutesSinceLastCheck = dp.LastCheckedAt.HasValue ? (nowUtc - dp.LastCheckedAt.Value).TotalMinutes : 10_000;
+            score += minutesSinceLastCheck * _scheduling.StalenessMinutesFactor * volatileMultiplier;
+
+            // Risk/extractor signals
+            var errorCount = dp.ErrorCount ?? 0;
+            if (errorCount > 0 && errorCount <= _scheduling.ErrorCountSmallMax)
+                score += _scheduling.ErrorCountSmallBoost;
+            if (errorCount >= _scheduling.ErrorCountPenaltyMin)
+                score += _scheduling.ErrorCountPenalty; // deprioritize very noisy/broken scrapes
+
+            // Business value proxy
+            if (dp.Price >= _scheduling.HighPriceThreshold)
+                score += _scheduling.HighPriceBoost;
+
+            return score;
+        }
+
+        var products = dueCandidates
+            .Select(dp => new { DealProduct = dp, Score = Score(dp) })
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.DealProduct.NextCheckAt ?? DateTime.MinValue)
+            .Take(batchSize)
+            .Select(x => x.DealProduct)
+            .ToList();
+
         int updated=0, expired=0, sold=0, errors=0;
         var tasks = products.Select(p => ProcessDealProductAsync(p, ct));
         var results = await Task.WhenAll(tasks);
@@ -100,7 +178,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             var productName = product?.Name?.ToLowerInvariant() ?? string.Empty;
             var productTokens = NormalizeIdentityTokens(product?.Name ?? string.Empty);
 
-            var listings = await client.SearchNewListingsAsync(q.Query, product?.PreferredConditionCategoryId, ct);
+            var listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, product?.PreferredConditionCategoryId, ct);
             // Apply matching hierarchy and price sanity
             var candidates = new List<NewListing>();
             foreach (var l in listings)
@@ -324,12 +402,36 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 if (!forceApi && data == null && store?.ScrapeEnabled == true && overrideSelectors != null && overrideSelectors.Length > 0)
                 {
                     // fallback to scraping (only if enabled)
-                    data = await FallbackScrapeAsync(url, overrideSelectors, ct);
+                    var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, ct);
+                    if (scrapeOutcome.BlockedByBotProtection)
+                    {
+                        var taskId = await repoImpl.CreateOrGetPendingManualPriceTaskAsync(dealProduct, "bot_protection", ct);
+                        _logger.LogWarning(
+                            "Scrape blocked for deal_product {DealProductId}. Created/reused manual_price_task {TaskId}.",
+                            dealProduct.Id,
+                            taskId);
+                        await repoImpl.SetNextCheckAsync(dealProduct, nowUtc.AddHours(24), ct);
+                        return DealProcessOutcome.Updated;
+                    }
+
+                    data = scrapeOutcome.Data;
                 }
             }
             else if (store?.ScrapeEnabled == true && overrideSelectors != null && overrideSelectors.Length > 0)
             {
-                data = await FallbackScrapeAsync(url, overrideSelectors, ct);
+                var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, ct);
+                if (scrapeOutcome.BlockedByBotProtection)
+                {
+                    var taskId = await repoImpl.CreateOrGetPendingManualPriceTaskAsync(dealProduct, "bot_protection", ct);
+                    _logger.LogWarning(
+                        "Scrape blocked for deal_product {DealProductId}. Created/reused manual_price_task {TaskId}.",
+                        dealProduct.Id,
+                        taskId);
+                    await repoImpl.SetNextCheckAsync(dealProduct, nowUtc.AddHours(24), ct);
+                    return DealProcessOutcome.Updated;
+                }
+
+                data = scrapeOutcome.Data;
             }
             else
             {
@@ -389,7 +491,10 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
             // schedule next
             var clicks7d = await repoImpl.GetRecentClicksAsync(dealProduct.DealId, dealProduct.ProductId, TimeSpan.FromDays(7), ct);
-            var next = ComputeNextCheck(clicks7d, statusChanged);
+            var clicks5m = await repoImpl.GetRecentClicksAsync(dealProduct.DealId, dealProduct.ProductId, TimeSpan.FromMinutes(5), ct);
+            var product = await repoImpl.GetProductByIdAsync(dealProduct.ProductId, ct);
+            var isBestDealForProduct = product?.DealId == dealProduct.DealId;
+            var next = ComputeNextCheckTiered(dealProduct, storeType, clicks7d, clicks5m, isBestDealForProduct, statusChanged, priceChanged);
             await repoImpl.SetNextCheckAsync(dealProduct, next, ct);
 
             if (dealProduct.DealStatusId == SupabaseDealRepository.DealStatusExpired) return DealProcessOutcome.Expired;
@@ -420,37 +525,100 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
     private enum DealProcessOutcome { Updated, Expired, Sold, Error }
 
-    private async Task<StoreProductData?> FallbackScrapeAsync(string url, string[]? overrideSelectors, CancellationToken ct)
+    private enum RefreshTier { A, B, C, D }
+
+    private sealed record ScrapeOutcome(StoreProductData? Data, bool BlockedByBotProtection);
+
+    private async Task<ScrapeOutcome> FallbackScrapeAsync(string url, string[]? overrideSelectors, CancellationToken ct)
     {
         try
         {
             var uri = new Uri(url);
             var scrape = await _scraper.ScrapeAsync(uri, overrideSelectors, ct);
-            if (scrape == null) return null;
-            return new StoreProductData(
-                Price: scrape.ExtractedPrice,
-                Currency: scrape.Currency,
-                InStock: scrape.InStock,
-                Sold: scrape.Sold,
-                Discontinued: false,
-                RetrievedUtc: _timeProvider.GetUtcNow().UtcDateTime
-            );
+            if (scrape == null) return new ScrapeOutcome(null, false);
+
+            if (scrape.BlockedByBotProtection)
+                return new ScrapeOutcome(null, true);
+
+            return new ScrapeOutcome(
+                new StoreProductData(
+                    Price: scrape.ExtractedPrice,
+                    Currency: scrape.Currency,
+                    InStock: scrape.InStock,
+                    Sold: scrape.Sold,
+                    Discontinued: false,
+                    RetrievedUtc: _timeProvider.GetUtcNow().UtcDateTime
+                ),
+                false);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Fallback scrape failed for {Url}", url);
-            return null;
+            return new ScrapeOutcome(null, false);
         }
     }
 
-    private DateTime ComputeNextCheck(int clicks7d, bool statusChanged)
+    private DateTime ComputeNextCheckTiered(
+        DealProduct dealProduct,
+        StoreType storeType,
+        int clicks7d,
+        int clicks5m,
+        bool isBestDealForProduct,
+        bool statusChanged,
+        bool priceChanged)
     {
         var now = _timeProvider.GetUtcNow().UtcDateTime;
-        if (statusChanged) return now.AddHours(3);
-        if (clicks7d >= 100) return now.AddHours(3);
-        if (clicks7d >= 20) return now.AddHours(6);
-        if (clicks7d >= 5) return now.AddHours(24);
-        return now.AddHours(48);
+
+        DateTime AddJitterMinutes(int minMinutes, int maxMinutes)
+        {
+            var min = Math.Max(1, minMinutes);
+            var max = Math.Max(min, maxMinutes);
+            var jitter = Random.Shared.Next(min, max + 1);
+            return now.AddMinutes(jitter);
+        }
+
+        DateTime AddJitterHours(int minHours, int maxHours)
+        {
+            var min = Math.Max(1, minHours);
+            var max = Math.Max(min, maxHours);
+            var jitter = Random.Shared.Next(min, max + 1);
+            return now.AddHours(jitter);
+        }
+
+        RefreshTier tier;
+        if (clicks5m > 0 || isBestDealForProduct)
+            tier = RefreshTier.A;
+        else if (dealProduct.Primary)
+            tier = RefreshTier.B;
+        else if ((dealProduct.ErrorCount ?? 0) >= 10 || dealProduct.StaleAt.HasValue)
+            tier = RefreshTier.D;
+        else
+            tier = RefreshTier.C;
+
+        // Volatile sources get shorter intervals.
+        var volatileSource = storeType == StoreType.Ebay;
+
+        // Risk signals: recent status/price changes should be re-checked quickly.
+        var riskBump = statusChanged || priceChanged;
+
+        return tier switch
+        {
+            RefreshTier.A => riskBump
+                ? now.AddMinutes(_scheduling.TierA_RiskMinutes)
+                : volatileSource
+                    ? AddJitterMinutes(_scheduling.TierA_VolatileMinMinutes, _scheduling.TierA_VolatileMaxMinutes)
+                    : AddJitterMinutes(_scheduling.TierA_MinMinutes, _scheduling.TierA_MaxMinutes),
+            RefreshTier.B => riskBump
+                ? now.AddMinutes(_scheduling.TierB_RiskMinutes)
+                : volatileSource
+                    ? AddJitterMinutes(_scheduling.TierB_VolatileMinMinutes, _scheduling.TierB_VolatileMaxMinutes)
+                    : AddJitterMinutes(_scheduling.TierB_MinMinutes, _scheduling.TierB_MaxMinutes),
+            RefreshTier.C => volatileSource
+                ? AddJitterHours(_scheduling.TierC_VolatileMinHours, _scheduling.TierC_VolatileMaxHours)
+                : AddJitterHours(_scheduling.TierC_MinHours, _scheduling.TierC_MaxHours),
+            RefreshTier.D => now.AddDays(_scheduling.TierD_Days),
+            _ => now.AddHours(24)
+        };
     }
 
     private int? ComputeDiscountPercent(float? msrp, decimal? price)

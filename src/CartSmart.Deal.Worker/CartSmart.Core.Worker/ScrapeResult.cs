@@ -7,5 +7,6 @@ public sealed class ScrapeResult
     public string? Currency { get; init; }
     public bool? InStock { get; init; }
     public bool? Sold { get; init; }
+    public bool BlockedByBotProtection { get; init; }
     public Dictionary<string,string>? RawSignals { get; init; }
 }

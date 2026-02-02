@@ -77,6 +77,97 @@ namespace CartSmart.API.Controllers
             return normalized;
         }
 
+        private static string NormalizeAlias(string? alias)
+        {
+            if (string.IsNullOrWhiteSpace(alias)) return string.Empty;
+            var trimmed = alias.Trim().ToLowerInvariant();
+            // Match the DB generated column: lower(regexp_replace(alias, '[^a-zA-Z0-9]+', '', 'g'))
+            return Regex.Replace(trimmed, "[^a-z0-9]+", "");
+        }
+
+        private static IReadOnlyList<string> CleanAliasList(IEnumerable<string>? aliases)
+        {
+            if (aliases == null) return Array.Empty<string>();
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var result = new List<string>();
+
+            foreach (var raw in aliases)
+            {
+                var v = (raw ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(v)) continue;
+                var key = NormalizeAlias(v);
+                if (string.IsNullOrWhiteSpace(key)) continue;
+                if (seen.Add(key)) result.Add(v);
+            }
+
+            return result;
+        }
+
+        private async Task UpsertProductSearchAliasesAsync(Supabase.Client client, int productId, IEnumerable<string>? incomingAliases)
+        {
+            // Best-effort: we don't want alias configuration failures to block all admin editing.
+            try
+            {
+                var desired = CleanAliasList(incomingAliases);
+                var desiredNormalized = desired.Select(NormalizeAlias).Where(x => !string.IsNullOrWhiteSpace(x)).ToHashSet(StringComparer.Ordinal);
+
+                var existingResp = await client
+                    .From<ProductSearchAlias>()
+                    .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+                    .Get();
+
+                var existingRows = existingResp.Models ?? new List<ProductSearchAlias>();
+                var byNormalized = existingRows
+                    .Where(r => !string.IsNullOrWhiteSpace(r.NormalizedAlias))
+                    .GroupBy(r => r.NormalizedAlias)
+                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+                // Deactivate any currently active alias not in the desired set.
+                foreach (var row in existingRows.Where(r => r.IsActive))
+                {
+                    if (string.IsNullOrWhiteSpace(row.NormalizedAlias)) continue;
+                    if (desiredNormalized.Contains(row.NormalizedAlias)) continue;
+                    await client.From<ProductSearchAliasUpdateRow>().Update(new ProductSearchAliasUpdateRow
+                    {
+                        Id = row.Id,
+                        IsActive = false
+                    });
+                }
+
+                // Insert or reactivate desired aliases.
+                foreach (var alias in desired)
+                {
+                    var normalized = NormalizeAlias(alias);
+                    if (string.IsNullOrWhiteSpace(normalized)) continue;
+
+                    if (byNormalized.TryGetValue(normalized, out var existing))
+                    {
+                        if (!existing.IsActive)
+                        {
+                            await client.From<ProductSearchAliasUpdateRow>().Update(new ProductSearchAliasUpdateRow
+                            {
+                                Id = existing.Id,
+                                IsActive = true
+                            });
+                        }
+                        continue;
+                    }
+
+                    await client.From<ProductSearchAliasInsertRow>().Insert(new ProductSearchAliasInsertRow
+                    {
+                        ProductId = productId,
+                        Alias = alias,
+                        IsActive = true
+                    });
+                }
+            }
+            catch
+            {
+                // Swallow (best-effort). The admin UI can retry later.
+            }
+        }
+
         private static string GetContentType(string fileExtension)
         {
             return (fileExtension ?? string.Empty).ToLowerInvariant() switch
@@ -238,6 +329,12 @@ namespace CartSmart.API.Controllers
                 return StatusCode(500, new { message = "Failed to create default product variant" });
             }
 
+            // Optional: per-product search aliases used by the worker (e.g., "Mevo+" vs "Mevo Plus").
+            if (request.SearchAliases != null)
+            {
+                await UpsertProductSearchAliasesAsync(client, inserted.Id, request.SearchAliases);
+            }
+
             InvalidateProductCaches(inserted.Id, inserted.Slug);
             InvalidateCategoryProductsCache(request.ProductTypeId);
 
@@ -380,6 +477,29 @@ namespace CartSmart.API.Controllers
                     })
                     .ToList()
             };
+
+            // Include active aliases for admin editing.
+            try
+            {
+                // Some PostgREST clients can be picky about boolean filters; filter in-memory instead.
+                var aliasResp = await client
+                    .From<ProductSearchAlias>()
+                    .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+                    .Get();
+
+                dto.Product.SearchAliases = (aliasResp.Models ?? new List<ProductSearchAlias>())
+                    .Where(a => a.IsActive)
+                    .Select(a => (a.Alias ?? string.Empty).Trim())
+                    .Where(a => !string.IsNullOrWhiteSpace(a))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(a => a)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[ProductsController] Failed to load product_search_alias for productId={productId}: {ex}");
+                dto.Product.SearchAliases = new List<string>();
+            }
 
             return Ok(dto);
         }
@@ -857,7 +977,7 @@ namespace CartSmart.API.Controllers
             var authResult = await EnsureAdminAsync();
             if (authResult != null) return authResult;
 
-            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null)
+            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.SearchAliases == null)
                 return BadRequest(new { message = "No fields provided" });
 
             var client = _supabase.GetServiceRoleClient();
@@ -880,6 +1000,12 @@ namespace CartSmart.API.Controllers
             if (req.BrandId != null) updateRow.BrandId = req.BrandId;
 
             await client.From<ProductAdminUpdateRow>().Update(updateRow);
+
+            // Optional: replace search alias set.
+            if (req.SearchAliases != null)
+            {
+                await UpsertProductSearchAliasesAsync(client, productId, req.SearchAliases);
+            }
 
             var expectedName = req.Name != null ? req.Name.Trim() : existing.Name;
             var expectedMsrp = req.Msrp ?? existing.MSRP;

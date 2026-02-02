@@ -62,7 +62,7 @@ public class AmazonStoreClient : IStoreClient
         return end > start ? url.Substring(start, end - start) : url[start..].Split('?', '#')[0];
     }
 
-     public async Task<IReadOnlyList<CartSmart.Core.Worker.NewListing>> SearchNewListingsAsync(string query, int? preferredConditionCategoryId, CancellationToken ct)
+     public async Task<IReadOnlyList<CartSmart.Core.Worker.NewListing>> SearchNewListingsAsync(long productId, string query, int? preferredConditionCategoryId, CancellationToken ct)
     {
         // Amazon API does not support new listings search in this example
         return Array.Empty<CartSmart.Core.Worker.NewListing>();

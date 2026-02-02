@@ -8,10 +8,12 @@ import { useAuth } from '../context/AuthContext';
 // import { useTermsConsent } from '../context/TermsConsentContext';
 import LoadingSpinner from './LoadingSpinner';
 import RatingSourcesModal from './RatingSourcesModal';
-import { FaTag, FaTicketAlt, FaLink, FaLayerGroup, FaFlag, FaPlus } from 'react-icons/fa';
+import { FaTag, FaTicketAlt, FaLink, FaLayerGroup, FaFlag, FaPlus, FaQuestionCircle } from 'react-icons/fa';
 import { Flag } from "lucide-react";
 import { useScrollLock } from '../hooks/useScrollLock';
 import AdminProductModal from './AdminProductModal';
+import { appendAffiliateParam, getAffiliateFields } from '../utils/affiliateUrl';
+import RewardsTooltipPill from './RewardsTooltipPill';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 const SITE_URL = process.env.REACT_APP_SITE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
@@ -630,7 +632,8 @@ const ProductPage = () => {
 
   const handleActivateExternal = (deal) => {
     if (!deal?.external_offer_url) return;
-    window.open(deal.external_offer_url, '_blank', 'noopener,noreferrer');
+    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(deal, 'external');
+    window.open(appendAffiliateParam(deal.external_offer_url, affiliateCodeVar, affiliateCode), '_blank', 'noopener,noreferrer');
     setActivatedExternal(prev => ({ ...prev, [deal.deal_id]: true }));
   };
 
@@ -901,11 +904,29 @@ const ProductPage = () => {
     }).catch(() => { });
   };
 
+  const findDealRowById = (dealId) => {
+    const id = Number(dealId);
+    if (!Number.isFinite(id) || id <= 0) return null;
+
+    const fromCollapsed = (collapsedStoreDeals || []).find(d => Number(d?.deal_id) === id);
+    if (fromCollapsed) return fromCollapsed;
+
+    const expanded = expandedStoreDealsById || {};
+    for (const rows of Object.values(expanded)) {
+      const found = (rows || []).find(d => Number(d?.deal_id) === id);
+      if (found) return found;
+    }
+
+    return null;
+  };
+
   const handleGetDealClick = (e, dealId, external, url) => {
     e.preventDefault();
     if (!url) return;
+    const dealRow = findDealRowById(dealId);
+    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(dealRow, external ? 'external' : 'normal');
     // Open first to avoid popup blockers, then log
-    window.open(url, '_blank', 'noopener,noreferrer');
+    window.open(appendAffiliateParam(url, affiliateCodeVar, affiliateCode), '_blank', 'noopener,noreferrer');
     logDealClick(dealId, external);
   };
 
@@ -1151,8 +1172,17 @@ const ProductPage = () => {
         {/* Right Pane - Deals Information */}
         <div className="md:w-1/2">
           <div className="bg-white rounded-lg shadow-lg p-6">
-            {/* Submit Deal Button */}
-            <div className="mb-6 flex flex-row gap-4">
+            {/* Price Challenge CTA */}
+            <div className="mb-6 flex flex-col gap-2">
+              <div className="text-sm text-gray-600">
+                <span>Found a lower price? Prove it - we reward the best deals.</span>
+                <RewardsTooltipPill
+                  label={<FaQuestionCircle className="inline ml-1 text-gray-400 hover:text-gray-600" />}
+                  pillClassName="inline-flex items-center"
+                />
+              </div>
+
+              <div className="flex flex-row gap-4">
               <button
                 onClick={() => {
                   if (!isAuthenticated) {
@@ -1162,9 +1192,11 @@ const ProductPage = () => {
                   setIsModalOpen(true);
                 }}
                 className="flex-1 bg-[#4CAF50] text-white px-4 py-3 rounded-lg hover:bg-[#3d8b40] transition-colors flex items-center justify-center space-x-2"
+                title="Submit a lower price to earn rewards"
               >
                 <FaPlus className="w-4 h-4" />
-                <span>Add Deal</span>
+                <span>Beat the Price</span>
+                <span className="text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
               </button>
               <button
                 onClick={() => {
@@ -1175,10 +1207,13 @@ const ProductPage = () => {
                   setIsComboModalOpen(true);
                 }}
                 className="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center space-x-2"
+                title="Stack multiple deals (coupon + sale + external, etc.) to unlock an even lower final price and earn points."
               >
                 <FaPlus className="w-4 h-4" />
                 <span>Stack Deals</span>
+                <span className="text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
               </button>
+              </div>
             </div>
 
             {/* Filters */}
@@ -1505,7 +1540,7 @@ const ProductPage = () => {
             )}
 
             {/* Deals List */}
-            <h2 className="text-xl font-bold mb-6">Best Deals Available</h2>
+            <h2 className="text-xl font-bold mb-6">Lowest Price Possible</h2>
             {initialLoading ? (
               <LoadingSpinner />
             ) : (
@@ -1755,7 +1790,11 @@ const ProductPage = () => {
                                                       className="flex w-full gap-2 justify-end flex-nowrap"
                                                     >
                                                       <a
-                                                        href={step.external_offer_url}
+                                                        href={appendAffiliateParam(
+                                                          step.external_offer_url,
+                                                          (step?.affiliate_code_var ?? step?.affiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
+                                                          (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                                        )}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
                                                         onClick={(e) => handleGetDealClick(e, step.deal_id, true, step.external_offer_url)}
@@ -1764,7 +1803,11 @@ const ProductPage = () => {
                                                         Activate Offer
                                                       </a>
                                                       <a
-                                                        href={step.url}
+                                                        href={appendAffiliateParam(
+                                                          step.url,
+                                                          (step?.affiliate_code_var ?? step?.affiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
+                                                          (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                                        )}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
                                                         onClick={(e) => handleGetDealClick(e, step.deal_id, false, step.url)}
@@ -1780,7 +1823,11 @@ const ProductPage = () => {
                                    className="flex w-full gap-2 justify-end flex-nowrap"
                                  >
                                                     <a
-                                                      href={step.url}
+                                                      href={appendAffiliateParam(
+                                                        step.url,
+                                                        (step?.affiliate_code_var ?? step?.affiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
+                                                        (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                                      )}
                                                       target="_blank"
                                                       rel="noopener noreferrer"
                                                       onClick={(e) => handleGetDealClick(e, step.deal_id, false, step.url)}
@@ -1879,7 +1926,11 @@ const ProductPage = () => {
                                 className="flex w-full gap-2 justify-end flex-nowrap"
                               >
                                 <a
-                                  href={deal.external_offer_url}
+                                  href={appendAffiliateParam(
+                                    deal.external_offer_url,
+                                    (deal?.external_affiliate_code_var ?? deal?.externalAffiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
+                                    (deal?.external_affiliate_code ?? deal?.externalAffiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                  )}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => handleGetDealClick(e, deal.deal_id, true, deal.external_offer_url)}
@@ -1888,7 +1939,11 @@ const ProductPage = () => {
                                   Activate Offer
                                 </a>
                                 <a
-                                  href={deal.url}
+                                  href={appendAffiliateParam(
+                                    deal.url,
+                                    (deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
+                                    (deal?.affiliate_code ?? deal?.affiliateCode)
+                                  )}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => handleGetDealClick(e, deal.deal_id, false, deal.url)}
@@ -1906,7 +1961,11 @@ const ProductPage = () => {
                                 className="flex w-full gap-2 justify-end flex-nowrap"
                               >
                                 <a
-                                  href={deal.url}
+                                  href={appendAffiliateParam(
+                                    deal.url,
+                                    (deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
+                                    (deal?.affiliate_code ?? deal?.affiliateCode)
+                                  )}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => handleGetDealClick(e, deal.deal_id, false, deal.url)}

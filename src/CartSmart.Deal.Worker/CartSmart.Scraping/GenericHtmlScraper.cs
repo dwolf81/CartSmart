@@ -2,6 +2,8 @@ using AngleSharp;
 using AngleSharp.Dom;
 using CartSmart.Core.Worker;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace CartSmart.Scraping;
 
@@ -12,6 +14,7 @@ public class GenericHtmlScraper : IHtmlScraper
     private readonly IJsRenderer? _jsRenderer;
     private readonly bool _enableJsFallback;
     private readonly int _jsTimeoutMs;
+    private readonly bool _openBrowserOnChallenge;
 
     private static readonly string[] PriceSelectors = new[]
     {
@@ -31,7 +34,12 @@ public class GenericHtmlScraper : IHtmlScraper
     private static readonly string[] StockKeywords = new[] { "in stock", "available" };
     private static readonly string[] OosKeywords = new[] { "out of stock", "unavailable" };
 
-    public GenericHtmlScraper(ILogger<GenericHtmlScraper> logger, IJsRenderer? jsRenderer = null, bool enableJsFallback = false, int jsTimeoutMs = 4000)
+    public GenericHtmlScraper(
+        ILogger<GenericHtmlScraper> logger,
+        IJsRenderer? jsRenderer = null,
+        bool enableJsFallback = false,
+        int jsTimeoutMs = 4000,
+        bool openBrowserOnChallenge = false)
     {
         _logger = logger;
         var config = Configuration.Default.WithDefaultLoader();
@@ -39,6 +47,7 @@ public class GenericHtmlScraper : IHtmlScraper
         _jsRenderer = jsRenderer;
         _enableJsFallback = enableJsFallback;
         _jsTimeoutMs = jsTimeoutMs;
+        _openBrowserOnChallenge = openBrowserOnChallenge;
     }
 
     public async Task<ScrapeResult?> ScrapeAsync(Uri uri, string[]? overridePriceSelectors, CancellationToken ct)
@@ -52,6 +61,25 @@ public class GenericHtmlScraper : IHtmlScraper
                 return null;
             }
             var doc = await _context.OpenAsync(uri.ToString(), ct);
+
+            if (LooksLikeBotProtectionPage(doc))
+            {
+                _logger.LogWarning("Scrape blocked (bot protection) for {Url}", uri);
+                TryOpenBrowserForManualReview(uri);
+                return new ScrapeResult
+                {
+                    Html = null,
+                    ExtractedPrice = null,
+                    Currency = null,
+                    InStock = null,
+                    Sold = null,
+                    BlockedByBotProtection = true,
+                    RawSignals = new Dictionary<string, string>
+                    {
+                        ["blocked"] = "bot_protection"
+                    }
+                };
+            }
             var result = new ScrapeResult();
 
             // Collect candidates then choose best (avoid struck-through/promotional; prefer lowest current price)
@@ -127,6 +155,26 @@ public class GenericHtmlScraper : IHtmlScraper
                 if (!string.IsNullOrEmpty(rendered))
                 {
                     var doc2 = await _context.OpenAsync(req => req.Content(rendered));
+
+                    if (LooksLikeBotProtectionPage(doc2))
+                    {
+                        _logger.LogWarning("JS-rendered scrape still blocked (bot protection) for {Url}", uri);
+                        TryOpenBrowserForManualReview(uri);
+                        return new ScrapeResult
+                        {
+                            Html = null,
+                            ExtractedPrice = null,
+                            Currency = null,
+                            InStock = null,
+                            Sold = null,
+                            BlockedByBotProtection = true,
+                            RawSignals = new Dictionary<string, string>
+                            {
+                                ["blocked"] = "bot_protection"
+                            }
+                        };
+                    }
+
                     foreach (var sel in activeSelectors)
                     {
                         var els = doc2.QuerySelectorAll(sel);
@@ -215,6 +263,72 @@ public class GenericHtmlScraper : IHtmlScraper
         {
             _logger.LogError(ex, "Scrape failed {Url}", uri);
             return null;
+        }
+    }
+
+    private static bool LooksLikeBotProtectionPage(IDocument doc)
+    {
+        // Common for Vercel Security Checkpoint and similar JS-based challenge pages.
+        // We avoid trying to scrape prices from these because the “real” DOM never loads.
+        var title = doc.Title?.ToLowerInvariant() ?? string.Empty;
+        if (title.Contains("security checkpoint")) return true;
+
+        var headerText = doc.QuerySelector("#header-text")?.TextContent?.ToLowerInvariant() ?? string.Empty;
+        if (headerText.Contains("verifying your browser")) return true;
+
+        var bodyText = doc.Body?.TextContent?.ToLowerInvariant() ?? string.Empty;
+        if (bodyText.Contains("verifying your browser")) return true;
+        if (bodyText.Contains("enable javascript to continue")) return true;
+        if (bodyText.Contains("vercel security checkpoint")) return true;
+
+        // Last-resort heuristic: lots of sites include these markers in the challenge HTML.
+        var html = doc.DocumentElement?.OuterHtml?.ToLowerInvariant() ?? string.Empty;
+        if (html.Contains("vercel security checkpoint")) return true;
+        if (html.Contains("verifying your browser")) return true;
+        if (html.Contains("security-checkpoint")) return true;
+
+        return false;
+    }
+
+    private void TryOpenBrowserForManualReview(Uri uri)
+    {
+        if (!_openBrowserOnChallenge) return;
+
+        // Only attempt on Windows in an interactive session.
+        // Cloud workers/containers typically cannot show a GUI window.
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            _logger.LogInformation("OpenBrowserOnChallenge enabled, but OS is not Windows; skipping browser launch for {Url}", uri);
+            return;
+        }
+
+        if (!Environment.UserInteractive)
+        {
+            _logger.LogInformation("OpenBrowserOnChallenge enabled, but process is not interactive; skipping browser launch for {Url}", uri);
+            return;
+        }
+
+        // Best-effort guard for Azure/containers even on Windows.
+        var websiteInstanceId = Environment.GetEnvironmentVariable("WEBSITE_INSTANCE_ID");
+        var runningInContainer = Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER");
+        if (!string.IsNullOrEmpty(websiteInstanceId) || string.Equals(runningInContainer, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation("OpenBrowserOnChallenge enabled, but environment looks non-desktop; skipping browser launch for {Url}", uri);
+            return;
+        }
+
+        try
+        {
+            _logger.LogInformation("Opening URL in default browser for manual review: {Url}", uri);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = uri.ToString(),
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to open browser for manual review: {Url}", uri);
         }
     }
 

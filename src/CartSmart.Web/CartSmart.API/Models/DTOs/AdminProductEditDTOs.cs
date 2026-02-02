@@ -49,6 +49,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("brandId")]
         [JsonPropertyName("brandId")]
         public int? BrandId { get; set; }
+
+        [JsonProperty("searchAliases")]
+        [JsonPropertyName("searchAliases")]
+        public List<string> SearchAliases { get; set; } = new();
     }
 
     public class AdminUpdateProductRequestDTO
@@ -68,6 +72,11 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("brandId")]
         [JsonPropertyName("brandId")]
         public int? BrandId { get; set; }
+
+        // Optional. If provided (even empty), replaces the current alias set.
+        [JsonProperty("searchAliases")]
+        [JsonPropertyName("searchAliases")]
+        public List<string>? SearchAliases { get; set; }
     }
 
     public class AdminCreateProductRequestDTO
@@ -91,6 +100,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("brandId")]
         [JsonPropertyName("brandId")]
         public int? BrandId { get; set; }
+
+        [JsonProperty("searchAliases")]
+        [JsonPropertyName("searchAliases")]
+        public List<string>? SearchAliases { get; set; }
     }
 
     public class AdminCreateProductResponseDTO

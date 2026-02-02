@@ -22,6 +22,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     private readonly ConcurrentDictionary<long, long?> _defaultVariantIdCache = new();
     private readonly ConcurrentDictionary<string, string> _listingTextCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>?> _itemAspectsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<long, IReadOnlyList<string>> _productSearchAliasCache = new();
 
     public StoreType StoreType => StoreType.Ebay;
     public bool SupportsSoldStatus => true;
@@ -361,10 +362,10 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         return (item, resp.StatusCode);
     }
 
-    public async Task<IReadOnlyList<CartSmart.Core.Worker.NewListing>> SearchNewListingsAsync(string query, int? preferredConditionCategoryId, CancellationToken ct)
+    public async Task<IReadOnlyList<CartSmart.Core.Worker.NewListing>> SearchNewListingsAsync(long productId, string query, int? preferredConditionCategoryId, CancellationToken ct)
     {
         // Stage A: recall – expand into multiple related queries and union results
-        var queryVariants = BuildQueryVariants(query);
+        var queryVariants = await BuildQueryVariantsForProductAsync(productId, query, ct);
         if (queryVariants.Count == 0)
             return Array.Empty<CartSmart.Core.Worker.NewListing>();
 
@@ -508,6 +509,67 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
 
         return filtered;
+    }
+
+    private async Task<IReadOnlyList<string>> BuildQueryVariantsForProductAsync(long productId, string query, CancellationToken ct)
+    {
+        var maxTotal = int.TryParse(Environment.GetEnvironmentVariable("EBAY_QUERY_VARIANT_LIMIT"), out var m) && m > 0 && m <= 20 ? m : 6;
+        var maxAliases = int.TryParse(Environment.GetEnvironmentVariable("EBAY_QUERY_ALIAS_LIMIT"), out var a) && a >= 0 && a <= 20 ? a : 5;
+
+        var variants = new List<string>();
+        void AddVariant(string q)
+        {
+            if (string.IsNullOrWhiteSpace(q)) return;
+            if (!variants.Any(v => v.Equals(q, StringComparison.OrdinalIgnoreCase)))
+                variants.Add(q);
+        }
+
+        foreach (var v in BuildQueryVariants(query, maxTotal))
+            AddVariant(v);
+
+        if (productId > 0 && maxAliases > 0)
+        {
+            var aliases = await GetOrFetchProductSearchAliasesAsync(productId, ct);
+            foreach (var alias in aliases.Take(maxAliases))
+            {
+                foreach (var v in BuildQueryVariants(alias, maxTotal))
+                    AddVariant(v);
+            }
+        }
+
+        return variants.Take(maxTotal).ToList();
+    }
+
+    private async Task<IReadOnlyList<string>> GetOrFetchProductSearchAliasesAsync(long productId, CancellationToken ct)
+    {
+        if (productId <= 0) return Array.Empty<string>();
+        if (_productSearchAliasCache.TryGetValue(productId, out var cached))
+            return cached;
+
+        try
+        {
+            var resp = await _supabase
+                .From<CartSmart.API.Models.ProductSearchAlias>()
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Filter("is_active", Supabase.Postgrest.Constants.Operator.Equals, "true")
+                .Select("alias")
+                .Get(ct);
+
+            var aliases = (resp.Models ?? new List<CartSmart.API.Models.ProductSearchAlias>())
+                .Select(x => (x.Alias ?? string.Empty).Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(50)
+                .ToList();
+
+            _productSearchAliasCache[productId] = aliases;
+            return aliases;
+        }
+        catch
+        {
+            _productSearchAliasCache[productId] = Array.Empty<string>();
+            return Array.Empty<string>();
+        }
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<string>>? BuildAspects(List<LocalizedAspect>? aspects)
@@ -931,7 +993,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     }
 
     // Build 2-4 query variants from a canonical product query
-    private static IReadOnlyList<string> BuildQueryVariants(string query)
+    private static IReadOnlyList<string> BuildQueryVariants(string query, int maxVariants)
     {
         var trimmed = (query ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(trimmed))
@@ -945,7 +1007,29 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
                 variants.Add(q);
         }
 
+        static string NormalizeSpaces(string s) => Regex.Replace((s ?? string.Empty).Trim(), "\\s+", " ");
+
+        // Common formatting/spelling variants (e.g., Mevo+ vs Mevo Plus)
+        string? PlusToWord(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s) || !s.Contains('+')) return null;
+            var r = Regex.Replace(s, "\\s*\\+\\s*", " plus ", RegexOptions.IgnoreCase);
+            return NormalizeSpaces(r);
+        }
+        string? WordToPlus(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s) || !Regex.IsMatch(s, "\\bplus\\b", RegexOptions.IgnoreCase)) return null;
+            var r = Regex.Replace(s, "\\bplus\\b", "+", RegexOptions.IgnoreCase);
+            r = Regex.Replace(r, "\\s*\\+\\s*", "+", RegexOptions.IgnoreCase);
+            return NormalizeSpaces(r);
+        }
+
         AddVariant(trimmed);
+
+        var plusWord = PlusToWord(trimmed);
+        if (!string.IsNullOrWhiteSpace(plusWord)) AddVariant(plusWord);
+        var plusSym = WordToPlus(trimmed);
+        if (!string.IsNullOrWhiteSpace(plusSym)) AddVariant(plusSym);
 
         var tokens = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Length >= 2)
@@ -979,7 +1063,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
 
         // Hard cap to keep 2-4 variants
-        return variants.Take(4).ToList();
+        var cap = maxVariants > 0 ? maxVariants : 4;
+        return variants.Take(cap).ToList();
     }
 
     private static (int? Quantity, bool IsLot, bool IsAssorted) ParsePackInfo(string text)

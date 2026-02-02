@@ -224,6 +224,19 @@ const Header = () => {
                                                     )}
                                                 </Menu.Item>
                                             )}
+
+                                            {Boolean(user?.admin) && (
+                                                <Menu.Item>
+                                                    {({ active }) => (
+                                                        <Link
+                                                            to="/admin/manual-price"
+                                                            className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                        >
+                                                            Manual Price Tasks
+                                                        </Link>
+                                                    )}
+                                                </Menu.Item>
+                                            )}
                                             <Menu.Item>
                                                 {({ active }) => (
                                                     <button
@@ -385,6 +398,15 @@ const Header = () => {
                                             className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
                                         >
                                             Review Deals
+                                        </Link>
+                                    )}
+                                    {Boolean(user?.admin) && (
+                                        <Link
+                                            to="/admin/manual-price"
+                                            onClick={() => setMobileOpen(false)}
+                                            className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                        >
+                                            Manual Price Tasks
                                         </Link>
                                     )}
                                     <button

@@ -37,6 +37,7 @@ export default function AdminProductModal({
   const [adminEditError, setAdminEditError] = useState('');
 
   const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '' });
+  const [adminSearchAliasesText, setAdminSearchAliasesText] = useState('');
   const [adminProductImageUrl, setAdminProductImageUrl] = useState('');
   const [adminProductSelectedFile, setAdminProductSelectedFile] = useState(null);
   const [adminProductPreviewUrl, setAdminProductPreviewUrl] = useState('');
@@ -69,6 +70,7 @@ export default function AdminProductModal({
     setAdminEditLoading(false);
     setAdminEditSaving(false);
     setAdminProductDraft({ name: '', msrp: '', description: '' });
+    setAdminSearchAliasesText('');
     setAdminProductImageUrl('');
     setAdminProductSelectedFile(null);
     setAdminProductPreviewUrl('');
@@ -93,6 +95,9 @@ export default function AdminProductModal({
       msrp: data?.product?.msrp ?? '',
       description: data?.product?.description ?? ''
     });
+
+    const aliases = Array.isArray(data?.product?.searchAliases) ? data.product.searchAliases : [];
+    setAdminSearchAliasesText(aliases.filter(Boolean).join('\n'));
 
     setAdminProductImageUrl(data?.product?.imageUrl ?? '');
     const bid = data?.product?.brandId;
@@ -301,6 +306,11 @@ export default function AdminProductModal({
     try {
       const msrpValue = adminProductDraft.msrp === '' ? null : Number(adminProductDraft.msrp);
 
+      const parsedAliases = (adminSearchAliasesText || '')
+        .split(/\r?\n|,/g)
+        .map((s) => (s || '').trim())
+        .filter((s) => !!s);
+
       if (internalMode === 'add') {
         if (!productTypeId) throw new Error('Missing product type');
         const res = await authFetch(`${API_URL}/api/products/admin`, {
@@ -311,7 +321,8 @@ export default function AdminProductModal({
             msrp: msrpValue,
             description: adminProductDraft.description,
             productTypeId: Number(productTypeId),
-            brandId: adminBrandId ? Number(adminBrandId) : null
+            brandId: adminBrandId ? Number(adminBrandId) : null,
+            searchAliases: parsedAliases
           })
         });
         if (!res.ok) {
@@ -368,7 +379,8 @@ export default function AdminProductModal({
           name: adminProductDraft.name,
           msrp: msrpValue,
           description: adminProductDraft.description,
-          brandId: adminBrandId ? Number(adminBrandId) : null
+          brandId: adminBrandId ? Number(adminBrandId) : null,
+          searchAliases: parsedAliases
         })
       });
 
@@ -758,6 +770,21 @@ export default function AdminProductModal({
                     className="w-full px-3 py-2 border rounded-md text-sm"
                     disabled={adminEditSaving}
                   />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Search aliases (eBay)</label>
+                  <textarea
+                    rows={3}
+                    value={adminSearchAliasesText}
+                    onChange={(e) => setAdminSearchAliasesText(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-md text-sm"
+                    placeholder={'One per line (or comma-separated)\nExample:\nMevo Plus\nFlightscope Mevo Plus'}
+                    disabled={adminEditSaving}
+                  />
+                  <div className="text-xs text-gray-500 mt-1">
+                    Used by the worker to expand store searches (e.g. “Mevo+” → “Mevo Plus”).
+                  </div>
                 </div>
               </div>
 

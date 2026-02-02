@@ -31,6 +31,7 @@ import ActivateAccountPage from './components/ActivateAccountPage';
 import { CookieConsentProvider } from './context/CookieConsentContext';
 import { TermsConsentProvider } from './context/TermsConsentContext';
 import CookieBanner from './components/CookieBanner';
+import AdminManualPriceTasksPage from './components/AdminManualPriceTasksPage';
 
 function App() {
   const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
@@ -124,6 +125,18 @@ function App() {
                     <>
                       <Header />
                       <SettingsPage />
+                    </>
+                  </ProtectedRoute>
+                }
+              />
+
+              <Route
+                path="/admin/manual-price"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <>
+                      <Header />
+                      <AdminManualPriceTasksPage />
                     </>
                   </ProtectedRoute>
                 }

@@ -4,6 +4,7 @@ using CartSmart.Scraping;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Supabase;
 
 var host = new HostBuilder()
@@ -79,6 +80,9 @@ var host = new HostBuilder()
         services.AddSingleton<IDealRepository>(sp => sp.GetRequiredService<SupabaseDealRepository>());
         services.AddSingleton<IStopWordsProvider>(sp => sp.GetRequiredService<SupabaseDealRepository>());
 
+        // Refresh scheduling knobs (priority scoring + tiered next-check).
+        services.Configure<RefreshSchedulingOptions>(context.Configuration.GetSection("RefreshScheduling"));
+
         // eBay OAuth credentials
         var ebayClientId = config["EBAY_CLIENT_ID"] ?? Environment.GetEnvironmentVariable("EBAY_CLIENT_ID");
         var ebayClientSecret = config["EBAY_CLIENT_SECRET"] ?? Environment.GetEnvironmentVariable("EBAY_CLIENT_SECRET");
@@ -137,6 +141,7 @@ var host = new HostBuilder()
             sp.GetServices<IStoreClient>(),
             sp.GetRequiredService<ILogger<DealUpdateOrchestrator>>(),
             sp.GetRequiredService<IHtmlScraper>(),
+            schedulingOptions: sp.GetRequiredService<IOptions<RefreshSchedulingOptions>>().Value,
             maxParallel: 1));
     })
     .Build();

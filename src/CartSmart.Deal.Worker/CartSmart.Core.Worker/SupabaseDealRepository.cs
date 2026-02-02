@@ -13,6 +13,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     private readonly TimeProvider _timeProvider;
 
     // Status mapping constants provided by user
+    public const int DealStatusActive = 2;
     public const int DealStatusExpired = 6;
     public const int DealStatusSold = 7;
     public const int DealStatusOutOfStock = 8;
@@ -105,6 +106,54 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         return due.Where(dp => allowed.Contains(dp.DealId)).ToList();
     }
 
+    public async Task<IReadOnlyDictionary<int, Product>> GetProductsByIdsAsync(IEnumerable<int> productIds, CancellationToken ct)
+    {
+        var ids = (productIds ?? Array.Empty<int>())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return new Dictionary<int, Product>();
+
+        var idObjects = ids.Cast<object>().ToArray();
+        var resp = await _client
+            .From<Product>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.In, idObjects)
+            .Get(ct);
+
+        var models = resp.Models ?? new List<Product>();
+        return models
+            .Where(p => p != null && p.Id > 0)
+            .GroupBy(p => p.Id)
+            .ToDictionary(g => g.Key, g => g.First());
+    }
+
+    public async Task<Dictionary<int, int>> GetClickCountsByProductAsync(IEnumerable<int> productIds, TimeSpan window, CancellationToken ct)
+    {
+        var ids = (productIds ?? Array.Empty<int>())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return new Dictionary<int, int>();
+
+        var sinceIso = _timeProvider.GetUtcNow().UtcDateTime.Subtract(window).ToString("O");
+        var idObjects = ids.Cast<object>().ToArray();
+        var resp = await _client
+            .From<DealClick>()
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.In, idObjects)
+            .Filter("created_at", Supabase.Postgrest.Constants.Operator.GreaterThanOrEqual, sinceIso)
+            .Get(ct);
+
+        var rows = resp.Models ?? new List<DealClick>();
+        return rows
+            .Where(r => r.ProductId.HasValue)
+            .GroupBy(r => r.ProductId!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
+    }
+
     public async Task<IReadOnlyList<Deal>> GetExpiredActiveDealsAsync(CancellationToken ct)
     {
         var nowIso = _timeProvider.GetUtcNow().UtcDateTime.ToString("O");
@@ -157,7 +206,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         // Append history for all active deal_products on this deal (or first found if multiple)
         var dpResp = await _client.From<DealProduct>()
             .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
-            .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.Equals, "2")
+            .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.Equals, DealStatusActive.ToString())
             .Limit(1)
             .Get(ct);
         var dealProduct = dpResp.Models.FirstOrDefault();
@@ -171,6 +220,203 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             ChangedAt = changedUtc
         };
         await _client.From<DealProductPriceHistory>().Insert(record);
+    }
+
+    public async Task AppendPriceHistoryForDealProductAsync(int dealProductId, decimal newPrice, string? currency, DateTime changedUtc, CancellationToken ct)
+    {
+        if (dealProductId <= 0) return;
+        var record = new DealProductPriceHistory
+        {
+            DealProductId = dealProductId,
+            Price = newPrice,
+            Currency = currency,
+            ChangedAt = changedUtc
+        };
+        await _client.From<DealProductPriceHistory>().Insert(record);
+    }
+
+    public async Task<DealProduct?> GetDealProductByIdAsync(int dealProductId, CancellationToken ct)
+    {
+        if (dealProductId <= 0) return null;
+        var resp = await _client
+            .From<DealProduct>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dealProductId.ToString())
+            .Limit(1)
+            .Get(ct);
+        return resp.Models?.FirstOrDefault();
+    }
+
+    public async Task<long?> CreateOrGetPendingManualPriceTaskAsync(DealProduct dealProduct, string reason, CancellationToken ct)
+    {
+        if (dealProduct == null || dealProduct.Id <= 0) return null;
+        var url = (dealProduct.Url ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        // De-dupe: if a pending task already exists, reuse it.
+        try
+        {
+            var existing = await _client
+                .From<ManualPriceTask>()
+                .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.Equals, dealProduct.Id.ToString())
+                .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
+                .Limit(1)
+                .Get(ct);
+            var found = existing.Models?.FirstOrDefault();
+            if (found != null) return found.Id;
+        }
+        catch
+        {
+            // ignore and attempt insert
+        }
+
+        try
+        {
+            var insert = new ManualPriceTaskInsertRow
+            {
+                DealProductId = dealProduct.Id,
+                Url = url,
+                Reason = string.IsNullOrWhiteSpace(reason) ? "bot_protection" : reason,
+                Status = "pending"
+            };
+
+            await _client.From<ManualPriceTaskInsertRow>().Insert(insert);
+
+            // Insert-row model doesn't include the generated ID; read back.
+            var readBack = await _client
+                .From<ManualPriceTask>()
+                .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.Equals, dealProduct.Id.ToString())
+                .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
+                .Order("created_at", Supabase.Postgrest.Constants.Ordering.Descending)
+                .Limit(1)
+                .Get(ct);
+            return readBack.Models?.FirstOrDefault()?.Id;
+        }
+        catch
+        {
+            // If insert fails (race due to unique partial index), attempt read again.
+            try
+            {
+                var existing = await _client
+                    .From<ManualPriceTask>()
+                    .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.Equals, dealProduct.Id.ToString())
+                    .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
+                    .Limit(1)
+                    .Get(ct);
+                return existing.Models?.FirstOrDefault()?.Id;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    public async Task<IReadOnlyList<ManualPriceTask>> GetPendingManualPriceTasksAsync(int limit, CancellationToken ct)
+    {
+        var l = limit <= 0 ? 50 : Math.Min(limit, 200);
+        var resp = await _client
+            .From<ManualPriceTask>()
+            .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
+            .Order("created_at", Supabase.Postgrest.Constants.Ordering.Descending)
+            .Limit(l)
+            .Get(ct);
+        return resp.Models ?? new List<ManualPriceTask>();
+    }
+
+    public async Task<ManualPriceTask?> GetManualPriceTaskByIdAsync(long taskId, CancellationToken ct)
+    {
+        if (taskId <= 0) return null;
+        var resp = await _client
+            .From<ManualPriceTask>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, taskId.ToString())
+            .Limit(1)
+            .Get(ct);
+        return resp.Models?.FirstOrDefault();
+    }
+
+    public async Task<bool> ApplyManualPriceTaskSubmissionAsync(
+        long taskId,
+        decimal? price,
+        string? currency,
+        bool? inStock,
+        bool? sold,
+        string? submittedBy,
+        string? notes,
+        CancellationToken ct)
+    {
+        var task = await GetManualPriceTaskByIdAsync(taskId, ct);
+        if (task == null) return false;
+        if (!string.Equals(task.Status, "pending", StringComparison.OrdinalIgnoreCase)) return false;
+
+        var dp = await GetDealProductByIdAsync(task.DealProductId, ct);
+        if (dp == null) return false;
+
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+        var statusChanged = false;
+
+        // Status mapping
+        if (sold == true && dp.DealStatusId != DealStatusSold)
+        {
+            dp.DealStatusId = DealStatusSold;
+            statusChanged = true;
+        }
+        else if (inStock == false && dp.DealStatusId != DealStatusOutOfStock)
+        {
+            dp.DealStatusId = DealStatusOutOfStock;
+            statusChanged = true;
+        }
+        else if (inStock == true && dp.DealStatusId != DealStatusActive)
+        {
+            dp.DealStatusId = DealStatusActive;
+            statusChanged = true;
+        }
+
+        // Price mapping
+        if (price.HasValue && price.Value > 0 && dp.Price != price.Value)
+        {
+            dp.Price = price.Value;
+            await AppendPriceHistoryForDealProductAsync(dp.Id, price.Value, currency, now, ct);
+        }
+
+        // Clear scrape-noise flags: this is a human-confirmed update.
+        dp.ErrorCount = 0;
+        dp.StaleAt = null;
+        dp.LastCheckedAt = now;
+        dp.NextCheckAt = now.AddHours(12);
+
+        await UpdateDealProductAsync(dp, ct);
+        if (statusChanged)
+        {
+            try
+            {
+                await UpdateProductBestDealAsync(dp.ProductId, ct);
+            }
+            catch
+            {
+                // best-effort
+            }
+        }
+
+        var update = new ManualPriceTaskUpdateRow
+        {
+            Id = taskId,
+            Status = "completed",
+            SubmittedAt = now,
+            SubmittedPrice = price,
+            SubmittedCurrency = currency,
+            SubmittedInStock = inStock,
+            SubmittedSold = sold,
+            SubmittedBy = string.IsNullOrWhiteSpace(submittedBy) ? null : submittedBy,
+            Notes = string.IsNullOrWhiteSpace(notes) ? null : notes
+        };
+        await _client
+            .From<ManualPriceTaskUpdateRow>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, taskId.ToString())
+            .Update(update);
+
+        return true;
     }
 
     public async Task<DealProduct?> GetPrimaryDealProductAsync(int dealId, CancellationToken ct)

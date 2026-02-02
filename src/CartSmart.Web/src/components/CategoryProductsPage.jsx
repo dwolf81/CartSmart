@@ -287,7 +287,7 @@ const CategoryProductsPage = () => {
                             <div className="text-lg text-gray-900 line-through">{formatPrice(bestDeal.msrp)}</div>
                           </div>
                           <div className="text-right">
-                            <span className="text-sm text-gray-500">Best price</span>
+                            <span className="text-sm text-gray-500">Lowest price</span>
                             <div className="text-2xl font-bold text-green-600">{formatPrice(bestDeal.price)}</div>
                             <div>
                               {bestDeal.discount_amt != null && (

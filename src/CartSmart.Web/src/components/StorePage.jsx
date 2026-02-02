@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { FaTag, FaTicketAlt, FaLink, FaLayerGroup } from 'react-icons/fa';
+import { FaTag, FaTicketAlt, FaLink, FaLayerGroup, FaPlus, FaQuestionCircle } from 'react-icons/fa';
 import LoadingSpinner from './LoadingSpinner';
 import SubmitDealModal from './SubmitDealModal';
 import { useAuth } from '../context/AuthContext';
 import AdminStoreModal from './AdminStoreModal';
+import { appendAffiliateParam, getAffiliateFields } from '../utils/affiliateUrl';
+import RewardsTooltipPill from './RewardsTooltipPill';
 
 const resolveApiBaseUrl = () => {
   const configured = process.env.REACT_APP_API_URL;
@@ -561,20 +563,32 @@ const StorePage = () => {
               </div>
 
               <div className="w-full sm:w-auto sm:ml-auto flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpenDropdown(null);
-                    if (!isAuthenticated) {
-                      navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
-                      return;
-                    }
-                    setIsSubmitDealOpen(true);
-                  }}
-                  className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
-                >
-                  Add Deal
-                </button>
+                <div className="flex flex-col items-end gap-1">
+                  <div className="text-xs text-gray-500">
+                    <span>Found a better deal? Prove it - we reward the best deals.</span>
+                    <RewardsTooltipPill
+                      label={<FaQuestionCircle className="inline ml-1 text-gray-400 hover:text-gray-600" />}
+                      pillClassName="inline-flex items-center"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpenDropdown(null);
+                      if (!isAuthenticated) {
+                        navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+                        return;
+                      }
+                      setIsSubmitDealOpen(true);
+                    }}
+                    className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
+                    title="Submit a better deal to earn rewards"
+                  >
+                    <FaPlus className="-ml-0.5" aria-hidden="true" />
+                    Beat the Deal
+                    <span className="text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -595,8 +609,18 @@ const StorePage = () => {
                     const meta = DEAL_TYPE_META[dealTypeId] || {};
 
                     const storeHost = deal?.store_url || storeUrl;
-                    const viewUrl = toAbsoluteUrl(deal?.url) || toAbsoluteUrl(storeHost);
-                    const externalOfferUrl = toAbsoluteUrl(deal?.external_offer_url);
+                    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(deal, 'normal');
+                    const { affiliateCodeVar: externalAffiliateCodeVar, affiliateCode: externalAffiliateCode } = getAffiliateFields(deal, 'external');
+                    const viewUrl = appendAffiliateParam(
+                      toAbsoluteUrl(deal?.url) || toAbsoluteUrl(storeHost),
+                      affiliateCodeVar,
+                      affiliateCode
+                    );
+                    const externalOfferUrl = appendAffiliateParam(
+                      toAbsoluteUrl(deal?.external_offer_url),
+                      externalAffiliateCodeVar,
+                      externalAffiliateCode
+                    );
 
                     const steps = Array.isArray(deal?.steps) ? deal.steps : [];
                     const dealId = getDealId(deal) || (dealTypeId === 3 ? getDealId(steps?.[0]) : null);
@@ -760,7 +784,11 @@ const StorePage = () => {
                                               {stepDealTypeId === 4 && toAbsoluteUrl(step.external_offer_url) && (
                                                 <div role="group" aria-label="External offer steps" className="flex w-full gap-2 justify-end flex-nowrap">
                                                   <a
-                                                    href={toAbsoluteUrl(step.external_offer_url)}
+                                                    href={appendAffiliateParam(
+                                                      toAbsoluteUrl(step.external_offer_url),
+                                                      (step?.external_affiliate_code_var ?? step?.externalAffiliateCodeVar ?? externalAffiliateCodeVar),
+                                                      (step?.external_affiliate_code ?? step?.externalAffiliateCode ?? externalAffiliateCode)
+                                                    )}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.blue} whitespace-nowrap`}
@@ -769,7 +797,7 @@ const StorePage = () => {
                                                     Activate Offer
                                                   </a>
                                                   <a
-                                                    href={toAbsoluteUrl(step.url)}
+                                                    href={appendAffiliateParam(toAbsoluteUrl(step.url), affiliateCodeVar, affiliateCode)}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
@@ -783,7 +811,7 @@ const StorePage = () => {
                                               {stepDealTypeId !== 4 && toAbsoluteUrl(step.url) && (
                                                 <div role="group" aria-label="Deal action" className="flex w-full gap-2 justify-end flex-nowrap">
                                                   <a
-                                                    href={toAbsoluteUrl(step.url)}
+                                                    href={appendAffiliateParam(toAbsoluteUrl(step.url), affiliateCodeVar, affiliateCode)}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
@@ -979,7 +1007,7 @@ const StorePage = () => {
                             <div className="text-lg text-gray-900 line-through">{formatPrice(bestDeal.msrp)}</div>
                           </div>
                           <div className="text-right">
-                            <span className="text-sm text-gray-500">Best price</span>
+                            <span className="text-sm text-gray-500">Lowest price</span>
                             <div className="text-2xl font-bold text-green-600">{formatPrice(bestDeal.price)}</div>
                             <div>
                               {bestDeal.discount_amt != null && (
