@@ -85,6 +85,14 @@ namespace CartSmart.API.Controllers
             return Regex.Replace(trimmed, "[^a-z0-9]+", "");
         }
 
+        private static string NormalizeKeyword(string? keyword)
+        {
+            if (string.IsNullOrWhiteSpace(keyword)) return string.Empty;
+            var trimmed = keyword.Trim().ToLowerInvariant();
+            // Match the DB generated column: lower(regexp_replace(keyword, '[^a-zA-Z0-9]+', '', 'g'))
+            return Regex.Replace(trimmed, "[^a-z0-9]+", "");
+        }
+
         private static IReadOnlyList<string> CleanAliasList(IEnumerable<string>? aliases)
         {
             if (aliases == null) return Array.Empty<string>();
@@ -98,6 +106,27 @@ namespace CartSmart.API.Controllers
                 if (string.IsNullOrWhiteSpace(v)) continue;
                 var key = NormalizeAlias(v);
                 if (string.IsNullOrWhiteSpace(key)) continue;
+                if (seen.Add(key)) result.Add(v);
+            }
+
+            return result;
+        }
+
+        private static IReadOnlyList<string> CleanKeywordList(IEnumerable<string>? keywords)
+        {
+            if (keywords == null) return Array.Empty<string>();
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var result = new List<string>();
+
+            foreach (var raw in keywords)
+            {
+                var v = (raw ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(v)) continue;
+                var key = NormalizeKeyword(v);
+                if (string.IsNullOrWhiteSpace(key)) continue;
+                // Avoid extremely short negatives that will accidentally match everything.
+                if (key.Length < 3) continue;
                 if (seen.Add(key)) result.Add(v);
             }
 
@@ -158,6 +187,70 @@ namespace CartSmart.API.Controllers
                     {
                         ProductId = productId,
                         Alias = alias,
+                        IsActive = true
+                    });
+                }
+            }
+            catch
+            {
+                // Swallow (best-effort). The admin UI can retry later.
+            }
+        }
+
+        private async Task UpsertProductNegativeKeywordsAsync(Supabase.Client client, int productId, IEnumerable<string>? incomingKeywords)
+        {
+            // Best-effort: we don't want keyword configuration failures to block all admin editing.
+            try
+            {
+                var desired = CleanKeywordList(incomingKeywords);
+                var desiredNormalized = desired.Select(NormalizeKeyword).Where(x => !string.IsNullOrWhiteSpace(x)).ToHashSet(StringComparer.Ordinal);
+
+                var existingResp = await client
+                    .From<ProductNegativeKeyword>()
+                    .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+                    .Get();
+
+                var existingRows = existingResp.Models ?? new List<ProductNegativeKeyword>();
+                var byNormalized = existingRows
+                    .Where(r => !string.IsNullOrWhiteSpace(r.NormalizedKeyword))
+                    .GroupBy(r => r.NormalizedKeyword)
+                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+                // Deactivate any currently active keyword not in the desired set.
+                foreach (var row in existingRows.Where(r => r.IsActive))
+                {
+                    if (string.IsNullOrWhiteSpace(row.NormalizedKeyword)) continue;
+                    if (desiredNormalized.Contains(row.NormalizedKeyword)) continue;
+                    await client.From<ProductNegativeKeywordUpdateRow>().Update(new ProductNegativeKeywordUpdateRow
+                    {
+                        Id = row.Id,
+                        IsActive = false
+                    });
+                }
+
+                // Insert or reactivate desired keywords.
+                foreach (var keyword in desired)
+                {
+                    var normalized = NormalizeKeyword(keyword);
+                    if (string.IsNullOrWhiteSpace(normalized)) continue;
+
+                    if (byNormalized.TryGetValue(normalized, out var existing))
+                    {
+                        if (!existing.IsActive)
+                        {
+                            await client.From<ProductNegativeKeywordUpdateRow>().Update(new ProductNegativeKeywordUpdateRow
+                            {
+                                Id = existing.Id,
+                                IsActive = true
+                            });
+                        }
+                        continue;
+                    }
+
+                    await client.From<ProductNegativeKeywordInsertRow>().Insert(new ProductNegativeKeywordInsertRow
+                    {
+                        ProductId = productId,
+                        Keyword = keyword,
                         IsActive = true
                     });
                 }
@@ -335,6 +428,12 @@ namespace CartSmart.API.Controllers
                 await UpsertProductSearchAliasesAsync(client, inserted.Id, request.SearchAliases);
             }
 
+            // Optional: per-product negative keywords used to exclude listing titles during ingestion.
+            if (request.NegativeKeywords != null)
+            {
+                await UpsertProductNegativeKeywordsAsync(client, inserted.Id, request.NegativeKeywords);
+            }
+
             InvalidateProductCaches(inserted.Id, inserted.Slug);
             InvalidateCategoryProductsCache(request.ProductTypeId);
 
@@ -499,6 +598,28 @@ namespace CartSmart.API.Controllers
             {
                 Console.Error.WriteLine($"[ProductsController] Failed to load product_search_alias for productId={productId}: {ex}");
                 dto.Product.SearchAliases = new List<string>();
+            }
+
+            // Include active negative keywords for admin editing.
+            try
+            {
+                var kwResp = await client
+                    .From<ProductNegativeKeyword>()
+                    .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+                    .Get();
+
+                dto.Product.NegativeKeywords = (kwResp.Models ?? new List<ProductNegativeKeyword>())
+                    .Where(k => k.IsActive)
+                    .Select(k => (k.Keyword ?? string.Empty).Trim())
+                    .Where(k => !string.IsNullOrWhiteSpace(k))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(k => k)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[ProductsController] Failed to load product_negative_keyword for productId={productId}: {ex}");
+                dto.Product.NegativeKeywords = new List<string>();
             }
 
             return Ok(dto);
@@ -977,7 +1098,7 @@ namespace CartSmart.API.Controllers
             var authResult = await EnsureAdminAsync();
             if (authResult != null) return authResult;
 
-            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.SearchAliases == null)
+            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.SearchAliases == null && req.NegativeKeywords == null)
                 return BadRequest(new { message = "No fields provided" });
 
             var client = _supabase.GetServiceRoleClient();
@@ -1005,6 +1126,12 @@ namespace CartSmart.API.Controllers
             if (req.SearchAliases != null)
             {
                 await UpsertProductSearchAliasesAsync(client, productId, req.SearchAliases);
+            }
+
+            // Optional: replace negative keyword set.
+            if (req.NegativeKeywords != null)
+            {
+                await UpsertProductNegativeKeywordsAsync(client, productId, req.NegativeKeywords);
             }
 
             var expectedName = req.Name != null ? req.Name.Trim() : existing.Name;

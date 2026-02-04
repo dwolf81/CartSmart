@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using CartSmart.API.Models;
 using Supabase;
@@ -11,6 +12,8 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
 {
     private readonly Client _client;
     private readonly TimeProvider _timeProvider;
+
+    private readonly ConcurrentDictionary<int, IReadOnlyList<string>> _productNegativeKeywordsCache = new();
 
     // Status mapping constants provided by user
     public const int DealStatusActive = 2;
@@ -76,6 +79,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     public async Task<IReadOnlyList<DealProduct>> GetDueDealProductsAsync(int batchSize, CancellationToken ct)
     {
         // Select active, non-deleted products that are due now.
+        // Note: refresh should only run for DIRECT deals (deal_type_id = 1).
         var nowIso = _timeProvider.GetUtcNow().UtcDateTime.ToString("O");
         var response = await _client.From<DealProduct>()
             .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
@@ -99,6 +103,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         var dealsResp = await _client.From<Deal>()
             .Filter("id", Supabase.Postgrest.Constants.Operator.In, dealIdObjects)
             .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Filter("deal_type_id", Supabase.Postgrest.Constants.Operator.Equals, "1")
             .Select("id")
             .Get(ct);
 
@@ -588,5 +593,37 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             .Limit(1)
             .Get(ct);
         return resp.Models.FirstOrDefault();
+    }
+
+    public async Task<IReadOnlyList<string>> GetOrFetchProductNegativeKeywordsAsync(int productId, CancellationToken ct)
+    {
+        if (productId <= 0) return Array.Empty<string>();
+        if (_productNegativeKeywordsCache.TryGetValue(productId, out var cached))
+            return cached;
+
+        try
+        {
+            // Some PostgREST clients can be picky about boolean filters; filter in-memory instead.
+            var resp = await _client
+                .From<ProductNegativeKeyword>()
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Get(ct);
+
+            var keywords = (resp.Models ?? new List<ProductNegativeKeyword>())
+                .Where(k => k.IsActive)
+                .Select(k => (k.Keyword ?? string.Empty).Trim())
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(100)
+                .ToList();
+
+            _productNegativeKeywordsCache[productId] = keywords;
+            return keywords;
+        }
+        catch
+        {
+            _productNegativeKeywordsCache[productId] = Array.Empty<string>();
+            return Array.Empty<string>();
+        }
     }
 }

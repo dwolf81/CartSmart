@@ -178,12 +178,56 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             var productName = product?.Name?.ToLowerInvariant() ?? string.Empty;
             var productTokens = NormalizeIdentityTokens(product?.Name ?? string.Empty);
 
-            var listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, product?.PreferredConditionCategoryId, ct);
+            // Product-scoped negative keywords (listing exclusion)
+            var negativeKeywords = await repoImpl.GetOrFetchProductNegativeKeywordsAsync(q.ProductId, ct);
+            var normalizedNegativeKeywords = negativeKeywords
+                .Select(NormalizeForContains)
+                .Where(k => !string.IsNullOrWhiteSpace(k) && k.Length >= 3)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            IReadOnlyList<NewListing> listings;
+            if (storeType == StoreType.Ebay)
+            {
+                // For eBay ingestion, if the product specifies a preferred condition, only search that.
+                // Otherwise, search both New and Used so variant resolution can find the best deal per condition.
+                // 1 = New, 2 = Used (internal condition categories)
+                var conditionIds = product?.PreferredConditionCategoryId.HasValue == true
+                    ? new[] { product.PreferredConditionCategoryId.Value }
+                    : new[] { 1, 2 };
+
+                var combined = new Dictionary<string, NewListing>(StringComparer.OrdinalIgnoreCase);
+                foreach (var cat in conditionIds)
+                {
+                    var part = await client.SearchNewListingsAsync(q.ProductId, q.Query, cat, ct);
+                    foreach (var l in part)
+                    {
+                        var key = !string.IsNullOrWhiteSpace(l.ItemId)
+                            ? l.ItemId!
+                            : (l.Url ?? string.Empty);
+
+                        if (string.IsNullOrWhiteSpace(key))
+                            continue;
+
+                        if (!combined.ContainsKey(key))
+                            combined[key] = l;
+                    }
+                }
+                listings = combined.Values.ToList();
+            }
+            else
+            {
+                listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, product?.PreferredConditionCategoryId, ct);
+            }
             // Apply matching hierarchy and price sanity
             var candidates = new List<NewListing>();
             foreach (var l in listings)
             {
-                // Respect product's preferred condition category if configured
+                if (normalizedNegativeKeywords.Count > 0 && TitleMatchesAnyNegativeKeyword(l.Title, normalizedNegativeKeywords))
+                    continue;
+
+                // Respect product's preferred condition category if configured.
+                // For eBay, we also restrict the search when configured, but keep this guard as a safety net.
                 if (product?.PreferredConditionCategoryId.HasValue == true)
                 {
                     if (l.ConditionCategoryId != product.PreferredConditionCategoryId.Value)
@@ -248,16 +292,27 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             {
                 selected = resolved
                     .Where(x => x.VariantId.HasValue)
-                    .GroupBy(x => x.VariantId!.Value)
+                    .GroupBy(x => (VariantId: x.VariantId!.Value, ConditionId: x.Listing.ConditionCategoryId ?? 0))
                     .SelectMany(g => g.OrderBy(x => x.Listing.Price!.Value).Take(topPerProduct))
                     .ToList();
             }
             else
             {
-                selected = resolved
-                    .OrderBy(x => x.Listing.Price!.Value)
-                    .Take(topPerProduct)
-                    .ToList();
+                if (storeType == StoreType.Ebay)
+                {
+                    // For eBay, keep top N for New and Used separately.
+                    selected = resolved
+                        .GroupBy(x => x.Listing.ConditionCategoryId ?? 0)
+                        .SelectMany(g => g.OrderBy(x => x.Listing.Price!.Value).Take(topPerProduct))
+                        .ToList();
+                }
+                else
+                {
+                    selected = resolved
+                        .OrderBy(x => x.Listing.Price!.Value)
+                        .Take(topPerProduct)
+                        .ToList();
+                }
             }
 
             foreach (var (listing, variantId) in selected)
@@ -701,5 +756,32 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         if (setProduct.Count == 0 || setListing.Count == 0) return 0.0;
         var inter = setProduct.Intersect(setListing).Count();
         return (double)inter / (double)setProduct.Count;
+    }
+
+    private static bool TitleMatchesAnyNegativeKeyword(string? title, IReadOnlyList<string> normalizedNegativeKeywords)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return false;
+        if (normalizedNegativeKeywords == null || normalizedNegativeKeywords.Count == 0) return false;
+        var normTitle = NormalizeForContains(title);
+        if (string.IsNullOrWhiteSpace(normTitle)) return false;
+        foreach (var nk in normalizedNegativeKeywords)
+        {
+            if (string.IsNullOrWhiteSpace(nk)) continue;
+            if (normTitle.Contains(nk, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    private static string NormalizeForContains(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+        var lower = s.Trim().ToLowerInvariant();
+        var sb = new System.Text.StringBuilder(lower.Length);
+        foreach (var ch in lower)
+        {
+            if (char.IsLetterOrDigit(ch)) sb.Append(ch);
+        }
+        return sb.ToString();
     }
 }

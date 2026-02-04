@@ -15,6 +15,17 @@ Set `SUPABASE_URL` and `SUPABASE_KEY` for repository access.
 ## Timer Schedule
 `0 */5 * * * *` (every 5 minutes)
 
+## Temporarily Disable Timers
+Azure Functions supports disabling individual functions via app settings.
+
+- Disable deal refresh: set `AzureWebJobs.RefreshDeals.Disabled` = `true`
+- Disable ingestion: set `AzureWebJobs.IngestNewListings.Disabled` = `true`
+- Disable expiry sweep: set `AzureWebJobs.SweepExpiredDeals.Disabled` = `true`
+
+Where to set them:
+- Local: `CartSmart.Functions/local.settings.json` under `Values`
+- Azure: Function App → Configuration → Application settings
+
 ## Extending Providers
 1. Implement `IStoreClient`.
 2. Register via `services.AddSingleton<IStoreClient, NewStoreClient>();` and optionally HttpClient.

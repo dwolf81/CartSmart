@@ -53,6 +53,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("searchAliases")]
         [JsonPropertyName("searchAliases")]
         public List<string> SearchAliases { get; set; } = new();
+
+        [JsonProperty("negativeKeywords")]
+        [JsonPropertyName("negativeKeywords")]
+        public List<string> NegativeKeywords { get; set; } = new();
     }
 
     public class AdminUpdateProductRequestDTO
@@ -77,6 +81,11 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("searchAliases")]
         [JsonPropertyName("searchAliases")]
         public List<string>? SearchAliases { get; set; }
+
+        // Optional. If provided (even empty), replaces the current negative keyword set.
+        [JsonProperty("negativeKeywords")]
+        [JsonPropertyName("negativeKeywords")]
+        public List<string>? NegativeKeywords { get; set; }
     }
 
     public class AdminCreateProductRequestDTO
@@ -104,6 +113,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("searchAliases")]
         [JsonPropertyName("searchAliases")]
         public List<string>? SearchAliases { get; set; }
+
+        [JsonProperty("negativeKeywords")]
+        [JsonPropertyName("negativeKeywords")]
+        public List<string>? NegativeKeywords { get; set; }
     }
 
     public class AdminCreateProductResponseDTO

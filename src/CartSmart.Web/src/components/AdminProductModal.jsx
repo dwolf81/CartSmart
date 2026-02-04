@@ -38,6 +38,7 @@ export default function AdminProductModal({
 
   const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '' });
   const [adminSearchAliasesText, setAdminSearchAliasesText] = useState('');
+  const [adminNegativeKeywordsText, setAdminNegativeKeywordsText] = useState('');
   const [adminProductImageUrl, setAdminProductImageUrl] = useState('');
   const [adminProductSelectedFile, setAdminProductSelectedFile] = useState(null);
   const [adminProductPreviewUrl, setAdminProductPreviewUrl] = useState('');
@@ -71,6 +72,7 @@ export default function AdminProductModal({
     setAdminEditSaving(false);
     setAdminProductDraft({ name: '', msrp: '', description: '' });
     setAdminSearchAliasesText('');
+    setAdminNegativeKeywordsText('');
     setAdminProductImageUrl('');
     setAdminProductSelectedFile(null);
     setAdminProductPreviewUrl('');
@@ -98,6 +100,9 @@ export default function AdminProductModal({
 
     const aliases = Array.isArray(data?.product?.searchAliases) ? data.product.searchAliases : [];
     setAdminSearchAliasesText(aliases.filter(Boolean).join('\n'));
+
+    const negativeKeywords = Array.isArray(data?.product?.negativeKeywords) ? data.product.negativeKeywords : [];
+    setAdminNegativeKeywordsText(negativeKeywords.filter(Boolean).join(', '));
 
     setAdminProductImageUrl(data?.product?.imageUrl ?? '');
     const bid = data?.product?.brandId;
@@ -311,6 +316,11 @@ export default function AdminProductModal({
         .map((s) => (s || '').trim())
         .filter((s) => !!s);
 
+      const parsedNegativeKeywords = (adminNegativeKeywordsText || '')
+        .split(/\r?\n|,/g)
+        .map((s) => (s || '').trim())
+        .filter((s) => !!s);
+
       if (internalMode === 'add') {
         if (!productTypeId) throw new Error('Missing product type');
         const res = await authFetch(`${API_URL}/api/products/admin`, {
@@ -322,7 +332,8 @@ export default function AdminProductModal({
             description: adminProductDraft.description,
             productTypeId: Number(productTypeId),
             brandId: adminBrandId ? Number(adminBrandId) : null,
-            searchAliases: parsedAliases
+            searchAliases: parsedAliases,
+            negativeKeywords: parsedNegativeKeywords
           })
         });
         if (!res.ok) {
@@ -380,7 +391,8 @@ export default function AdminProductModal({
           msrp: msrpValue,
           description: adminProductDraft.description,
           brandId: adminBrandId ? Number(adminBrandId) : null,
-          searchAliases: parsedAliases
+          searchAliases: parsedAliases,
+          negativeKeywords: parsedNegativeKeywords
         })
       });
 
@@ -784,6 +796,20 @@ export default function AdminProductModal({
                   />
                   <div className="text-xs text-gray-500 mt-1">
                     Used by the worker to expand store searches (e.g. “Mevo+” → “Mevo Plus”).
+                  </div>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Negative keywords (listing exclusion)</label>
+                  <input
+                    value={adminNegativeKeywordsText}
+                    onChange={(e) => setAdminNegativeKeywordsText(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-md text-sm"
+                    placeholder={'Comma-separated (or one per line). Example: Triple Track, Refinished'}
+                    disabled={adminEditSaving}
+                  />
+                  <div className="text-xs text-gray-500 mt-1">
+                    Listings containing any of these keywords in the title will be ignored during new-listing ingestion.
                   </div>
                 </div>
               </div>
