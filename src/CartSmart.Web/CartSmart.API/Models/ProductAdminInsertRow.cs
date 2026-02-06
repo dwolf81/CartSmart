@@ -30,6 +30,9 @@ public class ProductAdminInsertRow : BaseModel
     [Column("brand_id")]
     public int? BrandId { get; set; }
 
+    [Column("enable_service")]
+    public bool EnableService { get; set; } = true;
+
     [Column("deleted")]
     public bool Deleted { get; set; } = false;
 }

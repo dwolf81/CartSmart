@@ -47,6 +47,11 @@ namespace CartSmart.API.Models;
         [Column("deleted")]
         public bool Deleted { get; set; }
 
+        // Controls whether background service tasks (refresh/ingest) run for this product.
+        // DB column: product.enable_service
+        [Column("enable_service")]
+        public bool EnableService { get; set; } = true;
+
         // Preferred condition category to accept for this product (1=New, 2=Used, 3=Refurbished)
         [Column("preferred_condition_category_id")]
         public int? PreferredConditionCategoryId { get; set; }

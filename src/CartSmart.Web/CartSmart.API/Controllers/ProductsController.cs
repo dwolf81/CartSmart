@@ -380,6 +380,7 @@ namespace CartSmart.API.Controllers
                 ProductTypeId = request.ProductTypeId,
                 UserId = user.Id,
                 BrandId = request.BrandId,
+                EnableService = request.EnableService ?? true,
                 Deleted = false
             };
 
@@ -494,6 +495,7 @@ namespace CartSmart.API.Controllers
             var attributes = new List<AttributeModel>();
             var enumValues = new List<AttributeEnumValue>();
             var disabledEnumValueIds = new HashSet<int>();
+            var activeSynonymsByEnumValueId = new Dictionary<int, List<string>>();
             if (attributeIds.Count > 0)
             {
                 var attributeIdObjects = attributeIds.Cast<object>().ToArray();
@@ -519,6 +521,36 @@ namespace CartSmart.API.Controllers
                 disabledEnumValueIds = disabledRows
                     .Select(x => x.EnumValueId)
                     .ToHashSet();
+
+                // Per-product active synonyms for enum values
+                try
+                {
+                    var synResp = await client
+                        .From<ProductAttributeEnumSynonym>()
+                        .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+                        .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.In, attributeIdObjects)
+                        .Get();
+
+                    var synRows = (synResp.Models ?? new List<ProductAttributeEnumSynonym>())
+                        .Where(s => s.IsActive)
+                        .ToList();
+
+                    activeSynonymsByEnumValueId = synRows
+                        .GroupBy(s => s.EnumValueId)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g
+                                .Select(s => (s.Synonym ?? string.Empty).Trim())
+                                .Where(s => !string.IsNullOrWhiteSpace(s))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .OrderBy(s => s)
+                                .ToList());
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[ProductsController] Failed to load product_attribute_enum_synonym for productId={productId}: {ex}");
+                    activeSynonymsByEnumValueId = new Dictionary<int, List<string>>();
+                }
             }
 
             // Provide attribute catalog to allow adding missing attributes
@@ -537,7 +569,8 @@ namespace CartSmart.API.Controllers
                     Description = product.Description,
                     Slug = product.Slug,
                     ImageUrl = product.ImageUrl,
-                    BrandId = product.BrandId
+                    BrandId = product.BrandId,
+                    EnableService = product.EnableService
                 },
                 Attributes = attributes
                     .OrderBy(a => a.AttributeKey)
@@ -559,7 +592,8 @@ namespace CartSmart.API.Controllers
                                 DisplayName = ev.DisplayName,
                                 SortOrder = ev.SortOrder,
                                 IsActive = ev.IsActive,
-                                IsEnabled = !disabledEnumValueIds.Contains(ev.Id)
+                                IsEnabled = !disabledEnumValueIds.Contains(ev.Id),
+                                Synonyms = activeSynonymsByEnumValueId.TryGetValue(ev.Id, out var syns) ? syns : new List<string>()
                             })
                             .ToList()
                     })
@@ -623,6 +657,82 @@ namespace CartSmart.API.Controllers
             }
 
             return Ok(dto);
+        }
+
+        [HttpPut("{productId}/admin/product-attributes/{attributeId:int}/enum-values/{enumValueId:int}/synonyms")]
+        [Authorize]
+        public async Task<IActionResult> ReplaceProductAttributeEnumSynonymsAdmin(
+            int productId,
+            int attributeId,
+            int enumValueId,
+            [FromBody] AdminUpdateEnumSynonymsRequestDTO req)
+        {
+            var authResult = await EnsureAdminAsync();
+            if (authResult != null) return authResult;
+            if (productId <= 0 || attributeId <= 0 || enumValueId <= 0)
+                return BadRequest(new { message = "Invalid ids" });
+
+            req ??= new AdminUpdateEnumSynonymsRequestDTO();
+            var raw = req.Synonyms ?? new List<string>();
+            var cleaned = raw
+                .Select(s => (s ?? string.Empty).Trim())
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(25)
+                .ToList();
+
+            var client = _supabase.GetServiceRoleClient();
+            var productResp = await client
+                .From<Product>()
+                .Where(p => p.Id == productId && p.Deleted == false)
+                .Limit(1)
+                .Get();
+            var product = productResp.Models.FirstOrDefault();
+            if (product == null) return NotFound(new { message = "Product not found" });
+
+            // Ensure the attribute is attached to the product.
+            var paTable = await _supabase.QueryTable<ProductAttribute>();
+            var paResp = await paTable
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+                .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.Equals, attributeId)
+                .Limit(1)
+                .Get();
+            var productAttr = paResp.Models?.FirstOrDefault();
+            if (productAttr == null) return NotFound(new { message = "Product attribute not found" });
+
+            // Ensure enum exists and belongs to the attribute.
+            var enumResp = await client
+                .From<AttributeEnumValue>()
+                .Where(ev => ev.Id == enumValueId && ev.AttributeId == attributeId)
+                .Limit(1)
+                .Get();
+            var evRow = enumResp.Models.FirstOrDefault();
+            if (evRow == null) return NotFound(new { message = "Enum value not found" });
+
+            // Replace semantics: delete existing synonyms for this product+enum and insert the new set.
+            await client
+                .From<ProductAttributeEnumSynonym>()
+                .Where(r => r.ProductId == productId && r.EnumValueId == enumValueId)
+                .Delete();
+
+            if (cleaned.Count > 0)
+            {
+                var rows = cleaned
+                    .Select(s => new ProductAttributeEnumSynonymInsertRow
+                    {
+                        ProductId = productId,
+                        AttributeId = attributeId,
+                        EnumValueId = enumValueId,
+                        Synonym = s,
+                        IsActive = true
+                    })
+                    .ToList();
+
+                await client.From<ProductAttributeEnumSynonymInsertRow>().Insert(rows);
+            }
+
+            InvalidateProductCaches(productId, product.Slug);
+            return Ok(new { success = true, synonyms = cleaned });
         }
 
         [HttpPost("{productId}/admin/image")]
@@ -736,28 +846,19 @@ namespace CartSmart.API.Controllers
             var attr = attrResp.Models.FirstOrDefault();
             if (attr == null) return NotFound(new { message = "Attribute not found" });
 
-            // Upsert: table is composite keyed; easiest path is delete then insert if exists.
-            var paTable = await _supabase.QueryTable<ProductAttribute>();
-            var existingResp = await paTable
-                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
-                .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.Equals, req.AttributeId)
-                .Get();
-            var existing = existingResp.Models?.FirstOrDefault();
-            if (existing != null)
+            // Upsert: product_attribute is composite-keyed (product_id, attribute_id).
+            // Avoid Update() here because the client model can only express a single PK.
+            await client
+                .From<ProductAttribute>()
+                .Where(pa => pa.ProductId == productId && pa.AttributeId == req.AttributeId)
+                .Delete();
+
+            await client.From<ProductAttribute>().Insert(new ProductAttribute
             {
-                existing.IsRequired = req.IsRequired;
-                await client.From<ProductAttribute>().Update(existing);
-            }
-            else
-            {
-                var row = new ProductAttribute
-                {
-                    ProductId = productId,
-                    AttributeId = req.AttributeId,
-                    IsRequired = req.IsRequired
-                };
-                await client.From<ProductAttribute>().Insert(row);
-            }
+                ProductId = productId,
+                AttributeId = req.AttributeId,
+                IsRequired = req.IsRequired
+            });
 
             InvalidateProductCaches(productId, product.Slug);
             return Ok(new { success = true });
@@ -827,8 +928,17 @@ namespace CartSmart.API.Controllers
             var existingMap = mapResp.Models?.FirstOrDefault();
             if (existingMap != null)
             {
-                existingMap.IsRequired = req.IsRequired;
-                await client.From<ProductAttribute>().Update(existingMap);
+                await client
+                    .From<ProductAttribute>()
+                    .Where(pa => pa.ProductId == productId && pa.AttributeId == attr.Id)
+                    .Delete();
+
+                await client.From<ProductAttribute>().Insert(new ProductAttribute
+                {
+                    ProductId = productId,
+                    AttributeId = attr.Id,
+                    IsRequired = req.IsRequired
+                });
             }
             else
             {
@@ -862,6 +972,7 @@ namespace CartSmart.API.Controllers
             var authResult = await EnsureAdminAsync();
             if (authResult != null) return authResult;
             if (attributeId <= 0) return BadRequest(new { message = "attributeId is required" });
+            if (req == null) return BadRequest(new { message = "Request body is required" });
 
             var client = _supabase.GetServiceRoleClient();
             var productResp = await client
@@ -880,8 +991,17 @@ namespace CartSmart.API.Controllers
             var existing = existingResp.Models?.FirstOrDefault();
             if (existing == null) return NotFound(new { message = "Product attribute not found" });
 
-            existing.IsRequired = req.IsRequired;
-            await client.From<ProductAttribute>().Update(existing);
+            // Composite key update: delete + insert to avoid Update() on a single-column PK model.
+            await client
+                .From<ProductAttribute>()
+                .Where(pa => pa.ProductId == productId && pa.AttributeId == attributeId)
+                .Delete();
+            await client.From<ProductAttribute>().Insert(new ProductAttribute
+            {
+                ProductId = productId,
+                AttributeId = attributeId,
+                IsRequired = req.IsRequired
+            });
 
             InvalidateProductCaches(productId, product.Slug);
             return Ok(new { success = true });
@@ -1098,7 +1218,7 @@ namespace CartSmart.API.Controllers
             var authResult = await EnsureAdminAsync();
             if (authResult != null) return authResult;
 
-            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.SearchAliases == null && req.NegativeKeywords == null)
+            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.EnableService == null && req.SearchAliases == null && req.NegativeKeywords == null)
                 return BadRequest(new { message = "No fields provided" });
 
             var client = _supabase.GetServiceRoleClient();
@@ -1119,6 +1239,7 @@ namespace CartSmart.API.Controllers
             if (req.Msrp != null) updateRow.MSRP = req.Msrp;
             if (req.Description != null) updateRow.Description = req.Description;
             if (req.BrandId != null) updateRow.BrandId = req.BrandId;
+            if (req.EnableService != null) updateRow.EnableService = req.EnableService;
 
             await client.From<ProductAdminUpdateRow>().Update(updateRow);
 
@@ -1138,6 +1259,7 @@ namespace CartSmart.API.Controllers
             var expectedMsrp = req.Msrp ?? existing.MSRP;
             var expectedDescription = req.Description ?? existing.Description;
             var expectedBrandId = req.BrandId ?? existing.BrandId;
+            var expectedEnableService = req.EnableService ?? existing.EnableService;
 
             // Read-after-write so the API response reflects what actually persisted.
             var verifyResp = await client
@@ -1155,7 +1277,8 @@ namespace CartSmart.API.Controllers
                 string.Equals(persisted.Name, expectedName, StringComparison.Ordinal) &&
                 persisted.MSRP == expectedMsrp &&
                 string.Equals(persisted.Description, expectedDescription, StringComparison.Ordinal) &&
-                persisted.BrandId == expectedBrandId;
+                persisted.BrandId == expectedBrandId &&
+                (persisted.EnableService ?? true) == expectedEnableService;
 
             if (!didPersist)
             {
@@ -1172,7 +1295,8 @@ namespace CartSmart.API.Controllers
                 id = persisted.Id,
                 name = persisted.Name,
                 msrp = persisted.MSRP,
-                description = persisted.Description
+                description = persisted.Description,
+                enableService = persisted.EnableService ?? expectedEnableService
             });
         }
 

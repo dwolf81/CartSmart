@@ -1435,6 +1435,74 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         return true;
     }
 
+    public async Task<bool> AdminDeleteAsync(long dealId, long? dealProductId, bool deleteDeal)
+    {
+        var userIdStr = _authService.GetCurrentUserId();
+        if (string.IsNullOrWhiteSpace(userIdStr)) return false;
+        if (!int.TryParse(userIdStr, out var userId) || userId <= 0) return false;
+
+        if (dealId <= 0) return false;
+
+        // Admin-only endpoint: validate using service-role to avoid any RLS surprises.
+        var svc = _supabase.GetServiceRoleClient();
+        var uResp = await svc
+            .From<User>()
+            .Select("id,admin")
+            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, userId.ToString())
+            .Limit(1)
+            .Get();
+        var u = uResp.Models.FirstOrDefault();
+        if (u?.Admin != true)
+            throw new UnauthorizedAccessException("Admin access required.");
+
+        if (deleteDeal)
+        {
+            // Soft-delete parent deal
+            await svc
+                .From<Deal>()
+                .Where(d => d.Id == (int)dealId)
+                .Set(d => d.DealStatusId, 4)
+                .Update();
+
+            // Soft-delete all deal_product rows for this deal (if any)
+            await svc
+                .From<DealProduct>()
+                .Where(dp => dp.DealId == (int)dealId)
+                .Set(dp => dp.DealStatusId, 4)
+                .Update();
+
+        }
+        else
+        {
+            if (!dealProductId.HasValue || dealProductId.Value <= 0)
+                return false;
+
+            // Ensure deal_product exists and belongs to the deal being deleted
+            var dpIdStr = dealProductId.Value.ToString();
+            var dpResp = await svc
+                .From<DealProduct>()
+                .Select("id,deal_id,product_id")
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dpIdStr)
+                .Limit(1)
+                .Get();
+            var dp = dpResp.Models.FirstOrDefault();
+            if (dp == null) return false;
+            if (dp.DealId != (int)dealId) return false;
+
+            await svc
+                .From<DealProduct>()
+                .Where(x => x.Id == (int)dealProductId.Value)
+                .Set(x => x.DealStatusId, 4)
+                .Update();
+
+        }
+
+        // Invalidate key caches
+        _cache.Remove("bestDeals");
+
+        return true;
+    }
+
     public async Task<bool> FlagDealAsync(long dealId, long? dealProductId, int? dealIssueTypeId, string? comments)
     {
         var userId = _authService.GetCurrentUserId();
@@ -1480,9 +1548,15 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         var userId = _authService.GetCurrentUserId();
         if (userId == null) return false;
 
+        if (!int.TryParse(userId, out var userIdInt) || userIdInt <= 0) return false;
+
+        var u = await _supabase.SingleAsync<User>("id", userIdInt);
+        if (u?.Admin != true)
+            throw new UnauthorizedAccessException("Admin access required.");
+
         var dealReview = new DealReview
         {
-            UserId = Convert.ToInt32(userId),
+            UserId = userIdInt,
             DealId = dealId,
             DealProductId = dealProductId,
             DealStatusId = dealStatusId,

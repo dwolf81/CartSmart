@@ -23,4 +23,7 @@ public class ProductAdminUpdateRow : BaseModel
 
     [Column("brand_id")]
     public int? BrandId { get; set; }
+
+    [Column("enable_service")]
+    public bool? EnableService { get; set; }
 }

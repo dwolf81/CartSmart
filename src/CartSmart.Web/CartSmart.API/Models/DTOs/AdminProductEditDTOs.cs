@@ -50,6 +50,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonPropertyName("brandId")]
         public int? BrandId { get; set; }
 
+        [JsonProperty("enableService")]
+        [JsonPropertyName("enableService")]
+        public bool EnableService { get; set; } = true;
+
         [JsonProperty("searchAliases")]
         [JsonPropertyName("searchAliases")]
         public List<string> SearchAliases { get; set; } = new();
@@ -76,6 +80,11 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("brandId")]
         [JsonPropertyName("brandId")]
         public int? BrandId { get; set; }
+
+        // Optional. If provided, controls whether refresh/ingest background tasks run for this product.
+        [JsonProperty("enableService")]
+        [JsonPropertyName("enableService")]
+        public bool? EnableService { get; set; }
 
         // Optional. If provided (even empty), replaces the current alias set.
         [JsonProperty("searchAliases")]
@@ -109,6 +118,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("brandId")]
         [JsonPropertyName("brandId")]
         public int? BrandId { get; set; }
+
+        [JsonProperty("enableService")]
+        [JsonPropertyName("enableService")]
+        public bool? EnableService { get; set; }
 
         [JsonProperty("searchAliases")]
         [JsonPropertyName("searchAliases")]
@@ -215,6 +228,19 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("isEnabled")]
         [JsonPropertyName("isEnabled")]
         public bool IsEnabled { get; set; } = true;
+
+        // Product-scoped synonyms used for ingestion variant resolution.
+        // Example: enum value "12" might match listing text "dozen".
+        [JsonProperty("synonyms")]
+        [JsonPropertyName("synonyms")]
+        public List<string> Synonyms { get; set; } = new();
+    }
+
+    public class AdminUpdateEnumSynonymsRequestDTO
+    {
+        [JsonProperty("synonyms")]
+        [JsonPropertyName("synonyms")]
+        public List<string> Synonyms { get; set; } = new();
     }
 
     public class AdminUpsertProductAttributeRequestDTO

@@ -20,8 +20,9 @@ public class IngestNewListingsFunction
         _repo = repo;
     }
 
+    // Production schedule: every 120 minutes. Cron: second minute hour day month dayOfWeek (UTC)
     [Function("IngestNewListings")]
-    public async Task Run([TimerTrigger("0 */30 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
+    public async Task Run([TimerTrigger("0 */120 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
     {
         var storesRaw = _config["Values:IngestStores"] ?? _config["IngestStores"] ?? "ebay";
         var storeKeys = storesRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -31,6 +32,7 @@ public class IngestNewListingsFunction
         // Build queries from active products rather than static terms
         var products = await _repo.GetActiveProductsAsync(ct);
         var queries = products
+            .Where(p => p?.EnableService != false)
             .Where(p => !string.IsNullOrWhiteSpace(p.Name))
             .Select(p => new NewListingQuery(p.Id, p.Name!))
             .ToList();

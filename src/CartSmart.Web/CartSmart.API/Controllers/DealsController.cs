@@ -205,6 +205,10 @@ namespace CartSmart.API.Controllers
                 );
                 return Ok(new { message = "Deal reviewed successfully" });
             }
+            catch (UnauthorizedAccessException)
+            {
+                return StatusCode(403, new { message = "Admin access required." });
+            }
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = ex.Message });
@@ -322,6 +326,32 @@ namespace CartSmart.API.Controllers
             }
         }
 
+        [HttpPost("admin-delete")]
+        [Authorize]
+        public async Task<IActionResult> AdminDelete([FromBody] AdminDeleteDealRequest request)
+        {
+            if (request.DealId <= 0)
+                return BadRequest(new { message = "dealId is required." });
+
+            if (!request.DeleteDeal && (!request.DealProductId.HasValue || request.DealProductId.Value <= 0))
+                return BadRequest(new { message = "dealProductId is required when deleteDeal is false." });
+
+            try
+            {
+                var ok = await _dealService.AdminDeleteAsync(request.DealId, request.DealProductId, request.DeleteDeal);
+                if (!ok) return NotFound();
+                return Ok(new { message = "Deleted" });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return StatusCode(403, new { message = "Admin access required." });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
         // Legacy endpoint kept for backward compatibility; id is deal_product_id.
         // We resolve deal_id from the request or the deal_product row.
         [HttpPost("{id}/flag")]
@@ -413,5 +443,12 @@ namespace CartSmart.API.Controllers
         public int DealStatusId { get; set; }
         public int? DealIssueTypeId { get; set; } // only needed on reject
         public string? Comment { get; set; }
+    }
+
+    public class AdminDeleteDealRequest
+    {
+        public long DealId { get; set; }
+        public long? DealProductId { get; set; }
+        public bool DeleteDeal { get; set; }
     }
 }

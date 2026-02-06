@@ -36,7 +36,7 @@ export default function AdminProductModal({
   const [adminEditSaving, setAdminEditSaving] = useState(false);
   const [adminEditError, setAdminEditError] = useState('');
 
-  const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '' });
+  const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '', enableService: true });
   const [adminSearchAliasesText, setAdminSearchAliasesText] = useState('');
   const [adminNegativeKeywordsText, setAdminNegativeKeywordsText] = useState('');
   const [adminProductImageUrl, setAdminProductImageUrl] = useState('');
@@ -70,7 +70,7 @@ export default function AdminProductModal({
     setAdminEditError('');
     setAdminEditLoading(false);
     setAdminEditSaving(false);
-    setAdminProductDraft({ name: '', msrp: '', description: '' });
+    setAdminProductDraft({ name: '', msrp: '', description: '', enableService: true });
     setAdminSearchAliasesText('');
     setAdminNegativeKeywordsText('');
     setAdminProductImageUrl('');
@@ -95,7 +95,8 @@ export default function AdminProductModal({
     setAdminProductDraft({
       name: data?.product?.name ?? '',
       msrp: data?.product?.msrp ?? '',
-      description: data?.product?.description ?? ''
+      description: data?.product?.description ?? '',
+      enableService: data?.product?.enableService ?? true
     });
 
     const aliases = Array.isArray(data?.product?.searchAliases) ? data.product.searchAliases : [];
@@ -130,11 +131,13 @@ export default function AdminProductModal({
     const drafts = {};
     attrs.forEach((a) => {
       (a.options || []).forEach((o) => {
+        const syns = Array.isArray(o.synonyms) ? o.synonyms : [];
         drafts[String(o.id)] = {
           displayName: o.displayName ?? '',
           sortOrder: o.sortOrder ?? 0,
           isActive: !!o.isActive,
-          isEnabled: (o.isEnabled !== false) && !!o.isActive
+          isEnabled: (o.isEnabled !== false) && !!o.isActive,
+          synonymsText: syns.filter(Boolean).join(', ')
         };
       });
     });
@@ -197,7 +200,8 @@ export default function AdminProductModal({
     setAdminProductDraft({
       name: data?.product?.name ?? '',
       msrp: data?.product?.msrp ?? '',
-      description: data?.product?.description ?? ''
+      description: data?.product?.description ?? '',
+      enableService: data?.product?.enableService ?? true
     });
 
     setAdminProductImageUrl(data?.product?.imageUrl ?? '');
@@ -208,12 +212,14 @@ export default function AdminProductModal({
         (a.options || []).forEach((o) => {
           const key = String(o.id);
           const existing = next[key] || {};
+          const syns = Array.isArray(o.synonyms) ? o.synonyms : [];
           next[key] = {
             ...existing,
             displayName: o.displayName ?? existing.displayName ?? '',
             sortOrder: o.sortOrder ?? existing.sortOrder ?? 0,
             isActive: o.isActive != null ? !!o.isActive : !!existing.isActive,
-            isEnabled: (o.isEnabled !== false) && (o.isActive != null ? !!o.isActive : !!existing.isActive)
+            isEnabled: (o.isEnabled !== false) && (o.isActive != null ? !!o.isActive : !!existing.isActive),
+            synonymsText: syns.filter(Boolean).join(', ')
           };
         });
       });
@@ -332,6 +338,7 @@ export default function AdminProductModal({
             description: adminProductDraft.description,
             productTypeId: Number(productTypeId),
             brandId: adminBrandId ? Number(adminBrandId) : null,
+            enableService: adminProductDraft.enableService !== false,
             searchAliases: parsedAliases,
             negativeKeywords: parsedNegativeKeywords
           })
@@ -391,6 +398,7 @@ export default function AdminProductModal({
           msrp: msrpValue,
           description: adminProductDraft.description,
           brandId: adminBrandId ? Number(adminBrandId) : null,
+          enableService: adminProductDraft.enableService !== false,
           searchAliases: parsedAliases,
           negativeKeywords: parsedNegativeKeywords
         })
@@ -525,10 +533,43 @@ export default function AdminProductModal({
         }
       );
       if (!res.ok) throw new Error('Failed to update enum value');
+
+      const parseSynonymsText = (text) => {
+        const raw = String(text || '')
+          .split(/[\n,]+/g)
+          .map((s) => String(s || '').trim())
+          .filter(Boolean);
+
+        // Keep stable order while de-duping (case-insensitive)
+        const seen = new Set();
+        const out = [];
+        raw.forEach((s) => {
+          const k = s.toLowerCase();
+          if (seen.has(k)) return;
+          seen.add(k);
+          out.push(s);
+        });
+        return out;
+      };
+
+      const synonyms = parseSynonymsText(d.synonymsText);
+      const synRes = await authFetch(
+        `${API_URL}/api/products/${currentProductId}/admin/product-attributes/${attributeId}/enum-values/${enumValueId}/synonyms`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ synonyms })
+        }
+      );
+      if (!synRes.ok) {
+        const msg = await synRes.text().catch(() => '');
+        throw new Error(msg || 'Failed to update synonyms');
+      }
+
       await refreshAdminEditData();
     } catch (e) {
       console.error(e);
-      setAdminEditError('Failed to save value.');
+      setAdminEditError('Failed to save value/synonyms.');
     } finally {
       setAdminEditSaving(false);
     }
@@ -705,6 +746,22 @@ export default function AdminProductModal({
                     placeholder="e.g. 19.99"
                     disabled={adminEditSaving}
                   />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Service tasks</label>
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={adminProductDraft.enableService !== false}
+                      onChange={(e) => setAdminProductDraft((p) => ({ ...p, enableService: e.target.checked }))}
+                      disabled={adminEditSaving}
+                    />
+                    Enable service (enable_service)
+                  </label>
+                  <div className="text-xs text-gray-500 mt-1">
+                    When disabled, RefreshDeals and IngestNewListings will skip this product.
+                  </div>
                 </div>
 
                 <div className="md:col-span-2">
@@ -988,96 +1045,115 @@ export default function AdminProductModal({
                                   displayName: '',
                                   sortOrder: 0,
                                   isActive: opt.isActive != null ? !!opt.isActive : true,
-                                  isEnabled: (opt.isEnabled !== false) && (opt.isActive != null ? !!opt.isActive : true)
+                                  isEnabled: (opt.isEnabled !== false) && (opt.isActive != null ? !!opt.isActive : true),
+                                  synonymsText: Array.isArray(opt.synonyms) ? opt.synonyms.filter(Boolean).join(', ') : ''
                                 };
 
                                 const isEnumActive = !!draft.isActive;
                                 const isEnumEnabled = (draft.isEnabled !== false) && isEnumActive;
                                 return (
-                                  <div key={opt.id} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
-                                    <div className="md:col-span-3 text-sm text-gray-700">
-                                      <span className="font-mono text-xs">{opt.enumKey}</span>
-                                    </div>
-                                    <div className="md:col-span-5">
-                                      <input
-                                        value={draft.displayName}
-                                        onChange={(e) =>
-                                          setAdminEnumDrafts((prev) => ({
-                                            ...prev,
-                                            [String(opt.id)]: { ...draft, displayName: e.target.value }
-                                          }))
-                                        }
-                                        className="w-full px-3 py-2 border rounded-md text-sm"
-                                        placeholder="Display name"
-                                      />
-                                    </div>
-                                    <div className="md:col-span-2">
-                                      <input
-                                        value={draft.sortOrder}
-                                        onChange={(e) =>
-                                          setAdminEnumDrafts((prev) => ({
-                                            ...prev,
-                                            [String(opt.id)]: { ...draft, sortOrder: e.target.value }
-                                          }))
-                                        }
-                                        className="w-full px-3 py-2 border rounded-md text-sm"
-                                        inputMode="numeric"
-                                        placeholder="Sort"
-                                      />
-                                    </div>
-                                    <div className="md:col-span-2">
-                                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                                        <label className="inline-flex items-center gap-2 text-sm whitespace-nowrap">
-                                          <input
-                                            type="checkbox"
-                                            checked={isEnumActive}
-                                            disabled={adminEditSaving}
-                                            onChange={(e) => {
-                                              const nextActive = e.target.checked;
+                                  <div key={opt.id} className="border rounded-md p-3">
+                                    <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
+                                      <div className="md:col-span-3 text-sm text-gray-700">
+                                        <span className="font-mono text-xs">{opt.enumKey}</span>
+                                      </div>
+                                      <div className="md:col-span-5">
+                                        <input
+                                          value={draft.displayName}
+                                          onChange={(e) =>
+                                            setAdminEnumDrafts((prev) => ({
+                                              ...prev,
+                                              [String(opt.id)]: { ...draft, displayName: e.target.value }
+                                            }))
+                                          }
+                                          className="w-full px-3 py-2 border rounded-md text-sm"
+                                          placeholder="Display name"
+                                        />
+                                      </div>
+                                      <div className="md:col-span-2">
+                                        <input
+                                          value={draft.sortOrder}
+                                          onChange={(e) =>
+                                            setAdminEnumDrafts((prev) => ({
+                                              ...prev,
+                                              [String(opt.id)]: { ...draft, sortOrder: e.target.value }
+                                            }))
+                                          }
+                                          className="w-full px-3 py-2 border rounded-md text-sm"
+                                          inputMode="numeric"
+                                          placeholder="Sort"
+                                        />
+                                      </div>
+                                      <div className="md:col-span-2">
+                                        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                                          <label className="inline-flex items-center gap-2 text-sm whitespace-nowrap">
+                                            <input
+                                              type="checkbox"
+                                              checked={isEnumActive}
+                                              disabled={adminEditSaving}
+                                              onChange={(e) => {
+                                                const nextActive = e.target.checked;
 
-                                              // If turning inactive, it cannot remain enabled for the product.
-                                              if (!nextActive && isEnumEnabled) {
-                                                handleAdminToggleEnumEnabled(attr.attributeId, opt.id, false);
-                                              }
-
-                                              setAdminEnumDrafts((prev) => ({
-                                                ...prev,
-                                                [String(opt.id)]: {
-                                                  ...draft,
-                                                  isActive: nextActive,
-                                                  ...(nextActive ? {} : { isEnabled: false })
+                                                // If turning inactive, it cannot remain enabled for the product.
+                                                if (!nextActive && isEnumEnabled) {
+                                                  handleAdminToggleEnumEnabled(attr.attributeId, opt.id, false);
                                                 }
-                                              }));
-                                            }}
-                                          />
-                                          Active
-                                        </label>
 
-                                        <label
-                                          className={`inline-flex items-center gap-2 text-sm whitespace-nowrap ${
-                                            !isEnumActive ? 'text-gray-400' : ''
-                                          }`}
-                                          title={!isEnumActive ? 'Enable is only available for active values.' : undefined}
+                                                setAdminEnumDrafts((prev) => ({
+                                                  ...prev,
+                                                  [String(opt.id)]: {
+                                                    ...draft,
+                                                    isActive: nextActive,
+                                                    ...(nextActive ? {} : { isEnabled: false })
+                                                  }
+                                                }));
+                                              }}
+                                            />
+                                            Active
+                                          </label>
+
+                                          <label
+                                            className={`inline-flex items-center gap-2 text-sm whitespace-nowrap ${
+                                              !isEnumActive ? 'text-gray-400' : ''
+                                            }`}
+                                            title={!isEnumActive ? 'Enable is only available for active values.' : undefined}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={isEnumEnabled}
+                                              onChange={(e) => handleAdminToggleEnumEnabled(attr.attributeId, opt.id, e.target.checked)}
+                                              disabled={adminEditSaving || !isEnumActive}
+                                            />
+                                            Enabled
+                                          </label>
+                                        </div>
+                                      </div>
+                                      <div className="md:col-span-1 flex justify-end">
+                                        <button
+                                          type="button"
+                                          onClick={() => handleAdminSaveEnumValue(attr.attributeId, opt.id)}
+                                          disabled={adminEditSaving}
+                                          className="text-sm text-blue-600 hover:text-blue-700"
                                         >
-                                          <input
-                                            type="checkbox"
-                                            checked={isEnumEnabled}
-                                            onChange={(e) => handleAdminToggleEnumEnabled(attr.attributeId, opt.id, e.target.checked)}
-                                            disabled={adminEditSaving || !isEnumActive}
-                                          />
-                                          Enabled
-                                        </label>
+                                          Save
+                                        </button>
                                       </div>
                                     </div>
-                                    <div className="md:col-span-1 flex justify-end">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleAdminSaveEnumValue(attr.attributeId, opt.id)}
+
+                                    <div className="mt-2">
+                                      <div className="text-xs text-gray-600 mb-1">Synonyms (comma or newline separated)</div>
+                                      <input
+                                        value={draft.synonymsText ?? ''}
+                                        onChange={(e) =>
+                                          setAdminEnumDrafts((prev) => ({
+                                            ...prev,
+                                            [String(opt.id)]: { ...draft, synonymsText: e.target.value }
+                                          }))
+                                        }
+                                        className="w-full px-3 py-2 border rounded-md text-sm"
+                                        placeholder="e.g. dozen, 1 dozen"
                                         disabled={adminEditSaving}
-                                        className="text-sm text-blue-600 hover:text-blue-700"
-                                      >
-                                        Save
-                                      </button>
+                                      />
                                     </div>
                                   </div>
                                 );

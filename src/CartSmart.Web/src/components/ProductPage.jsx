@@ -76,6 +76,7 @@ const ProductPage = () => {
   const [searchParams] = useSearchParams();
   const { getProductBySlug } = useProducts();
   const { isAuthenticated, user, authFetch } = useAuth();
+  const isAdmin = isAuthenticated && !!user?.admin;
   // Terms consent gating removed; actions proceed directly
 
   const storeIdFromQuery = useMemo(() => {
@@ -153,6 +154,8 @@ const ProductPage = () => {
   const [flagReasonId, setFlagReasonId] = useState(null);
   const [flagComment, setFlagComment] = useState('');
   const [flagSubmitting, setFlagSubmitting] = useState(false);
+  const [adminDeleteProductDeal, setAdminDeleteProductDeal] = useState(false);
+  const [adminDeleteDeal, setAdminDeleteDeal] = useState(false);
 
   // --- "MORE" VARIANT FILTERS (ProductVariant) ---
   const [isMoreOpen, setIsMoreOpen] = useState(false);
@@ -170,6 +173,8 @@ const ProductPage = () => {
     2: { id: 2, label: 'Monthly' },
     3: { id: 3, label: 'Annually' }
   };
+
+  const isAdminDeleteMode = isAdmin && (adminDeleteProductDeal || adminDeleteDeal);
 
   const isDealFlagged = (d) => !!(flaggedDeals[d?.deal_product_id] || d?.user_flagged || d?.userFlagged || d?.userflagged);
 
@@ -558,27 +563,41 @@ const ProductPage = () => {
       return;
     }
     if (dealProductId && flaggedDeals[dealProductId]) return;
-    if (!flagReasonId) {
+    const adminDeleteMode = isAdmin && (adminDeleteProductDeal || adminDeleteDeal);
+    if (!adminDeleteMode && !flagReasonId) {
       alert('Please select a reason.');
       return;
     }
-    if (flagReasonId === 6 && !flagComment.trim()) {
+    if (!adminDeleteMode && flagReasonId === 6 && !flagComment.trim()) {
       alert('Please describe the issue for "Other".');
       return;
     }
     try {
       setFlagSubmitting(true);
-      const resp = await fetch(`${API_URL}/api/deals/flag`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dealId,
-          dealProductId,
-          dealIssueTypeId: flagReasonId,
-          comment: flagComment.trim() || null
+
+      const resp = adminDeleteMode
+        ? await fetch(`${API_URL}/api/deals/admin-delete`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dealId,
+            dealProductId: adminDeleteDeal ? null : dealProductId,
+            deleteDeal: !!adminDeleteDeal
+          })
         })
-      });
+        : await fetch(`${API_URL}/api/deals/flag`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dealId,
+            dealProductId,
+            dealIssueTypeId: flagReasonId,
+            comment: flagComment.trim() || null
+          })
+        });
+
       if (!resp.ok) throw new Error('Flag request failed');
       if (dealProductId) {
         setFlaggedDeals(p => ({ ...p, [dealProductId]: true }));
@@ -586,10 +605,20 @@ const ProductPage = () => {
       setIsFlagModalOpen(false);
       setDealToFlag(null);
       setFlagComment('');
-      alert('Deal flagged. Thank you!');
+      setAdminDeleteProductDeal(false);
+      setAdminDeleteDeal(false);
+      if (adminDeleteMode) {
+        refreshProduct();
+      }
+      alert(
+        adminDeleteMode
+          ? (adminDeleteDeal ? 'Deal deleted (all product deals removed).' : 'Product deal deleted.')
+          : 'Deal flagged. Thank you!'
+      );
     } catch (e) {
       console.error(e);
-      alert('Failed to flag deal.');
+      const adminDeleteMode = isAdmin && (adminDeleteProductDeal || adminDeleteDeal);
+      alert(adminDeleteMode ? 'Failed to delete deal.' : 'Failed to flag deal.');
     } finally {
       setFlagSubmitting(false);
     }
@@ -602,7 +631,10 @@ const ProductPage = () => {
       return;
     }
     setDealToFlag({ dealId, dealProductId });
+    setFlagReasonId(null);
     setFlagComment('');
+    setAdminDeleteProductDeal(false);
+    setAdminDeleteDeal(false);
     setIsFlagModalOpen(true);
   };
 
@@ -2082,36 +2114,82 @@ const ProductPage = () => {
             <p className="text-gray-600 text-sm mb-4">
               Select why this deal is incorrect or no longer works.
             </p>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Reason *
-            </label>
-            <select
-              value={flagReasonId ?? ''}
-              onChange={e => setFlagReasonId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full mb-4 px-3 py-2 border rounded-md text-sm"
-            >
-              <option value="">Select a reason...</option>
-              {DEAL_FLAG_REASONS.map(r => (
-                <option key={r.id} value={r.id}>{r.label}</option>
-              ))}
-            </select>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Comments {flagReasonId === 6 ? '*' : '(Optional)'}
-            </label>
-            <textarea
-              rows={3}
-              value={flagComment}
-              onChange={e => setFlagComment(e.target.value)}
-              className={`w-full px-3 py-2 border rounded-md text-sm ${flagReasonId === 6 && !flagComment.trim() ? 'border-red-400' : 'border-gray-300'
-                }`}
-              placeholder={
-                flagReasonId === 6
-                  ? 'Describe the issue...'
-                  : 'Add helpful context (optional)...'
-              }
-            />
-            {flagReasonId === 6 && !flagComment.trim() && (
-              <p className="mt-1 text-xs text-red-600">Required for "Other".</p>
+
+            {isAdmin && (
+              <div className="mb-4 p-3 rounded-md border bg-slate-50">
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={adminDeleteProductDeal}
+                      onChange={(e) => {
+                        const checked = !!e.target.checked;
+                        setAdminDeleteProductDeal(checked);
+                        if (checked) setAdminDeleteDeal(false);
+                      }}
+                      className="h-4 w-4"
+                      disabled={!dealToFlag?.dealProductId}
+                    />
+                    <span>Admin: delete this product deal only</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={adminDeleteDeal}
+                      onChange={(e) => {
+                        const checked = !!e.target.checked;
+                        setAdminDeleteDeal(checked);
+                        if (checked) setAdminDeleteProductDeal(false);
+                      }}
+                      className="h-4 w-4"
+                    />
+                    <span>Admin: delete the entire deal (all product deals)</span>
+                  </label>
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  Deletes are soft-deletes and will hide deals from users.
+                </div>
+              </div>
+            )}
+
+            {!isAdminDeleteMode ? (
+              <>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Reason *
+                </label>
+                <select
+                  value={flagReasonId ?? ''}
+                  onChange={e => setFlagReasonId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full mb-4 px-3 py-2 border rounded-md text-sm"
+                >
+                  <option value="">Select a reason...</option>
+                  {DEAL_FLAG_REASONS.map(r => (
+                    <option key={r.id} value={r.id}>{r.label}</option>
+                  ))}
+                </select>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Comments {flagReasonId === 6 ? '*' : '(Optional)'}
+                </label>
+                <textarea
+                  rows={3}
+                  value={flagComment}
+                  onChange={e => setFlagComment(e.target.value)}
+                  className={`w-full px-3 py-2 border rounded-md text-sm ${flagReasonId === 6 && !flagComment.trim() ? 'border-red-400' : 'border-gray-300'
+                    }`}
+                  placeholder={
+                    flagReasonId === 6
+                      ? 'Describe the issue...'
+                      : 'Add helpful context (optional)...'
+                  }
+                />
+                {flagReasonId === 6 && !flagComment.trim() && (
+                  <p className="mt-1 text-xs text-red-600">Required for "Other".</p>
+                )}
+              </>
+            ) : (
+              <div className="mb-4 p-3 rounded-md border bg-red-50 text-sm text-red-800">
+                This will delete the selected deal. Reason/comments are not required.
+              </div>
             )}
             <div className="flex justify-end gap-3 mt-6">
               <button
@@ -2120,6 +2198,8 @@ const ProductPage = () => {
                   setIsFlagModalOpen(false);
                   setDealToFlag(null);
                   setFlagComment('');
+                  setAdminDeleteProductDeal(false);
+                  setAdminDeleteDeal(false);
                 }}
                 className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
                 disabled={flagSubmitting}
@@ -2131,12 +2211,19 @@ const ProductPage = () => {
                 onClick={() => handleFlagDeal()}
                 disabled={
                   flagSubmitting ||
-                  !flagReasonId ||
-                  (flagReasonId === 6 && !flagComment.trim())
+                  (!((isAdmin && (adminDeleteProductDeal || adminDeleteDeal))) && !flagReasonId) ||
+                  (isAdmin && adminDeleteProductDeal && !dealToFlag?.dealProductId) ||
+                  (!((isAdmin && (adminDeleteProductDeal || adminDeleteDeal))) && flagReasonId === 6 && !flagComment.trim())
                 }
                 className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60"
               >
-                {flagSubmitting ? 'Submitting...' : 'Submit Flag'}
+                {flagSubmitting
+                  ? 'Submitting...'
+                  : ((isAdmin && adminDeleteDeal)
+                    ? 'Delete Entire Deal'
+                    : ((isAdmin && adminDeleteProductDeal)
+                      ? 'Delete Product Deal'
+                      : 'Submit Flag'))}
               </button>
             </div>
           </div>

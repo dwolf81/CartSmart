@@ -113,7 +113,16 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             return score;
         }
 
-        var products = dueCandidates
+        // If a product has service disabled, skip refreshing its deal products.
+        // Note: Expire sweep should still run regardless; this only affects refresh.
+        var eligibleCandidates = dueCandidates
+            .Where(dp => dp.ProductId <= 0 || (productMap.TryGetValue(dp.ProductId, out var prod) && prod != null && !prod.Deleted && prod.EnableService))
+            .ToList();
+
+        if (eligibleCandidates.Count == 0)
+            return new DealRefreshResult(0, 0, 0, 0, 0);
+
+        var products = eligibleCandidates
             .Select(dp => new { DealProduct = dp, Score = Score(dp) })
             .OrderByDescending(x => x.Score)
             .ThenBy(x => x.DealProduct.NextCheckAt ?? DateTime.MinValue)

@@ -682,6 +682,42 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             enums = enums.Where(ev => !disabledEnumIds.Contains(ev.Id)).ToList();
         }
 
+        // 3c) Load per-product synonyms for these enum attributes.
+        // These are additional tokens used during enum value matching in listing text.
+        var synonymsByEnumValueId = new Dictionary<int, List<string>>();
+        try
+        {
+            var synResp = await _supabase
+                .From<CartSmart.API.Models.ProductAttributeEnumSynonym>()
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.In, enumAttributeIdObjects)
+                .Select("enum_value_id, synonym, is_active")
+                .Get(ct);
+
+            var synRows = (synResp.Models ?? new List<CartSmart.API.Models.ProductAttributeEnumSynonym>())
+                .Where(s => s.IsActive)
+                .ToList();
+
+            if (synRows.Count > 0)
+            {
+                synonymsByEnumValueId = synRows
+                    .GroupBy(s => s.EnumValueId)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g
+                            .Select(s => (s.Synonym ?? string.Empty).Trim())
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Take(25)
+                            .ToList());
+            }
+        }
+        catch
+        {
+            // Keep non-fatal; tokens will fall back to enum display_name/enum_key only.
+            synonymsByEnumValueId = new Dictionary<int, List<string>>();
+        }
+
         // attribute_id -> enum_value_id -> tokens
         var tokensByAttribute = new Dictionary<int, Dictionary<int, List<string>>>();
         var displayByEnumId = new Dictionary<int, string>();
@@ -706,6 +742,19 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             {
                 perEnum = new Dictionary<int, List<string>>();
                 tokensByAttribute[ev.AttributeId] = perEnum;
+            }
+
+            if (synonymsByEnumValueId.TryGetValue(ev.Id, out var syns) && syns != null)
+            {
+                foreach (var syn in syns)
+                {
+                    var norm = NormalizeComparable(syn);
+                    if (!string.IsNullOrWhiteSpace(norm)) tokenSet.Add(norm);
+
+                    // Compact helper: allow matching "1-dozen" vs "1dozen" in normalized listing surface.
+                    var compact = norm.Replace("-", string.Empty);
+                    if (!string.IsNullOrWhiteSpace(compact)) tokenSet.Add(compact);
+                }
             }
 
             perEnum[ev.Id] = tokenSet.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
