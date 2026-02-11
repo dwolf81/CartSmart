@@ -314,8 +314,6 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
                 return null;
             }
         }
-
-        return null;
     }
 
     public async Task<IReadOnlyList<ManualPriceTask>> GetPendingManualPriceTasksAsync(int limit, CancellationToken ct)
@@ -625,5 +623,233 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             _productNegativeKeywordsCache[productId] = Array.Empty<string>();
             return Array.Empty<string>();
         }
+    }
+
+    private static Uri? TryCreateHttpUri(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        if (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var abs))
+            return abs;
+
+        var candidate = $"https://{url.Trim()}";
+        if (Uri.TryCreate(candidate, UriKind.Absolute, out abs))
+            return abs;
+
+        return null;
+    }
+
+    private static string? NormalizeUrlForMatch(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        var u = TryCreateHttpUri(url);
+        if (u == null) return url.Trim().TrimEnd('/').ToLowerInvariant();
+
+        var path = u.AbsolutePath?.TrimEnd('/');
+        var host = u.Host.Replace("www.", "", StringComparison.OrdinalIgnoreCase).ToLowerInvariant();
+        return $"{host}{path}".ToLowerInvariant();
+    }
+
+    private static bool PricesEqual(decimal a, decimal b)
+    {
+        return Math.Abs(a - b) < 0.005m; // ~1/2 cent tolerance
+    }
+
+    private static decimal ApplyPercentOff(decimal basePrice, int? percentOff)
+    {
+        if (!percentOff.HasValue) return basePrice;
+        if (percentOff.Value <= 0) return basePrice;
+        if (percentOff.Value >= 100) return 0m;
+
+        var factor = 1m - (percentOff.Value / 100m);
+        var raw = basePrice * factor;
+        return Math.Round(raw, 2, MidpointRounding.AwayFromZero);
+    }
+
+    public async Task<int> PropagateDirectPriceChangeToLinkedDealsByUrlAsync(
+        DealProduct directDealProduct,
+        decimal oldDirectPrice,
+        decimal newDirectPrice,
+        CancellationToken ct)
+    {
+        if (directDealProduct == null) return 0;
+        if (directDealProduct.ProductId <= 0) return 0;
+        if (string.IsNullOrWhiteSpace(directDealProduct.Url)) return 0;
+        if (PricesEqual(oldDirectPrice, newDirectPrice)) return 0;
+
+        var targetNorm = NormalizeUrlForMatch(directDealProduct.Url);
+        if (string.IsNullOrWhiteSpace(targetNorm)) return 0;
+
+        // Pull all active deal_products for this product and filter locally by normalized URL.
+        // (PostgREST doesn't have a stable "normalized url" column we can filter on.)
+        var dpResp = await _client
+            .From<DealProduct>()
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, directDealProduct.ProductId.ToString())
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.Equals, DealStatusActive.ToString())
+            .Select("id,deal_id,product_id,product_variant_id,price,url,deal_status_id,deleted")
+            .Get(ct);
+
+        var allForProduct = dpResp.Models ?? new List<DealProduct>();
+        if (allForProduct.Count == 0) return 0;
+
+        bool VariantMatches(DealProduct dp)
+        {
+            // Conservative: only propagate within the same variant scope.
+            if (directDealProduct.ProductVariantId.HasValue)
+                return dp.ProductVariantId == directDealProduct.ProductVariantId;
+            return dp.ProductVariantId == null;
+        }
+
+        var linked = allForProduct
+            .Where(dp => dp != null)
+            .Where(dp => dp.Id != directDealProduct.Id)
+            .Where(dp => VariantMatches(dp))
+            .Where(dp => NormalizeUrlForMatch(dp.Url) == targetNorm)
+            .ToList();
+
+        if (linked.Count == 0) return 0;
+
+        var linkedDealIds = linked
+            .Select(x => x.DealId)
+            .Distinct()
+            .Cast<object>()
+            .ToArray();
+
+        if (linkedDealIds.Length == 0) return 0;
+
+        var dealsResp = await _client
+            .From<Deal>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.In, linkedDealIds)
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Select("id,deal_type_id,discount_percent,deleted")
+            .Get(ct);
+
+        var deals = dealsResp.Models ?? new List<Deal>();
+        if (deals.Count == 0) return 0;
+        var dealById = deals.GroupBy(d => d.Id).ToDictionary(g => g.Key, g => g.First());
+
+        // Preload combo definitions for stacked deals.
+        var stackedDealIds = deals
+            .Where(d => d.DealTypeId == 3)
+            .Select(d => d.Id)
+            .Distinct()
+            .ToList();
+
+        Dictionary<int, List<DealCombo>> combosByStacked = new();
+        Dictionary<int, Deal> componentDealById = new();
+        if (stackedDealIds.Count > 0)
+        {
+            var stackedObjects = stackedDealIds.Cast<object>().ToArray();
+            var comboResp = await _client
+                .From<DealCombo>()
+                .Filter("deal_id", Supabase.Postgrest.Constants.Operator.In, stackedObjects)
+                .Select("deal_id,combo_deal_id,order")
+                .Get(ct);
+
+            var combos = comboResp.Models ?? new List<DealCombo>();
+            combosByStacked = combos
+                .GroupBy(c => c.DealId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            var componentIds = combos
+                .Select(c => c.ComboDealId)
+                .Distinct()
+                .ToList();
+
+            if (componentIds.Count > 0)
+            {
+                var componentObjects = componentIds.Cast<object>().ToArray();
+                var componentDealsResp = await _client
+                    .From<Deal>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.In, componentObjects)
+                    .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                    .Select("id,deal_type_id,discount_percent,deleted")
+                    .Get(ct);
+
+                var componentDeals = componentDealsResp.Models ?? new List<Deal>();
+                componentDealById = componentDeals
+                    .GroupBy(d => d.Id)
+                    .ToDictionary(g => g.Key, g => g.First());
+            }
+        }
+
+        decimal ComputeStackedPrice(int stackedDealId)
+        {
+            // Default: base on the updated direct price.
+            var price = newDirectPrice;
+
+            if (!combosByStacked.TryGetValue(stackedDealId, out var combos) || combos.Count == 0)
+            {
+                // Fallback: treat stacked like a single percent-off deal if it has one.
+                if (dealById.TryGetValue(stackedDealId, out var stackedDealFallback))
+                    return ApplyPercentOff(price, stackedDealFallback.DiscountPercent);
+                return price;
+            }
+
+            var ordered = combos
+                .OrderBy(c => c.Order ?? int.MaxValue)
+                .ThenBy(c => c.ComboDealId)
+                .ToList();
+
+            foreach (var c in ordered)
+            {
+                if (!componentDealById.TryGetValue(c.ComboDealId, out var comp))
+                    continue;
+
+                // Apply percent-off style steps (coupon/external). Ignore direct steps (they define the base URL/price).
+                if (comp.DealTypeId is 2 or 4)
+                    price = ApplyPercentOff(price, comp.DiscountPercent);
+            }
+
+            return price;
+        }
+
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+        var updated = 0;
+
+        foreach (var dp in linked)
+        {
+            if (!dealById.TryGetValue(dp.DealId, out var d))
+                continue;
+
+            var dealType = d.DealTypeId;
+            if (!dealType.HasValue) continue;
+            if (dealType.Value == 1) continue; // direct
+
+            var newPrice = dp.Price;
+
+            if (dealType.Value == 2 || dealType.Value == 4)
+            {
+                newPrice = ApplyPercentOff(newDirectPrice, d.DiscountPercent);
+            }
+            else if (dealType.Value == 3)
+            {
+                newPrice = ComputeStackedPrice(d.Id);
+            }
+            else
+            {
+                // Unknown deal type: do not touch.
+                continue;
+            }
+
+            if (PricesEqual(dp.Price, newPrice))
+                continue;
+
+            dp.Price = newPrice;
+            // This is a derived update; still record price history for observability.
+            await AppendPriceHistoryForDealProductAsync(dp.Id, newPrice, currency: null, changedUtc: now, ct);
+            await UpdateDealProductAsync(dp, ct);
+            updated++;
+        }
+
+        if (updated > 0)
+        {
+            // Ensure the product best-deal reflects the new derived prices.
+            await UpdateProductBestDealAsync(directDealProduct.ProductId, ct);
+        }
+
+        return updated;
     }
 }

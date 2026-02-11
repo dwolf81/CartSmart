@@ -23,6 +23,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     private readonly ConcurrentDictionary<string, string> _listingTextCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>?> _itemAspectsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<long, IReadOnlyList<string>> _productSearchAliasCache = new();
+    private readonly ConcurrentDictionary<long, decimal?> _productMsrpCache = new();
 
     public StoreType StoreType => StoreType.Ebay;
     public bool SupportsSoldStatus => true;
@@ -384,6 +385,10 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         if (rawById.Count == 0)
             return Array.Empty<CartSmart.Core.Worker.NewListing>();
 
+        // If MSRP is configured for the product, require listings to be strictly cheaper than MSRP.
+        // (Only enforced when MSRP is available and > 0.)
+        var productMsrp = await GetOrFetchProductMsrpAsync(productId, ct);
+
         // Stage B: verification – aggressively filter out wrong/low-quality matches
 
         // Accessory / non-core keywords (headcovers, chargers, mounts, etc.)
@@ -424,6 +429,20 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             var titleLower = title.ToLowerInvariant();
             var hasGtin = s.gtin != null && s.gtin.FirstOrDefault() != null;
             var hasBrandMpn = !string.IsNullOrWhiteSpace(s.brand) && !string.IsNullOrWhiteSpace(s.mpn);
+
+            // Price filter: only keep listings strictly below MSRP (when MSRP is set).
+            if (productMsrp.HasValue)
+            {
+                var currency = s.price?.currency;
+                if (!string.IsNullOrWhiteSpace(currency) && !string.Equals(currency, "USD", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var listingPrice = s.price?.value;
+                if (!listingPrice.HasValue)
+                    continue;
+                if (listingPrice.Value >= productMsrp.Value)
+                    continue;
+            }
 
             // Exclude obvious accessories/parts
             if (accessories.Any(k => titleLower.Contains(k)))
@@ -509,6 +528,42 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
 
         return filtered;
+    }
+
+    private async Task<decimal?> GetOrFetchProductMsrpAsync(long productId, CancellationToken ct)
+    {
+        if (productId <= 0) return null;
+        if (_productMsrpCache.TryGetValue(productId, out var cached))
+            return cached;
+
+        try
+        {
+            if (productId > int.MaxValue)
+            {
+                _productMsrpCache[productId] = null;
+                return null;
+            }
+
+            var resp = await _supabase
+                .From<CartSmart.API.Models.Product>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Select("id, msrp")
+                .Limit(1)
+                .Get(ct);
+
+            var msrpFloat = resp.Models.FirstOrDefault()?.MSRP;
+            decimal? msrp = null;
+            if (msrpFloat.HasValue && msrpFloat.Value > 0)
+                msrp = Convert.ToDecimal(msrpFloat.Value);
+
+            _productMsrpCache[productId] = msrp;
+            return msrp;
+        }
+        catch
+        {
+            _productMsrpCache[productId] = null;
+            return null;
+        }
     }
 
     private async Task<IReadOnlyList<string>> BuildQueryVariantsForProductAsync(long productId, string query, CancellationToken ct)

@@ -1,0 +1,78 @@
+name: Deploy CartSmart.Functions (Azure Functions)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/CartSmart.Deal.Worker/**'
+      - 'libs/**'
+      - 'CartSmart.sln'
+      - '.github/workflows/deploy-functions.yml'
+  workflow_dispatch: {}
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  AZURE_FUNCTIONAPP_NAME: 'CartSmartService'
+  FUNCTION_PROJECT: 'src/CartSmart.Deal.Worker/CartSmart.Functions/CartSmart.Functions.csproj'
+  PUBLISH_DIR: 'publish-functions'
+  ZIP_PATH: 'publish-functions.zip'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required settings
+        run: |
+          if [ -z "${{ secrets.AZURE_CLIENT_ID }}" ]; then
+            echo "❌ Missing secret AZURE_CLIENT_ID"; exit 1; fi
+          if [ -z "${{ secrets.AZURE_TENANT_ID }}" ]; then
+            echo "❌ Missing secret AZURE_TENANT_ID"; exit 1; fi
+          if [ -z "${{ secrets.AZURE_SUBSCRIPTION_ID }}" ]; then
+            echo "❌ Missing secret AZURE_SUBSCRIPTION_ID"; exit 1; fi
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ${{ env.FUNCTION_PROJECT }}
+
+      - name: Build
+        run: dotnet build ${{ env.FUNCTION_PROJECT }} -c Release --no-restore
+
+      - name: Publish
+        run: dotnet publish ${{ env.FUNCTION_PROJECT }} -c Release -o ${{ env.PUBLISH_DIR }} --no-build
+
+      - name: Create zip package
+        run: |
+          cd ${{ env.PUBLISH_DIR }}
+          zip -r ../${{ env.ZIP_PATH }} .
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Functions (zip deploy)
+        run: |
+          RG=$(az resource list --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" --resource-type "Microsoft.Web/sites" --query "[0].resourceGroup" -o tsv)
+          if [ -z "$RG" ]; then
+            echo "❌ Could not discover resource group for Function App '${{ env.AZURE_FUNCTIONAPP_NAME }}'"
+            echo "   Ensure the OIDC principal has permission to list resources in the subscription."
+            exit 1
+          fi
+
+          az functionapp deployment source config-zip \
+            --resource-group "$RG" \
+            --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" \
+            --src "${{ env.ZIP_PATH }}"

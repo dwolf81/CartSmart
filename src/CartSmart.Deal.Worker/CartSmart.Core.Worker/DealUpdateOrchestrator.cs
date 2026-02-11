@@ -499,7 +499,25 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             }
             else
             {
-                // Scraping disabled; schedule next far out and return
+                // No automated refresh path (no API and scraping disabled/unconfigured).
+                // This refresh pipeline only runs on ACTIVE + DIRECT deals that are due, so flag for manual verification.
+                if (dealProduct.DealStatusId == SupabaseDealRepository.DealStatusActive)
+                {
+                    var reason = store?.ScrapeEnabled == true
+                        ? (overrideSelectors == null || overrideSelectors.Length == 0 ? "scrape_selectors_missing" : "no_auto_refresh")
+                        : "scrape_disabled";
+
+                    var taskId = await repoImpl.CreateOrGetPendingManualPriceTaskAsync(
+                        string.IsNullOrWhiteSpace(dealProduct.Url) ? new DealProduct { Id = dealProduct.Id, Url = url } : dealProduct,
+                        reason,
+                        ct);
+                    _logger.LogWarning(
+                        "No API/scrape refresh path for deal_product {DealProductId}. Created/reused manual_price_task {TaskId} (reason={Reason}).",
+                        dealProduct.Id,
+                        taskId,
+                        reason);
+                }
+
                 await repoImpl.SetNextCheckAsync(dealProduct, nowUtc.AddHours(48), ct);
                 return DealProcessOutcome.Updated;
             }
@@ -514,6 +532,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
             bool statusChanged = false;
             bool priceChanged = false;
+            decimal? oldPriceForPropagation = null;
 
             // Determine new status based on data flags.
             if (data.Sold == true && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusSold)
@@ -534,6 +553,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 var oldPrice = dealProduct.Price;
                 dealProduct.Price = data.Price.Value;
                 priceChanged = true;
+                oldPriceForPropagation = oldPrice;
                 await _repo.AppendPriceHistoryAsync(dealProduct.DealId, data.Price.Value, data.Currency, _timeProvider.GetUtcNow().UtcDateTime, ct);
             }
             dealProduct.LastCheckedAt = _timeProvider.GetUtcNow().UtcDateTime;
@@ -541,7 +561,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             if (deal != null)
                 await _repo.UpdateDealsAsync(new[] { deal }, ct);
 
-            if (statusChanged)
+            if (statusChanged || priceChanged)
             {
                 try
                 {
@@ -550,6 +570,30 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Best deal RPC failed for product {ProductId}", dealProduct.ProductId);
+                }
+            }
+
+            // If a DIRECT deal price changes, propagate it to coupon/external/stacked deals that share the same URL.
+            // Those deal types derive their effective price from the direct base price.
+            if (priceChanged && oldPriceForPropagation.HasValue)
+            {
+                try
+                {
+                    var updatedLinked = await repoImpl.PropagateDirectPriceChangeToLinkedDealsByUrlAsync(
+                        directDealProduct: dealProduct,
+                        oldDirectPrice: oldPriceForPropagation.Value,
+                        newDirectPrice: dealProduct.Price,
+                        ct);
+
+                    if (updatedLinked > 0)
+                        _logger.LogInformation(
+                            "Propagated direct price change for deal_product {DealProductId}: updated {Count} linked deal_product rows.",
+                            dealProduct.Id,
+                            updatedLinked);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to propagate direct price change for deal_product {DealProductId}", dealProduct.Id);
                 }
             }
 
