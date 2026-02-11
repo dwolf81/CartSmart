@@ -76,6 +76,7 @@ export default function AdminStoreModal({
   });
 
   const [storeImageUrl, setStoreImageUrl] = useState('');
+  const [storeImageUrlInput, setStoreImageUrlInput] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
 
@@ -97,6 +98,7 @@ export default function AdminStoreModal({
     setSelectedFile(null);
     setPreviewUrl('');
     setStoreImageUrl('');
+    setStoreImageUrlInput('');
     setSlugEdited(false);
 
     setDraft({
@@ -139,6 +141,7 @@ export default function AdminStoreModal({
     });
 
     setStoreImageUrl(s?.imageUrl ?? '');
+    setStoreImageUrlInput('');
     setSlugEdited(true);
     setSelectedFile(null);
     if ((previewUrl || '').startsWith('blob:')) {
@@ -182,7 +185,24 @@ export default function AdminStoreModal({
   };
 
   const uploadImageIfNeeded = async (id) => {
-    if (!selectedFile) return null;
+    if (!selectedFile && !(storeImageUrlInput || '').trim()) return null;
+
+    if ((storeImageUrlInput || '').trim() && !selectedFile) {
+      const res = await authFetch(`${API_URL}/api/stores/${id}/admin/image-from-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl: (storeImageUrlInput || '').trim() })
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => '');
+        throw new Error(msg || 'Failed to import image');
+      }
+      const data = await res.json().catch(() => ({}));
+      const url = data?.imageUrl || null;
+      if (url) setStoreImageUrl(url);
+      setStoreImageUrlInput('');
+      return url;
+    }
 
     const fd = new FormData();
     fd.append('file', selectedFile);
@@ -196,7 +216,17 @@ export default function AdminStoreModal({
       throw new Error(msg || 'Failed to upload image');
     }
     const data = await res.json();
-    return data?.imageUrl || null;
+    const url = data?.imageUrl || null;
+    if (url) setStoreImageUrl(url);
+
+    setSelectedFile(null);
+    if ((previewUrl || '').startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(previewUrl);
+      } catch {}
+    }
+    setPreviewUrl('');
+    return url;
   };
 
   const handleSave = async () => {
@@ -242,9 +272,8 @@ export default function AdminStoreModal({
         const id = created?.id;
 
         let imageUrl = null;
-        if (id && selectedFile) {
+        if (id && (selectedFile || (storeImageUrlInput || '').trim())) {
           imageUrl = await uploadImageIfNeeded(id);
-          if (imageUrl) setStoreImageUrl(imageUrl);
         }
 
         onCreated?.({ ...created, imageUrl: imageUrl || created?.imageUrl });
@@ -267,9 +296,8 @@ export default function AdminStoreModal({
       const updated = await res.json();
 
       let imageUrl = null;
-      if (selectedFile) {
+      if (selectedFile || (storeImageUrlInput || '').trim()) {
         imageUrl = await uploadImageIfNeeded(storeId);
-        if (imageUrl) setStoreImageUrl(imageUrl);
       }
 
       onUpdated?.({ ...updated, imageUrl: imageUrl || updated?.imageUrl });
@@ -305,7 +333,7 @@ export default function AdminStoreModal({
 
   if (!isOpen) return null;
 
-  const imageSrc = previewUrl || storeImageUrl || 'https://placehold.co/128x128';
+  const imageSrc = previewUrl || storeImageUrlInput || storeImageUrl || 'https://placehold.co/128x128';
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -335,7 +363,7 @@ export default function AdminStoreModal({
 
               <div className="mb-4">
                 <div className="text-sm font-medium text-gray-700 mb-2">Store Image</div>
-                <div className="flex items-center gap-4">
+                <div className="flex items-start gap-4">
                   <div className="relative w-24 h-24">
                     <img
                       src={imageSrc}
@@ -357,6 +385,7 @@ export default function AdminStoreModal({
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (!file) return;
+                        setStoreImageUrlInput('');
                         setSelectedFile(file);
                         const nextPreview = URL.createObjectURL(file);
                         if ((previewUrl || '').startsWith('blob:')) {
@@ -369,8 +398,43 @@ export default function AdminStoreModal({
                       disabled={saving}
                     />
                   </div>
-                  <div className="text-sm text-gray-600">
-                    Upload an image; it will be stored as WebP.
+                  <div className="flex-1 text-sm text-gray-600">
+                    <div>Upload an image; it will be stored as WebP.</div>
+
+                    <div className="mt-2">
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Or paste image URL</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={storeImageUrlInput}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            setStoreImageUrlInput(next);
+                            if ((next || '').trim()) {
+                              setSelectedFile(null);
+                              if ((previewUrl || '').startsWith('blob:')) {
+                                try {
+                                  URL.revokeObjectURL(previewUrl);
+                                } catch {}
+                              }
+                              setPreviewUrl('');
+                            }
+                          }}
+                          className="w-full px-3 py-2 border rounded-md text-sm"
+                          placeholder="https://..."
+                          disabled={saving}
+                        />
+                        {storeImageUrlInput && (
+                          <button
+                            type="button"
+                            className="px-2 py-2 border rounded-md text-xs text-gray-700 hover:bg-gray-50"
+                            onClick={() => setStoreImageUrlInput('')}
+                            disabled={saving}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

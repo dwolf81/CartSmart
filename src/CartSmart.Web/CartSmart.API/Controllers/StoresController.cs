@@ -6,6 +6,8 @@ using Microsoft.AspNetCore.Mvc;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
 using System.Text.RegularExpressions;
+using System.Net.Http;
+using System.Text.Json.Serialization;
 
 namespace CartSmart.API.Controllers
 {
@@ -72,6 +74,55 @@ namespace CartSmart.API.Controllers
             using var output = new MemoryStream();
             await image.SaveAsWebpAsync(output, new WebpEncoder { Quality = 85 });
             return output.ToArray();
+        }
+
+        public sealed class ImportImageFromUrlRequest
+        {
+            [JsonPropertyName("imageUrl")]
+            public string? ImageUrl { get; set; }
+        }
+
+        private static Uri? TryCreateHttpUri(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url)) return null;
+
+            if (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var abs))
+                return abs;
+
+            var candidate = $"https://{url.Trim()}";
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out abs))
+                return abs;
+
+            return null;
+        }
+
+        private static (string Ext, string ContentType) GuessImageType(string? contentType, string? url)
+        {
+            var ct = (contentType ?? string.Empty).ToLowerInvariant();
+            if (ct.StartsWith("image/jpeg")) return (".jpg", "image/jpeg");
+            if (ct.StartsWith("image/png")) return (".png", "image/png");
+            if (ct.StartsWith("image/gif")) return (".gif", "image/gif");
+            if (ct.StartsWith("image/webp")) return (".webp", "image/webp");
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    var u = TryCreateHttpUri(url);
+                    var ext = Path.GetExtension(u?.AbsolutePath ?? url);
+                    if (!string.IsNullOrWhiteSpace(ext))
+                    {
+                        ext = ext.ToLowerInvariant();
+                        if (ext is ".jpg" or ".jpeg") return (".jpg", "image/jpeg");
+                        if (ext == ".png") return (".png", "image/png");
+                        if (ext == ".gif") return (".gif", "image/gif");
+                        if (ext == ".webp") return (".webp", "image/webp");
+                    }
+                }
+            }
+            catch { }
+
+            return (".bin", "application/octet-stream");
         }
 
         [HttpGet]
@@ -338,6 +389,112 @@ namespace CartSmart.API.Controllers
                         CacheControl = "3600",
                         Upsert = true,
                         ContentType = GetContentType(fileExt)
+                    }
+                );
+            }
+
+            // Upload WebP (site-facing)
+            var webpBytes = await ConvertImageToWebP(fileBytes);
+            using (var webpStream = new MemoryStream(webpBytes))
+            {
+                await _supabase.UploadFileWithServiceRoleAsync(
+                    "stores",
+                    webpPath,
+                    webpStream,
+                    new Supabase.Storage.FileOptions
+                    {
+                        CacheControl = "3600",
+                        Upsert = true,
+                        ContentType = "image/webp"
+                    }
+                );
+            }
+
+            var publicUrl = _supabase.GetPublicUrl("stores", webpPath);
+
+            var updateRow = new StoreAdminImageUpdateRow
+            {
+                Id = store.Id,
+                Slug = store.Slug,
+                ImageUrl = publicUrl
+            };
+            await client.From<StoreAdminImageUpdateRow>().Update(updateRow);
+
+            return Ok(new { imageUrl = publicUrl });
+        }
+
+        [HttpPost("{storeId:int}/admin/image-from-url")]
+        [Authorize]
+        public async Task<IActionResult> ImportStoreImageFromUrlAdmin(int storeId, [FromBody] ImportImageFromUrlRequest request)
+        {
+            var authResult = await EnsureAdminAsync();
+            if (authResult != null) return authResult;
+
+            var rawUrl = request?.ImageUrl;
+            var uri = TryCreateHttpUri(rawUrl);
+            if (uri == null)
+                return BadRequest(new { message = "imageUrl is required" });
+
+            var client = _supabase.GetServiceRoleClient();
+            var storeResp = await client
+                .From<Store>()
+                .Where(s => s.Id == storeId)
+                .Limit(1)
+                .Get();
+            var store = storeResp.Models.FirstOrDefault();
+            if (store == null) return NotFound(new { message = "Store not found" });
+
+            byte[] fileBytes;
+            string? contentType;
+
+            using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) })
+            {
+                using var resp = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead);
+                if (!resp.IsSuccessStatusCode)
+                    return BadRequest(new { message = $"Failed to fetch image (HTTP {(int)resp.StatusCode})" });
+
+                contentType = resp.Content.Headers.ContentType?.MediaType;
+                var length = resp.Content.Headers.ContentLength;
+                if (length.HasValue && length.Value > 10_000_000)
+                    return BadRequest(new { message = "Image too large (max 10MB)." });
+
+                fileBytes = await resp.Content.ReadAsByteArrayAsync();
+            }
+
+            if (fileBytes == null || fileBytes.Length == 0)
+                return BadRequest(new { message = "Empty image response." });
+            if (fileBytes.Length > 10_000_000)
+                return BadRequest(new { message = "Image too large (max 10MB)." });
+
+            try
+            {
+                using var _ = Image.Load(fileBytes);
+            }
+            catch
+            {
+                return BadRequest(new { message = "URL did not return a supported image." });
+            }
+
+            var (ext, originalContentType) = GuessImageType(contentType, uri.ToString());
+
+            // Store under stores/{storeId}/
+            var name = $"{Guid.NewGuid():N}";
+            var basePath = $"stores/{storeId}/{name}";
+            var originalPath = $"{basePath}{ext}";
+            var webpPath = $"{basePath}.webp";
+
+            // Upload original
+            using (var originalStream = new MemoryStream(fileBytes))
+            {
+                await _supabase.UploadFileWithServiceRoleAsync(
+                    "stores",
+                    originalPath,
+                    originalStream,
+                    new Supabase.Storage.FileOptions
+                    {
+                        CacheControl = "3600",
+                        Upsert = true,
+                        ContentType = originalContentType
                     }
                 );
             }

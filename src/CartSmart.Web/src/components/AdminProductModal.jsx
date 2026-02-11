@@ -40,6 +40,7 @@ export default function AdminProductModal({
   const [adminSearchAliasesText, setAdminSearchAliasesText] = useState('');
   const [adminNegativeKeywordsText, setAdminNegativeKeywordsText] = useState('');
   const [adminProductImageUrl, setAdminProductImageUrl] = useState('');
+  const [adminProductImageUrlInput, setAdminProductImageUrlInput] = useState('');
   const [adminProductSelectedFile, setAdminProductSelectedFile] = useState(null);
   const [adminProductPreviewUrl, setAdminProductPreviewUrl] = useState('');
 
@@ -74,6 +75,7 @@ export default function AdminProductModal({
     setAdminSearchAliasesText('');
     setAdminNegativeKeywordsText('');
     setAdminProductImageUrl('');
+    setAdminProductImageUrlInput('');
     setAdminProductSelectedFile(null);
     setAdminProductPreviewUrl('');
 
@@ -106,6 +108,7 @@ export default function AdminProductModal({
     setAdminNegativeKeywordsText(negativeKeywords.filter(Boolean).join(', '));
 
     setAdminProductImageUrl(data?.product?.imageUrl ?? '');
+    setAdminProductImageUrlInput('');
     const bid = data?.product?.brandId;
     setAdminBrandId(bid != null ? String(bid) : '');
     setAdminProductSelectedFile(null);
@@ -311,6 +314,54 @@ export default function AdminProductModal({
     }
   };
 
+  const uploadOrImportProductImageIfNeeded = async (id) => {
+    if (!id) return null;
+
+    if (adminProductSelectedFile) {
+      const formData = new FormData();
+      formData.append('file', adminProductSelectedFile);
+      const uploadRes = await authFetch(`${API_URL}/api/products/${id}/admin/image`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!uploadRes.ok) {
+        const msg = await uploadRes.text().catch(() => '');
+        throw new Error(msg || 'Failed to upload product image');
+      }
+      const payload = await uploadRes.json().catch(() => ({}));
+      const newUrl = payload?.imageUrl || null;
+      if (newUrl) setAdminProductImageUrl(newUrl);
+
+      setAdminProductSelectedFile(null);
+      if ((adminProductPreviewUrl || '').startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(adminProductPreviewUrl);
+        } catch {}
+      }
+      setAdminProductPreviewUrl('');
+      return newUrl;
+    }
+
+    const urlToImport = (adminProductImageUrlInput || '').trim();
+    if (!urlToImport) return null;
+
+    const importRes = await authFetch(`${API_URL}/api/products/${id}/admin/image-from-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl: urlToImport })
+    });
+    if (!importRes.ok) {
+      const msg = await importRes.text().catch(() => '');
+      throw new Error(msg || 'Failed to import product image');
+    }
+    const payload = await importRes.json().catch(() => ({}));
+    const newUrl = payload?.imageUrl || null;
+    if (newUrl) setAdminProductImageUrl(newUrl);
+
+    setAdminProductImageUrlInput('');
+    return newUrl;
+  };
+
   const handleSaveProduct = async () => {
     setAdminEditError('');
     setAdminEditSaving(true);
@@ -351,7 +402,10 @@ export default function AdminProductModal({
         const createdId = created?.id;
         if (!createdId) throw new Error('Create succeeded but returned no id');
 
-        if (typeof onCreated === 'function') onCreated(created);
+        const createdImageUrl = await uploadOrImportProductImageIfNeeded(createdId);
+
+        const createdForCallback = createdImageUrl ? { ...created, imageUrl: createdImageUrl } : created;
+        if (typeof onCreated === 'function') onCreated(createdForCallback);
         if (closeOnCreated) {
           onClose();
           return;
@@ -365,30 +419,8 @@ export default function AdminProductModal({
 
       if (!currentProductId) throw new Error('Missing product id');
 
-      // Upload photo first (optional)
-      if (adminProductSelectedFile) {
-        const formData = new FormData();
-        formData.append('file', adminProductSelectedFile);
-        const uploadRes = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/image`, {
-          method: 'POST',
-          body: formData
-        });
-        if (!uploadRes.ok) {
-          const msg = await uploadRes.text().catch(() => '');
-          throw new Error(msg || 'Failed to upload product image');
-        }
-        const payload = await uploadRes.json().catch(() => ({}));
-        const newUrl = payload?.imageUrl;
-        if (newUrl) setAdminProductImageUrl(newUrl);
-
-        setAdminProductSelectedFile(null);
-        if ((adminProductPreviewUrl || '').startsWith('blob:')) {
-          try {
-            URL.revokeObjectURL(adminProductPreviewUrl);
-          } catch {}
-        }
-        setAdminProductPreviewUrl('');
-      }
+      // Upload/import image first (optional)
+      await uploadOrImportProductImageIfNeeded(currentProductId);
 
       const res = await authFetch(`${API_URL}/api/products/${currentProductId}/admin`, {
         method: 'PUT',
@@ -652,7 +684,7 @@ export default function AdminProductModal({
 
   if (!isOpen) return null;
 
-  const imageSrc = adminProductPreviewUrl || adminProductImageUrl || 'https://placehold.co/128x128';
+  const imageSrc = adminProductPreviewUrl || adminProductImageUrlInput || adminProductImageUrl || 'https://placehold.co/128x128';
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -682,48 +714,83 @@ export default function AdminProductModal({
 
               <div className="mb-4">
                 <div className="text-sm font-medium text-gray-700 mb-2">Product Photo</div>
-                {!canShowAttributes ? (
-                  <div className="text-sm text-gray-600">Create the product to upload a photo.</div>
-                ) : (
-                  <div className="flex items-center gap-4">
-                    <div className="relative w-24 h-24">
-                      <img
-                        src={imageSrc}
-                        alt="Product"
-                        className="w-full h-full rounded-lg object-cover border cursor-pointer"
-                        onClick={() => document.getElementById('productImageInput')?.click()}
-                      />
-                      <div
-                        className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
-                        onClick={() => document.getElementById('productImageInput')?.click()}
-                      >
-                        <span className="text-white text-sm font-medium">Change</span>
-                      </div>
-                      <input
-                        id="productImageInput"
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          setAdminProductSelectedFile(file);
-                          const previewUrl = URL.createObjectURL(file);
-                          if ((adminProductPreviewUrl || '').startsWith('blob:')) {
-                            try {
-                              URL.revokeObjectURL(adminProductPreviewUrl);
-                            } catch {}
-                          }
-                          setAdminProductPreviewUrl(previewUrl);
-                        }}
-                        disabled={adminEditSaving}
-                      />
+                <div className="flex items-start gap-4">
+                  <div className="relative w-24 h-24">
+                    <img
+                      src={imageSrc}
+                      alt="Product"
+                      className="w-full h-full rounded-lg object-cover border cursor-pointer"
+                      onClick={() => document.getElementById('productImageInput')?.click()}
+                    />
+                    <div
+                      className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
+                      onClick={() => document.getElementById('productImageInput')?.click()}
+                    >
+                      <span className="text-white text-sm font-medium">Change</span>
                     </div>
-                    <div className="text-sm text-gray-600">
-                      Upload an image; it will be stored as WebP.
+                    <input
+                      id="productImageInput"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setAdminProductImageUrlInput('');
+                        setAdminProductSelectedFile(file);
+                        const previewUrl = URL.createObjectURL(file);
+                        if ((adminProductPreviewUrl || '').startsWith('blob:')) {
+                          try {
+                            URL.revokeObjectURL(adminProductPreviewUrl);
+                          } catch {}
+                        }
+                        setAdminProductPreviewUrl(previewUrl);
+                      }}
+                      disabled={adminEditSaving}
+                    />
+                  </div>
+                  <div className="flex-1 text-sm text-gray-600">
+                    <div>Upload an image; it will be stored as WebP.</div>
+                    {!canShowAttributes && (
+                      <div className="text-xs text-gray-500 mt-1">Image will upload after the product is created.</div>
+                    )}
+
+                    <div className="mt-2">
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Or paste image URL</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={adminProductImageUrlInput}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            setAdminProductImageUrlInput(next);
+                            if ((next || '').trim()) {
+                              setAdminProductSelectedFile(null);
+                              if ((adminProductPreviewUrl || '').startsWith('blob:')) {
+                                try {
+                                  URL.revokeObjectURL(adminProductPreviewUrl);
+                                } catch {}
+                              }
+                              setAdminProductPreviewUrl('');
+                            }
+                          }}
+                          className="w-full px-3 py-2 border rounded-md text-sm"
+                          placeholder="https://..."
+                          disabled={adminEditSaving}
+                        />
+                        {adminProductImageUrlInput && (
+                          <button
+                            type="button"
+                            className="px-2 py-2 border rounded-md text-xs text-gray-700 hover:bg-gray-50"
+                            onClick={() => setAdminProductImageUrlInput('')}
+                            disabled={adminEditSaving}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
