@@ -37,6 +37,7 @@ public interface IStoreClient
 public interface IVariantResolvingStoreClient
 {
     Task<bool> HasActiveVariantsAsync(long productId, CancellationToken ct);
+    Task<IReadOnlyList<long>> GetActiveVariantIdsAsync(long productId, CancellationToken ct);
     Task<long?> TryResolveProductVariantIdAsync(long productId, NewListing listing, CancellationToken ct);
 }
 

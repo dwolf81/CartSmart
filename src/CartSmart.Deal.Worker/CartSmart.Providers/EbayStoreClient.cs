@@ -4,9 +4,11 @@ using Supabase;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Globalization;
 
 namespace CartSmart.Providers;
 
@@ -18,12 +20,16 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     private readonly IStopWordsProvider _stopWordsProvider;
     private readonly Client _supabase;
 
+    private static readonly SemaphoreSlim _ebayPacingGate = new(1, 1);
+    private static long _nextAllowedTickMs;
+
     private readonly ConcurrentDictionary<long, ProductVariantConfigIndex> _variantConfigCache = new();
     private readonly ConcurrentDictionary<long, long?> _defaultVariantIdCache = new();
     private readonly ConcurrentDictionary<string, string> _listingTextCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>?> _itemAspectsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<long, IReadOnlyList<string>> _productSearchAliasCache = new();
     private readonly ConcurrentDictionary<long, decimal?> _productMsrpCache = new();
+    private readonly ConcurrentDictionary<long, IReadOnlyList<long>> _activeVariantIdsCache = new();
 
     public StoreType StoreType => StoreType.Ebay;
     public bool SupportsSoldStatus => true;
@@ -230,6 +236,43 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         return config.EnumValueTokensByAttribute.Count > 0;
     }
 
+    public async Task<IReadOnlyList<long>> GetActiveVariantIdsAsync(long productId, CancellationToken ct)
+    {
+        if (productId <= 0) return Array.Empty<long>();
+        if (_activeVariantIdsCache.TryGetValue(productId, out var cached))
+            return cached;
+
+        try
+        {
+            if (productId > int.MaxValue)
+            {
+                _activeVariantIdsCache[productId] = Array.Empty<long>();
+                return Array.Empty<long>();
+            }
+
+            var resp = await _supabase
+                .From<CartSmart.API.Models.ProductVariant>()
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Filter("is_active", Supabase.Postgrest.Constants.Operator.Equals, "true")
+                .Select("id")
+                .Get(ct);
+
+            var ids = (resp.Models ?? new List<CartSmart.API.Models.ProductVariant>())
+                .Select(v => v.Id)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToList();
+
+            _activeVariantIdsCache[productId] = ids;
+            return ids;
+        }
+        catch
+        {
+            _activeVariantIdsCache[productId] = Array.Empty<long>();
+            return Array.Empty<long>();
+        }
+    }
+
     public async Task<StoreProductData?> GetByUrlAsync(string productUrl, CancellationToken ct)
     {
         try
@@ -329,61 +372,63 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
     private async Task<(ItemResponse? Item, HttpStatusCode Status)> GetItemWithStatusAsync(string itemId, CancellationToken ct)
     {
-        var url = $"https://api.ebay.com/buy/browse/v1/item/{Uri.EscapeDataString(itemId)}";
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Add("X-EBAY-C-MARKETPLACE-ID", "EBAY_US");
-        var token = await _auth.GetAccessTokenAsync(ct);
-        if (!string.IsNullOrEmpty(token))
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        using var resp = await _http.SendAsync(req, ct);
+        if (string.IsNullOrWhiteSpace(itemId)) return (null, HttpStatusCode.BadRequest);
+
+        using var resp = await SendEbayAsync(
+            () => new HttpRequestMessage(HttpMethod.Get, $"https://api.ebay.com/buy/browse/v1/item/{Uri.EscapeDataString(itemId)}"),
+            operation: "getItem",
+            ct);
+
         if (!resp.IsSuccessStatusCode)
         {
             _logger.LogWarning("eBay item fetch failed: {Status} (itemId={ItemId})", resp.StatusCode, itemId);
             return (null, resp.StatusCode);
         }
+
         var item = await resp.Content.ReadFromJsonAsync<ItemResponse>(cancellationToken: ct);
         return (item, resp.StatusCode);
     }
 
     private async Task<(ItemResponse? Item, HttpStatusCode Status)> GetItemByLegacyIdWithStatusAsync(string legacyItemId, CancellationToken ct)
     {
-        var url = $"https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id={Uri.EscapeDataString(legacyItemId)}";
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Add("X-EBAY-C-MARKETPLACE-ID", "EBAY_US");
-        var token = await _auth.GetAccessTokenAsync(ct);
-        if (!string.IsNullOrEmpty(token))
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        using var resp = await _http.SendAsync(req, ct);
+        if (string.IsNullOrWhiteSpace(legacyItemId)) return (null, HttpStatusCode.BadRequest);
+
+        using var resp = await SendEbayAsync(
+            () => new HttpRequestMessage(HttpMethod.Get, $"https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id={Uri.EscapeDataString(legacyItemId)}"),
+            operation: "getItemByLegacyId",
+            ct);
+
         if (!resp.IsSuccessStatusCode)
         {
             _logger.LogWarning("eBay legacy item fetch failed: {Status} (legacyItemId={LegacyItemId})", resp.StatusCode, legacyItemId);
             return (null, resp.StatusCode);
         }
+
         var item = await resp.Content.ReadFromJsonAsync<ItemResponse>(cancellationToken: ct);
         return (item, resp.StatusCode);
     }
 
     public async Task<IReadOnlyList<CartSmart.Core.Worker.NewListing>> SearchNewListingsAsync(long productId, string query, int? preferredConditionCategoryId, CancellationToken ct)
     {
-        // Stage A: recall – expand into multiple related queries and union results
-        var queryVariants = await BuildQueryVariantsForProductAsync(productId, query, ct);
-        if (queryVariants.Count == 0)
+        // Pull a single page of candidates to cap request volume.
+        // We sort by lowest price so downstream selection can stop early.
+        var items = await ExecuteSearchAsync(
+            query,
+            preferredConditionCategoryId,
+            limitOverride: 200,
+            sortOverride: Environment.GetEnvironmentVariable("EBAY_SEARCH_SORT") ?? "price",
+            ct);
+
+        if (items.Count == 0)
             return Array.Empty<CartSmart.Core.Worker.NewListing>();
 
-        // Collect raw candidates keyed by itemId (dedup across queries)
+        // Collect raw candidates keyed by itemId (dedup)
         var rawById = new Dictionary<string, ItemSummary>(StringComparer.OrdinalIgnoreCase);
-        foreach (var q in queryVariants)
+        foreach (var item in items)
         {
-            var items = await ExecuteSearchAsync(q, preferredConditionCategoryId, ct);
-            foreach (var item in items)
-            {
-                if (!rawById.ContainsKey(item.itemId))
-                    rawById[item.itemId] = item;
-            }
+            if (!rawById.ContainsKey(item.itemId))
+                rawById[item.itemId] = item;
         }
-
-        if (rawById.Count == 0)
-            return Array.Empty<CartSmart.Core.Worker.NewListing>();
 
         // If MSRP is configured for the product, require listings to be strictly cheaper than MSRP.
         // (Only enforced when MSRP is available and > 0.)
@@ -508,9 +553,11 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             ));
         }
 
-        // Search results frequently omit localizedAspects. Enrich missing aspects via the item details endpoint
-        // so downstream variant resolution has item-specific signals.
-        if (filtered.Any(l => l.Aspects == null) && filtered.Count > 0)
+        // Optional: Search results frequently omit localizedAspects.
+        // Enriching here can explode API call volume (N+1 item detail calls).
+        // Variant resolution already fetches aspects lazily per candidate (and caches results), so keep this off by default.
+        var enrichDuringSearch = bool.TryParse(Environment.GetEnvironmentVariable("EBAY_ENRICH_ASPECTS_DURING_SEARCH"), out var enrich) && enrich;
+        if (enrichDuringSearch && filtered.Any(l => l.Aspects == null) && filtered.Count > 0)
         {
             var enriched = new List<CartSmart.Core.Worker.NewListing>(filtered.Count);
             foreach (var l in filtered)
@@ -527,7 +574,10 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             return enriched;
         }
 
-        return filtered;
+        // Keep deterministic low-price ordering for the orchestrator.
+        return filtered
+            .OrderBy(l => l.Price ?? decimal.MaxValue)
+            .ToList();
     }
 
     private async Task<decimal?> GetOrFetchProductMsrpAsync(long productId, CancellationToken ct)
@@ -1003,20 +1053,128 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         HashSet<int> RequiredAttributeIds,
         Dictionary<int, string> EnumValueDisplayNameById);
 
+    private static bool IsRetryableStatus(HttpStatusCode status)
+    {
+        return status == HttpStatusCode.TooManyRequests
+            || status == HttpStatusCode.RequestTimeout
+            || status == HttpStatusCode.BadGateway
+            || status == HttpStatusCode.ServiceUnavailable
+            || status == HttpStatusCode.GatewayTimeout;
+    }
+
+    private static TimeSpan GetRetryDelay(HttpResponseMessage resp, int attempt)
+    {
+        if (resp.Headers.RetryAfter?.Delta != null)
+            return resp.Headers.RetryAfter.Delta.Value;
+
+        if (resp.Headers.RetryAfter?.Date != null)
+        {
+            var delta = resp.Headers.RetryAfter.Date.Value - DateTimeOffset.UtcNow;
+            if (delta > TimeSpan.Zero)
+                return delta;
+        }
+
+        var baseMs = int.TryParse(Environment.GetEnvironmentVariable("EBAY_API_RETRY_BASE_DELAY_MS"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var b) && b > 0
+            ? b
+            : 500;
+        var maxMs = int.TryParse(Environment.GetEnvironmentVariable("EBAY_API_RETRY_MAX_DELAY_MS"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var m) && m > 0
+            ? m
+            : 10_000;
+
+        var pow = Math.Min(6, Math.Max(0, attempt));
+        var raw = baseMs * (int)Math.Pow(2, pow);
+        var jitter = Random.Shared.Next(0, Math.Max(1, baseMs));
+        var ms = Math.Min(maxMs, raw + jitter);
+        return TimeSpan.FromMilliseconds(ms);
+    }
+
+    private static async Task PaceEbayAsync(CancellationToken ct)
+    {
+        var minDelayMs = int.TryParse(Environment.GetEnvironmentVariable("EBAY_API_MIN_DELAY_MS"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var d) && d >= 0
+            ? d
+            : 0;
+        if (minDelayMs <= 0)
+            return;
+
+        await _ebayPacingGate.WaitAsync(ct);
+        try
+        {
+            var now = Environment.TickCount64;
+            var next = Interlocked.Read(ref _nextAllowedTickMs);
+            var waitMs = next - now;
+            if (waitMs > 0)
+                await Task.Delay(TimeSpan.FromMilliseconds(waitMs), ct);
+
+            Interlocked.Exchange(ref _nextAllowedTickMs, Environment.TickCount64 + minDelayMs);
+        }
+        finally
+        {
+            _ebayPacingGate.Release();
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendEbayAsync(Func<HttpRequestMessage> buildRequest, string operation, CancellationToken ct)
+    {
+        var maxRetries = int.TryParse(Environment.GetEnvironmentVariable("EBAY_API_MAX_RETRIES"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var r) && r >= 0
+            ? r
+            : 3;
+
+        for (var attempt = 0; ; attempt++)
+        {
+            using var req = buildRequest();
+            if (!req.Headers.Contains("X-EBAY-C-MARKETPLACE-ID"))
+                req.Headers.Add("X-EBAY-C-MARKETPLACE-ID", "EBAY_US");
+
+            var token = await _auth.GetAccessTokenAsync(ct);
+            if (!string.IsNullOrEmpty(token))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            await PaceEbayAsync(ct);
+
+            HttpResponseMessage resp;
+            try
+            {
+                resp = await _http.SendAsync(req, ct);
+            }
+            catch (HttpRequestException ex) when (attempt < maxRetries)
+            {
+                var delay = TimeSpan.FromMilliseconds(500);
+                _logger.LogWarning(ex, "eBay request failed (op={Operation}, attempt={Attempt}/{Max}). Retrying after {Delay}.", operation, attempt + 1, maxRetries + 1, delay);
+                await Task.Delay(delay, ct);
+                continue;
+            }
+
+            if (resp.IsSuccessStatusCode)
+                return resp;
+
+            if (IsRetryableStatus(resp.StatusCode) && attempt < maxRetries)
+            {
+                var delay = GetRetryDelay(resp, attempt);
+                _logger.LogWarning("eBay throttled/transient error (op={Operation}, status={Status}, attempt={Attempt}/{Max}). Retrying after {Delay}.", operation, resp.StatusCode, attempt + 1, maxRetries + 1, delay);
+                resp.Dispose();
+                await Task.Delay(delay, ct);
+                continue;
+            }
+
+            return resp;
+        }
+    }
+
     private async Task<ItemResponse?> GetItemAsync(string itemId, CancellationToken ct)
     {
-        var url = $"https://api.ebay.com/buy/browse/v1/item/{Uri.EscapeDataString(itemId)}";
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Add("X-EBAY-C-MARKETPLACE-ID", "EBAY_US");
-        var token = await _auth.GetAccessTokenAsync(ct);
-        if (!string.IsNullOrEmpty(token))
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        var resp = await _http.SendAsync(req, ct);
+        if (string.IsNullOrWhiteSpace(itemId)) return null;
+
+        using var resp = await SendEbayAsync(
+            () => new HttpRequestMessage(HttpMethod.Get, $"https://api.ebay.com/buy/browse/v1/item/{Uri.EscapeDataString(itemId)}"),
+            operation: "getItem",
+            ct);
+
         if (!resp.IsSuccessStatusCode)
         {
             _logger.LogWarning("eBay item fetch failed: {Status}", resp.StatusCode);
             return null;
         }
+
         return await resp.Content.ReadFromJsonAsync<ItemResponse>(cancellationToken: ct);
     }
 
@@ -1041,13 +1199,13 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     }
 
     // Execute a single eBay search call for a specific query variant
-    private async Task<IReadOnlyList<ItemSummary>> ExecuteSearchAsync(string query, int? preferredConditionCategoryId, CancellationToken ct)
+    private async Task<IReadOnlyList<ItemSummary>> ExecuteSearchAsync(string query, int? preferredConditionCategoryId, int? limitOverride, string? sortOverride, CancellationToken ct)
     {
         // Base filter for Buy It Now (FIXED_PRICE) and acceptable conditions
         string BuildConditionFilter(int? category)
         {
             if (!category.HasValue)
-                return "conditionIds:{1000|1500|2000|4000}"; // default broad
+                return "conditionIds:{1000|1500|2000|2500|3000|4000|5000|6000}"; // broad: new/open-box/refurb/used family
             var ids = category.Value switch
             {
                 1 => new[] { 1000 }, // New
@@ -1063,9 +1221,12 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
         // Optional category locking via environment variable (comma-separated category IDs)
         var categoryIdsRaw = Environment.GetEnvironmentVariable("EBAY_CATEGORY_IDS");
-        var limit = int.TryParse(Environment.GetEnvironmentVariable("EBAY_SEARCH_LIMIT"), out var parsedLimit) && parsedLimit > 0 && parsedLimit <= 200
+        var configuredLimit = int.TryParse(Environment.GetEnvironmentVariable("EBAY_SEARCH_LIMIT"), out var parsedLimit) && parsedLimit > 0 && parsedLimit <= 200
             ? parsedLimit
             : 100;
+        var limit = limitOverride.HasValue && limitOverride.Value > 0
+            ? Math.Min(200, limitOverride.Value)
+            : configuredLimit;
 
         var sb = new StringBuilder();
         sb.Append("q=");
@@ -1074,6 +1235,23 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         sb.Append(Uri.EscapeDataString(filter));
         sb.Append("&limit=");
         sb.Append(limit.ToString());
+
+        // Optional lookback: keep only listings created within the last N minutes.
+        int? lookbackMinutes = int.TryParse(Environment.GetEnvironmentVariable("EBAY_SEARCH_LOOKBACK_MINUTES"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var lm) && lm > 0
+            ? lm
+            : (int?)null;
+
+        var sort = (sortOverride ?? Environment.GetEnvironmentVariable("EBAY_SEARCH_SORT"))?.Trim();
+        if (string.IsNullOrWhiteSpace(sort))
+            sort = "price";
+
+        // Only add sort if a value is provided.
+        // Common values: "price", "newlyListed" (eBay Browse API)
+        if (!string.IsNullOrWhiteSpace(sort))
+        {
+            sb.Append("&sort=");
+            sb.Append(Uri.EscapeDataString(sort));
+        }
         if (!string.IsNullOrWhiteSpace(categoryIdsRaw))
         {
             sb.Append("&category_ids=");
@@ -1081,20 +1259,28 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
 
         var url = $"https://api.ebay.com/buy/browse/v1/item_summary/search?{sb}";
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Add("X-EBAY-C-MARKETPLACE-ID", "EBAY_US");
-        var token = await _auth.GetAccessTokenAsync(ct);
-        if (!string.IsNullOrEmpty(token))
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        var resp = await _http.SendAsync(req, ct);
+        using var resp = await SendEbayAsync(() => new HttpRequestMessage(HttpMethod.Get, url), operation: "search", ct);
         if (!resp.IsSuccessStatusCode)
         {
             _logger.LogWarning("eBay search failed: {Status}", resp.StatusCode);
             return Array.Empty<ItemSummary>();
         }
         var json = await resp.Content.ReadFromJsonAsync<ItemSummaryResponse>(cancellationToken: ct);
-        return json?.itemSummaries ?? new List<ItemSummary>();
+
+        var items = json?.itemSummaries ?? new List<ItemSummary>();
+        if (lookbackMinutes.HasValue)
+        {
+            var cutoff = DateTimeOffset.UtcNow.AddMinutes(-lookbackMinutes.Value);
+            items = items
+                .Where(i => i?.itemCreationDate != null && i.itemCreationDate.Value >= cutoff)
+                .ToList();
+        }
+        return items;
     }
+
+    // Back-compat wrapper for older call sites in this file
+    private Task<IReadOnlyList<ItemSummary>> ExecuteSearchAsync(string query, int? preferredConditionCategoryId, CancellationToken ct)
+        => ExecuteSearchAsync(query, preferredConditionCategoryId, limitOverride: null, sortOverride: null, ct);
 
     // Build 2-4 query variants from a canonical product query
     private static IReadOnlyList<string> BuildQueryVariants(string query, int maxVariants)
@@ -1315,6 +1501,7 @@ internal class ItemSummary
     public string itemId { get; set; } = string.Empty;
     public string? title { get; set; }
     public string? itemWebUrl { get; set; }
+    public DateTimeOffset? itemCreationDate { get; set; }
     public Price? price { get; set; }
     public List<string>? gtin { get; set; }
     public string? mpn { get; set; }

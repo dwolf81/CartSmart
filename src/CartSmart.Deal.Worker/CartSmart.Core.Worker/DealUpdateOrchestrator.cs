@@ -198,31 +198,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             IReadOnlyList<NewListing> listings;
             if (storeType == StoreType.Ebay)
             {
-                // For eBay ingestion, if the product specifies a preferred condition, only search that.
-                // Otherwise, search both New and Used so variant resolution can find the best deal per condition.
-                // 1 = New, 2 = Used (internal condition categories)
-                var conditionIds = product?.PreferredConditionCategoryId.HasValue == true
-                    ? new[] { product.PreferredConditionCategoryId.Value }
-                    : new[] { 1, 2 };
-
-                var combined = new Dictionary<string, NewListing>(StringComparer.OrdinalIgnoreCase);
-                foreach (var cat in conditionIds)
-                {
-                    var part = await client.SearchNewListingsAsync(q.ProductId, q.Query, cat, ct);
-                    foreach (var l in part)
-                    {
-                        var key = !string.IsNullOrWhiteSpace(l.ItemId)
-                            ? l.ItemId!
-                            : (l.Url ?? string.Empty);
-
-                        if (string.IsNullOrWhiteSpace(key))
-                            continue;
-
-                        if (!combined.ContainsKey(key))
-                            combined[key] = l;
-                    }
-                }
-                listings = combined.Values.ToList();
+                // For eBay ingestion, do a single broad search unless the product pins a preferred condition.
+                // This avoids duplicate query-variant search calls (previously New + Used were searched separately).
+                listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, product?.PreferredConditionCategoryId, ct);
             }
             else
             {
@@ -277,41 +255,103 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             }
 
             // From candidates, pick lowest priced listings.
-            // For eBay: select top N per resolved product variant.
+            // For eBay: resolve variants lazily in ascending-price order and stop early once we have N per variant.
             // If the product has variants and we can't confidently resolve a variant from the listing, skip it.
 
             var variantClient = client as IVariantResolvingStoreClient;
             var hasVariants = variantClient != null && await variantClient.HasActiveVariantsAsync(q.ProductId, ct);
 
-            var resolved = new List<(NewListing Listing, long? VariantId)>();
-            foreach (var l in candidates.Where(x => x.Price.HasValue))
-            {
-                long? variantId = null;
-                if (variantClient != null)
-                    variantId = await variantClient.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
-
-                if (hasVariants && !variantId.HasValue)
-                    continue;
-
-                resolved.Add((l, variantId));
-            }
-
             List<(NewListing Listing, long? VariantId)> selected;
-            if (hasVariants)
+            if (storeType == StoreType.Ebay)
             {
-                selected = resolved
-                    .Where(x => x.VariantId.HasValue)
-                    .GroupBy(x => (VariantId: x.VariantId!.Value, ConditionId: x.Listing.ConditionCategoryId ?? 0))
-                    .SelectMany(g => g.OrderBy(x => x.Listing.Price!.Value).Take(topPerProduct))
+                // EbayStoreClient already returns a price-sorted list capped at 200 item summaries.
+                // Still defensively sort and cap here.
+                var priced = candidates
+                    .Where(x => x.Price.HasValue)
+                    .OrderBy(x => x.Price!.Value)
+                    .Take(200)
                     .ToList();
+
+                if (!hasVariants)
+                {
+                    selected = priced
+                        .Take(topPerProduct)
+                        .Select(l => (Listing: l, VariantId: (long?)null))
+                        .ToList();
+                }
+                else
+                {
+                    var variantIds = variantClient != null
+                        ? await variantClient.GetActiveVariantIdsAsync(q.ProductId, ct)
+                        : Array.Empty<long>();
+
+                    // If we can't enumerate variants, fall back to the old behavior (but still cap to 200).
+                    if (variantIds.Count == 0)
+                    {
+                        var resolvedFallback = new List<(NewListing Listing, long? VariantId)>();
+                        foreach (var l in priced)
+                        {
+                            var vid = variantClient != null
+                                ? await variantClient.TryResolveProductVariantIdAsync(q.ProductId, l, ct)
+                                : null;
+                            if (!vid.HasValue) continue;
+                            resolvedFallback.Add((l, vid));
+                        }
+
+                        selected = resolvedFallback
+                            .GroupBy(x => x.VariantId!.Value)
+                            .SelectMany(g => g.Take(topPerProduct))
+                            .ToList();
+                    }
+                    else
+                    {
+                        var counts = variantIds.ToDictionary(id => id, _ => 0);
+                        var picked = new List<(NewListing Listing, long? VariantId)>();
+
+                        foreach (var l in priced)
+                        {
+                            if (picked.Count >= variantIds.Count * topPerProduct)
+                                break;
+
+                            var vid = await variantClient!.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
+                            if (!vid.HasValue) continue;
+                            if (!counts.TryGetValue(vid.Value, out var c))
+                                continue; // ignore variants outside the configured active set
+                            if (c >= topPerProduct)
+                                continue;
+
+                            picked.Add((l, vid));
+                            counts[vid.Value] = c + 1;
+
+                            if (counts.Values.All(v => v >= topPerProduct))
+                                break;
+                        }
+
+                        selected = picked;
+                    }
+                }
             }
             else
             {
-                if (storeType == StoreType.Ebay)
+                // Non-eBay: keep existing behavior.
+                var resolved = new List<(NewListing Listing, long? VariantId)>();
+                foreach (var l in candidates.Where(x => x.Price.HasValue))
                 {
-                    // For eBay, keep top N for New and Used separately.
+                    long? variantId = null;
+                    if (variantClient != null)
+                        variantId = await variantClient.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
+
+                    if (hasVariants && !variantId.HasValue)
+                        continue;
+
+                    resolved.Add((l, variantId));
+                }
+
+                if (hasVariants)
+                {
                     selected = resolved
-                        .GroupBy(x => x.Listing.ConditionCategoryId ?? 0)
+                        .Where(x => x.VariantId.HasValue)
+                        .GroupBy(x => (VariantId: x.VariantId!.Value, ConditionId: x.Listing.ConditionCategoryId ?? 0))
                         .SelectMany(g => g.OrderBy(x => x.Listing.Price!.Value).Take(topPerProduct))
                         .ToList();
                 }

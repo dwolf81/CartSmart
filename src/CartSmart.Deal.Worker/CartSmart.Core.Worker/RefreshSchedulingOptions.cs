@@ -29,25 +29,25 @@ public sealed class RefreshSchedulingOptions
 
     // --- Tiered next-check scheduling ---
     // Tier A: best deal or active now
-    public int TierA_MinMinutes { get; init; } = 5;
-    public int TierA_MaxMinutes { get; init; } = 15;
-    public int TierA_VolatileMinMinutes { get; init; } = 5;
-    public int TierA_VolatileMaxMinutes { get; init; } = 10;
-    public int TierA_RiskMinutes { get; init; } = 5;
+    public int TierA_MinMinutes { get; init; } = 120;
+    public int TierA_MaxMinutes { get; init; } = 240;
+    public int TierA_VolatileMinMinutes { get; init; } = 180;
+    public int TierA_VolatileMaxMinutes { get; init; } = 360;
+    public int TierA_RiskMinutes { get; init; } = 60;
 
     // Tier B: other primaries
-    public int TierB_MinMinutes { get; init; } = 30;
-    public int TierB_MaxMinutes { get; init; } = 90;
-    public int TierB_VolatileMinMinutes { get; init; } = 30;
-    public int TierB_VolatileMaxMinutes { get; init; } = 60;
-    public int TierB_RiskMinutes { get; init; } = 30;
+    public int TierB_MinMinutes { get; init; } = 360;
+    public int TierB_MaxMinutes { get; init; } = 720;
+    public int TierB_VolatileMinMinutes { get; init; } = 480;
+    public int TierB_VolatileMaxMinutes { get; init; } = 960;
+    public int TierB_RiskMinutes { get; init; } = 120;
 
     // Tier C: long tail
-    public int TierC_MinHours { get; init; } = 6;
-    public int TierC_MaxHours { get; init; } = 24;
-    public int TierC_VolatileMinHours { get; init; } = 6;
-    public int TierC_VolatileMaxHours { get; init; } = 12;
+    public int TierC_MinHours { get; init; } = 24;
+    public int TierC_MaxHours { get; init; } = 72;
+    public int TierC_VolatileMinHours { get; init; } = 48;
+    public int TierC_VolatileMaxHours { get; init; } = 120;
 
     // Tier D: dead/noisy
-    public int TierD_Days { get; init; } = 7;
+    public int TierD_Days { get; init; } = 30;
 }

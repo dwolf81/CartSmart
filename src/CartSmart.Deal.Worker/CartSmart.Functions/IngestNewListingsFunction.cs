@@ -22,7 +22,7 @@ public class IngestNewListingsFunction
 
     // Production schedule: every 120 minutes. Cron: second minute hour day month dayOfWeek (UTC)
     [Function("IngestNewListings")]
-    public async Task Run([TimerTrigger("0 */120 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
+    public async Task Run([TimerTrigger("0 */5 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
     {
         var storesRaw = _config["Values:IngestStores"] ?? _config["IngestStores"] ?? "ebay";
         var storeKeys = storesRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
