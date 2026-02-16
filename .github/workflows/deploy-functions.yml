@@ -65,6 +65,7 @@ jobs:
 
       - name: Deploy to Azure Functions (zip deploy)
         run: |
+          set -euo pipefail
           RG=$(az resource list --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" --resource-type "Microsoft.Web/sites" --query "[0].resourceGroup" -o tsv)
           if [ -z "$RG" ]; then
             echo "❌ Could not discover resource group for Function App '${{ env.AZURE_FUNCTIONAPP_NAME }}'"
@@ -72,7 +73,39 @@ jobs:
             exit 1
           fi
 
-          az functionapp deployment source config-zip \
+          echo "Deploying '${{ env.AZURE_FUNCTIONAPP_NAME }}' to resource group '$RG'"
+
+          # Flex Consumption doesn't support Kudu zip deploy logs reliably.
+          # Prefer OneDeploy (az webapp deploy) which is compatible with more plans.
+          if az webapp deploy \
             --resource-group "$RG" \
             --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" \
-            --src "${{ env.ZIP_PATH }}"
+            --src-path "${{ env.ZIP_PATH }}" \
+            --type zip; then
+            echo "✅ Deployment submitted via OneDeploy."
+          else
+            echo "⚠️ OneDeploy failed; falling back to config-zip."
+
+            set +e
+            OUT=$(az functionapp deployment source config-zip \
+              --resource-group "$RG" \
+              --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" \
+              --src "${{ env.ZIP_PATH }}" 2>&1)
+            CODE=$?
+            set -e
+
+            if [ $CODE -ne 0 ]; then
+              if echo "$OUT" | grep -q "The logs you are looking for were not found"; then
+                echo "⚠️ Deployment logs not available (common on Flex Consumption); treating as success."
+                echo "$OUT"
+              else
+                echo "$OUT"
+                exit $CODE
+              fi
+            else
+              echo "$OUT"
+            fi
+          fi
+
+          # Basic sanity check: app still exists and is reachable from ARM.
+          az functionapp show --resource-group "$RG" --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" --query "name" -o tsv
