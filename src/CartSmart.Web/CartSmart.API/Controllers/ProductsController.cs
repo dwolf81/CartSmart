@@ -177,8 +177,6 @@ namespace CartSmart.API.Controllers
                 if (string.IsNullOrWhiteSpace(v)) continue;
                 var key = NormalizeKeyword(v);
                 if (string.IsNullOrWhiteSpace(key)) continue;
-                // Avoid extremely short negatives that will accidentally match everything.
-                if (key.Length < 3) continue;
                 if (seen.Add(key)) result.Add(v);
             }
 

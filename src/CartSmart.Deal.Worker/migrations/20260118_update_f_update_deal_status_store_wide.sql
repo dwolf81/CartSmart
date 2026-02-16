@@ -367,6 +367,12 @@ BEGIN
    WHERE d.id = v_deal_id
    RETURNING d.deal_status_id INTO v_parent_deal_status;
 
+  -- If this deal_product was just approved, propagate direct-deal pricing into any
+  -- approved store-wide coupon/external deals on the same store.
+  IF v_new_dp_status = 2 AND v_new_dp_status <> v_old_dp_status THEN
+    PERFORM public.f_upsert_storewide_deal_products_for_direct_deal(v_deal_id);
+  END IF;
+
   --Remove any stacked deals that use this if it's not active anymore
   IF v_parent_deal_status IS NOT NULL
      AND v_parent_deal_status IN (3,4,6,7) THEN

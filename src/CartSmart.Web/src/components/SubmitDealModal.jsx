@@ -401,6 +401,10 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         }))
         .filter(x => x.attributeId > 0 && x.enumValueIds.length > 0);
 
+      // Only persist variantAttributes if the user explicitly interacted with the selections.
+      // Otherwise the UI's auto-default (select all) would generate many deal_product rows.
+      const shouldSendVariantAttributes = dealAttributesTouchedRef.current === true;
+
       if (isStoreDeal) {
         // StoreId is required for creating store-wide deals.
         // For editing an existing store-wide deal, the backend already knows the store and
@@ -489,7 +493,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         conditionId,
         discountPercent: formData.discountPercent === '' ? null : parseFloat(formData.discountPercent),
         expirationDate: formData.expirationDate || null,
-        ...(variantAttributes.length > 0 ? { variantAttributes } : {}),
+        ...(shouldSendVariantAttributes && variantAttributes.length > 0 ? { variantAttributes } : {}),
       };
 
       if (mode === 'edit' && deal?.deal_product_id) {

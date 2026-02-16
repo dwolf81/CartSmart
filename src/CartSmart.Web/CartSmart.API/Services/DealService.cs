@@ -78,6 +78,27 @@ public class DealService : IDealService
         return Math.Abs(da.Value - db.Value) < 0.005m; // ~1/2 cent tolerance
     }
 
+    private async Task TryApplyStoreWideDealProductsForDirectDealAsync(bool isAdmin, int? dealTypeId, int directDealId)
+    {
+        if (!isAdmin) return;
+        if ((dealTypeId ?? 0) != 1) return;
+        if (directDealId <= 0) return;
+
+        try
+        {
+            var svc = _supabase.GetServiceRoleClient();
+            await svc.Rpc<int>(
+                "f_upsert_storewide_deal_products_for_direct_deal",
+                new { p_direct_deal_id = directDealId }
+            );
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: don't block admin submit/edit if derived rows fail.
+            Console.Error.WriteLine($"[DealService] Failed to apply store-wide derived deal_products. directDealId={directDealId}: {ex}");
+        }
+    }
+
 /*
     private static string? NormalizeDealUrl(Deal d)
     {
@@ -937,6 +958,13 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             }
         }
 
+                // Admin direct deals are auto-approved; apply derived store-wide deal_product rows immediately (backend-only).
+                await TryApplyStoreWideDealProductsForDirectDealAsync(user?.Admin == true, dto.DealTypeId, createdDeal.Id);
+
+        // Note: derived store-wide deal_product rows are now created ONLY:
+        // - immediately after an admin submits/edits an auto-approved direct deal, or
+        // - when a deal transitions to Approved via f_update_deal_status.
+
         // Invalidate cache entries affected by new deal submission
         _cache.Remove("bestDeals");
         _cache.Remove($"product:id:{dto.ProductId}");
@@ -1332,6 +1360,13 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             await client
                 .Rpc("f_update_product_best_deal", new { p_product_id = dto.ProductId });
         }
+
+        // Admin direct deals are auto-approved; apply derived store-wide deal_product rows immediately (backend-only).
+        await TryApplyStoreWideDealProductsForDirectDealAsync(u?.Admin == true, deal.DealTypeId, deal.Id);
+
+        // Note: derived store-wide deal_product rows are now created ONLY:
+        // - immediately after an admin submits/edits an auto-approved direct deal, or
+        // - when a deal transitions to Approved via f_update_deal_status.
 
         // Invalidate cache entries affected by deal update
         _cache.Remove("bestDeals");

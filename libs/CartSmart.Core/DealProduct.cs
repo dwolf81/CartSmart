@@ -59,5 +59,8 @@ namespace CartSmart.API.Models
         [Column("store_item_id")]
         public string? StoreItemId { get; set; }
 
+        [Column("original_deal_product_id")]
+        public int? OriginalDealProductId { get; set; }
+
     }
 }
