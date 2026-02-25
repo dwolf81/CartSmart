@@ -15,7 +15,7 @@ namespace CartSmart.API.Models;
         public DateTime CreatedAt { get; set; }
 
         [Column("gtin")]
-        public string GTIN { get; set; }
+        public string? GTIN { get; set; }
 
         [Column("product_variant_id")]
         public int ProductVariantId { get; set; }

@@ -38,7 +38,7 @@ namespace CartSmart.API.Models
         public short Level { get; set; }
 
         [Column("salt")]
-        public string Salt { get; set; }
+        public string? Salt { get; set; }
 
         [Column("email_opt_in")]
         public bool EmailOptIn { get; set; }

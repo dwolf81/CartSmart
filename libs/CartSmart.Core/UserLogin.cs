@@ -19,6 +19,6 @@ namespace CartSmart.API.Models
         public string? IPAddress { get; set; }
 
         // Navigation property
-        public User User { get; set; }
+        public User? User { get; set; }
     }
 } 

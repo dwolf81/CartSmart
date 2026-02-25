@@ -35,10 +35,10 @@ namespace CartSmart.API.Models
         public short Level { get; set; }
 
         [Column("salt")]
-        public string Salt { get; set; }
+        public string? Salt { get; set; }
 
         [Column("bio")]
-        public string Bio { get; set; }
+        public string? Bio { get; set; }
 
         [Column("image_url")]        
         public string? ImageUrl { get; set; }

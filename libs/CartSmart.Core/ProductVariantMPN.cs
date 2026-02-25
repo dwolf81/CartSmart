@@ -15,7 +15,7 @@ namespace CartSmart.API.Models;
         public DateTime CreatedAt { get; set; }
 
         [Column("mpn")]
-        public string MPN { get; set; }
+        public string? MPN { get; set; }
 
         [Column("product_variant_id")]
         public int ProductVariantId { get; set; }

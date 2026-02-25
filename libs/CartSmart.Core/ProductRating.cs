@@ -31,10 +31,10 @@ namespace CartSmart.API.Models
         public int? ReviewSiteId { get; set; }
 
         // Navigation property
-        public User User { get; set; }
+        public User? User { get; set; }
 
-        public Product Product { get; set; }
+        public Product? Product { get; set; }
         
-        public ReviewSite ReviewSite { get; set; }
+        public ReviewSite? ReviewSite { get; set; }
     }
 } 
