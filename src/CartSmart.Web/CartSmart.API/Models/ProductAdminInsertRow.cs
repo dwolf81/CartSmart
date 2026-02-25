@@ -33,6 +33,9 @@ public class ProductAdminInsertRow : BaseModel
     [Column("enable_service")]
     public bool EnableService { get; set; } = true;
 
+    [Column("api_min_price")]
+    public float? ApiMinPrice { get; set; }
+
     [Column("deleted")]
     public bool Deleted { get; set; } = false;
 }

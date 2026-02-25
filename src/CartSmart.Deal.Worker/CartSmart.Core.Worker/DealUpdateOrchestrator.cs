@@ -564,9 +564,51 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             if (data == null)
             {
                 await repoImpl.IncrementErrorCountAsync(dealProduct, ct);
-                await repoImpl.SetNextCheckAsync(dealProduct, _timeProvider.GetUtcNow().UtcDateTime.AddHours(12), ct);
-                if ((dealProduct.ErrorCount ?? 0) + 1 > 10)
+                var newErrorCount = (dealProduct.ErrorCount ?? 0) + 1;
+
+                if (newErrorCount > 20)
+                {
+                    // Too many consecutive failures — expire the deal_product so we stop wasting API calls.
+                    _logger.LogWarning(
+                        "deal_product {DealProductId} (deal {DealId}) has {ErrorCount} consecutive errors. Auto-expiring.",
+                        dealProduct.Id, dealProduct.DealId, newErrorCount);
+
+                    dealProduct.DealStatusId = SupabaseDealRepository.DealStatusExpired;
+                    await repoImpl.UpdateDealProductAsync(dealProduct, ct);
+
+                    // If ALL deal_products on this deal are now expired, expire the parent deal too.
+                    if (deal != null)
+                    {
+                        try
+                        {
+                            var siblingResp = await _repo.GetDealProductsForDealAsync(dealProduct.DealId, ct);
+                            var allExpired = siblingResp != null && siblingResp.All(dp =>
+                                dp.Deleted || dp.DealStatusId == SupabaseDealRepository.DealStatusExpired);
+                            if (allExpired && deal.DealStatusId != SupabaseDealRepository.DealStatusExpired)
+                            {
+                                deal.DealStatusId = SupabaseDealRepository.DealStatusExpired;
+                                await _repo.UpdateDealsAsync(new[] { deal }, ct);
+                                _logger.LogWarning("All deal_products expired for deal {DealId}. Auto-expired the parent deal.", deal.Id);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to check/expire sibling deal_products for deal {DealId}", deal.Id);
+                        }
+                    }
+
+                    try { await _repo.UpdateProductBestDealAsync(dealProduct.ProductId, ct); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Best deal RPC failed (auto-expire) for product {ProductId}", dealProduct.ProductId); }
+
+                    // Push next check very far out so the scheduler effectively stops retrying.
+                    await repoImpl.SetNextCheckAsync(dealProduct, _timeProvider.GetUtcNow().UtcDateTime.AddDays(365), ct);
+                    return DealProcessOutcome.Expired;
+                }
+
+                if (newErrorCount > 10)
                     await repoImpl.MarkStaleAsync(dealProduct, ct);
+
+                await repoImpl.SetNextCheckAsync(dealProduct, _timeProvider.GetUtcNow().UtcDateTime.AddHours(12), ct);
                 return DealProcessOutcome.Error;
             }
 
@@ -598,10 +640,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             }
             dealProduct.LastCheckedAt = _timeProvider.GetUtcNow().UtcDateTime;
             await repoImpl.UpdateDealProductAsync(dealProduct, ct);
-            if (deal != null)
-                await _repo.UpdateDealsAsync(new[] { deal }, ct);
 
-            if (statusChanged || priceChanged)
+            //Not needed anymore
+            /*if (statusChanged || priceChanged)
             {
                 try
                 {
@@ -611,7 +652,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 {
                     _logger.LogWarning(ex, "Best deal RPC failed for product {ProductId}", dealProduct.ProductId);
                 }
-            }
+            }*/
 
             // If a DIRECT deal price changes, propagate it to coupon/external/stacked deals that share the same URL.
             // Those deal types derive their effective price from the direct base price.

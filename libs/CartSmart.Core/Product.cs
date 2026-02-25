@@ -52,6 +52,11 @@ namespace CartSmart.API.Models;
         [Column("enable_service")]
         public bool EnableService { get; set; } = true;
 
+        // Optional override for the minimum price sent to the eBay Browse API search filter.
+        // When null, the default (30% of MSRP) is used.
+        [Column("api_min_price")]
+        public float? ApiMinPrice { get; set; }
+
         // Preferred condition category to accept for this product (1=New, 2=Used, 3=Refurbished)
         [Column("preferred_condition_category_id")]
         public int? PreferredConditionCategoryId { get; set; }

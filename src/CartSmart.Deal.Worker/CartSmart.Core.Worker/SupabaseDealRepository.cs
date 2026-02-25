@@ -202,7 +202,10 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     {
         foreach (var deal in deals)
         {
-            await _client.From<Deal>().Upsert(deal);
+            await _client
+                .From<Deal>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, deal.Id.ToString())
+                .Update(deal);
         }
     }
 
@@ -249,6 +252,16 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             .Limit(1)
             .Get(ct);
         return resp.Models?.FirstOrDefault();
+    }
+
+    public async Task<IReadOnlyList<DealProduct>> GetDealProductsForDealAsync(int dealId, CancellationToken ct)
+    {
+        if (dealId <= 0) return Array.Empty<DealProduct>();
+        var resp = await _client
+            .From<DealProduct>()
+            .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+            .Get(ct);
+        return resp.Models ?? new List<DealProduct>();
     }
 
     public async Task<long?> CreateOrGetPendingManualPriceTaskAsync(DealProduct dealProduct, string reason, CancellationToken ct)

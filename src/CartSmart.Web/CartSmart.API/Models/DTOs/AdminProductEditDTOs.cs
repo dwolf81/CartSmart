@@ -54,6 +54,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonPropertyName("enableService")]
         public bool EnableService { get; set; } = true;
 
+        [JsonProperty("apiMinPrice")]
+        [JsonPropertyName("apiMinPrice")]
+        public float? ApiMinPrice { get; set; }
+
         [JsonProperty("searchAliases")]
         [JsonPropertyName("searchAliases")]
         public List<string> SearchAliases { get; set; } = new();
@@ -85,6 +89,12 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("enableService")]
         [JsonPropertyName("enableService")]
         public bool? EnableService { get; set; }
+
+        // Optional override for the minimum price sent to the eBay Browse API search filter.
+        // null = use default (30% of MSRP). A value sets the override.
+        [JsonProperty("apiMinPrice")]
+        [JsonPropertyName("apiMinPrice")]
+        public float? ApiMinPrice { get; set; }
 
         // Optional. If provided (even empty), replaces the current alias set.
         [JsonProperty("searchAliases")]
@@ -122,6 +132,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("enableService")]
         [JsonPropertyName("enableService")]
         public bool? EnableService { get; set; }
+
+        [JsonProperty("apiMinPrice")]
+        [JsonPropertyName("apiMinPrice")]
+        public float? ApiMinPrice { get; set; }
 
         [JsonProperty("searchAliases")]
         [JsonPropertyName("searchAliases")]

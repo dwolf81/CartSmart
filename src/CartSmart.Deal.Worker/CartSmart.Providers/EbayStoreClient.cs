@@ -29,7 +29,21 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>?> _itemAspectsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<long, IReadOnlyList<string>> _productSearchAliasCache = new();
     private readonly ConcurrentDictionary<long, decimal?> _productMsrpCache = new();
+    private readonly ConcurrentDictionary<long, decimal?> _productApiMinPriceCache = new();
     private readonly ConcurrentDictionary<long, IReadOnlyList<long>> _activeVariantIdsCache = new();
+
+    // --- Failure cache & circuit breaker ---
+    // Tracks item IDs that recently failed so we don't re-query them.
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _itemFailureCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan _failureCacheTtl = TimeSpan.FromHours(
+        double.TryParse(Environment.GetEnvironmentVariable("EBAY_ITEM_FAILURE_CACHE_HOURS"), NumberStyles.Any, CultureInfo.InvariantCulture, out var fch) && fch > 0 ? fch : 1);
+
+    // Simple circuit breaker: after N consecutive API errors, stop calling for a cooldown period.
+    private static int _consecutiveApiErrors;
+    private static DateTimeOffset _circuitOpenUntil = DateTimeOffset.MinValue;
+    private static readonly int _circuitBreakerThreshold = int.TryParse(Environment.GetEnvironmentVariable("EBAY_CIRCUIT_BREAKER_THRESHOLD"), out var cbt) && cbt > 0 ? cbt : 5;
+    private static readonly TimeSpan _circuitBreakerCooldown = TimeSpan.FromMinutes(
+        double.TryParse(Environment.GetEnvironmentVariable("EBAY_CIRCUIT_BREAKER_COOLDOWN_MINUTES"), NumberStyles.Any, CultureInfo.InvariantCulture, out var cbm) && cbm > 0 ? cbm : 10);
 
     public StoreType StoreType => StoreType.Ebay;
     public bool SupportsSoldStatus => true;
@@ -298,20 +312,89 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             if (string.IsNullOrWhiteSpace(itemId))
                 return null;
 
+            // Extract variation ID from the URL's ?var= query parameter.
+            // Multi-variation eBay listings require this for the legacy ID endpoint.
+            var variationId = ExtractVariationId(productUrl);
+
+            // Circuit breaker: if eBay API is consistently failing, skip entirely.
+            if (IsCircuitOpen())
+            {
+                _logger.LogWarning("eBay circuit breaker is open – skipping API call for itemId={ItemId}", itemId);
+                return null;
+            }
+
+            // Per-item failure cache: skip items that failed recently.
+            if (_itemFailureCache.TryGetValue(itemId, out var failedAt) && DateTimeOffset.UtcNow < failedAt + _failureCacheTtl)
+            {
+                _logger.LogDebug("Skipping eBay item {ItemId} – recently failed at {FailedAt}", itemId, failedAt);
+                return null;
+            }
+
             // Item IDs in listing URLs are legacy numeric IDs. The Browse API's /item/{itemId}
             // frequently expects the REST "itemId" (often shaped like v1|...|0). Use the
             // get_item_by_legacy_id endpoint for numeric IDs.
-            var (item, status) = await GetItemByLegacyIdWithStatusAsync(itemId, ct);
-            if (item == null && status == HttpStatusCode.NotFound)
+            var (item, status) = await GetItemByLegacyIdWithStatusAsync(itemId, variationId, ct);
+
+            // 409 (Conflict / error 11004) = "item not available for purchase".
+            // This is a DEFINITIVE signal that the listing has ended — do NOT fall back
+            // to the direct endpoint, which can return stale IN_STOCK data.
+            if (item == null && status == HttpStatusCode.Conflict)
             {
-                // As a last resort, try the direct item endpoint too.
+                _logger.LogInformation(
+                    "Legacy endpoint returned 409 (item not available) for itemId={ItemId} – treating as ended.",
+                    itemId);
+                return new StoreProductData(null, null, false, true, true, DateTime.UtcNow);
+            }
+
+            if (item == null && (status == HttpStatusCode.NotFound || status == HttpStatusCode.BadRequest))
+            {
+                // Fall back to the direct /item/{itemId} endpoint on:
+                //   404 – the legacy endpoint doesn't know the ID but the direct one might.
+                //   400 – typically a multi-variation listing missing legacy_variation_id
+                //          (error 11006). The direct endpoint returns the parent item.
+                // Do NOT fall back on throttle/server errors to avoid doubling requests.
+                _logger.LogInformation(
+                    "Legacy endpoint returned {Status} for itemId={ItemId} – falling back to direct /item/ endpoint.",
+                    status, itemId);
                 (item, status) = await GetItemWithStatusAsync(itemId, ct);
             }
-            if (status == HttpStatusCode.NotFound)
+
+            // If both calls failed with a non-success status, cache the failure.
+            // Exclude 404 (handled as Sold/Discontinued below) and 400 (item-specific, not transient).
+            if (item == null
+                && status != HttpStatusCode.NotFound
+                && status != HttpStatusCode.BadRequest)
+            {
+                _itemFailureCache[itemId] = DateTimeOffset.UtcNow;
+            }
+
+            // 404 from both endpoints = item truly doesn't exist.
+            if (item == null && status == HttpStatusCode.NotFound)
                 return new StoreProductData(null, null, false, true, true, DateTime.UtcNow);
             if (item == null) return null;
             var price = item.price?.value;
             var currency = item.price?.currency;
+
+            // Diagnostic logging: log key availability fields so we can diagnose
+            // items that aren't transitioning to the correct status.
+            var estStatus = item.estimatedAvailabilities?.FirstOrDefault()?.estimatedAvailabilityStatus;
+            _logger.LogInformation(
+                "eBay item response for itemId={ItemId}: price={Price}, itemEndDate={ItemEndDate}, " +
+                "estimatedAvailabilityStatus={EstStatus}, itemState={ItemState}, " +
+                "estimatedAvailCount={EstCount}, buyingOptions={BuyingOptions}, " +
+                "eligibleForInlineCheckout={EligibleCheckout}, " +
+                "availabilityStatus={AvailStatus}, nested.availabilityStatus={NestedAvailStatus}",
+                item.itemId,
+                price,
+                item.itemEndDate,
+                estStatus,
+                item.itemState,
+                item.estimatedAvailabilities?.Count ?? 0,
+                item.buyingOptions != null ? string.Join(",", item.buyingOptions) : "(null)",
+                item.eligibleForInlineCheckout,
+                item.availabilityStatus,
+                item.availability?.availabilityStatus);
+
             // Determine sold / in-stock based on eBay's availability fields.
             // NOTE: itemGroupType and seller feedback are not sold-status signals.
             var (inStock, soldFlag) = ComputeAvailability(item);
@@ -346,23 +429,53 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         if (!sold && item.itemEndDate.HasValue && item.itemEndDate.Value <= DateTimeOffset.UtcNow)
             sold = true;
 
-        // Prefer explicit availabilityStatus if present.
-        var status = item.availabilityStatus ?? item.availability?.availabilityStatus;
         bool? inStock = null;
-        if (!string.IsNullOrWhiteSpace(status))
+
+        // 1) Check estimatedAvailabilities (the actual field returned by the getItem / getItemByLegacyId endpoints).
+        var estAvail = item.estimatedAvailabilities?.FirstOrDefault();
+        if (estAvail != null)
         {
-            var s = status.Trim().ToUpperInvariant();
-            if (s.Contains("IN_STOCK")) inStock = true;
-            else if (s.Contains("OUT_OF_STOCK") || s.Contains("SOLD_OUT") || s.Contains("SOLDOUT")) inStock = false;
-            else if (s.Contains("LIMITED")) inStock = true;
+            var estStatus = estAvail.estimatedAvailabilityStatus;
+            if (!string.IsNullOrWhiteSpace(estStatus))
+            {
+                var s = estStatus.Trim().ToUpperInvariant();
+                if (s.Contains("OUT_OF_STOCK")) inStock = false;
+                else if (s.Contains("IN_STOCK") || s.Contains("LIMITED")) inStock = true;
+            }
+
+            // Fall back to estimated quantity if status string was absent or unrecognised.
+            if (!inStock.HasValue && estAvail.estimatedAvailableQuantity.HasValue)
+                inStock = estAvail.estimatedAvailableQuantity.Value > 0;
         }
 
-        // Fall back to quantity if eBay provides it. If quantity is absent, keep as unknown.
+        // 2) Legacy fallback: top-level availabilityStatus / nested availability object
+        //    (some older or alternative endpoints may still use these shapes).
+        if (!inStock.HasValue)
+        {
+            var status = item.availabilityStatus ?? item.availability?.availabilityStatus;
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                var s = status.Trim().ToUpperInvariant();
+                if (s.Contains("IN_STOCK")) inStock = true;
+                else if (s.Contains("OUT_OF_STOCK") || s.Contains("SOLD_OUT") || s.Contains("SOLDOUT")) inStock = false;
+                else if (s.Contains("LIMITED")) inStock = true;
+            }
+        }
+
+        // 3) Fall back to nested quantity if eBay provides it.
         if (!inStock.HasValue)
         {
             var qty = item.availability?.shipToLocationAvailability?.quantity;
             if (qty.HasValue) inStock = qty.Value > 0;
         }
+
+        // 4) Safety net: if the API returned a valid response but we still have no
+        //    availability signal at all, default to out of stock.
+        //    Active in-stock eBay listings always return estimatedAvailabilities.
+        //    The complete absence of all availability signals typically means the
+        //    listing has ended, is unavailable, or is in a degraded state.
+        if (!inStock.HasValue)
+            inStock = false;
 
         // If we believe the listing is ended, it cannot be in stock.
         if (sold) inStock = false;
@@ -374,9 +487,16 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     {
         if (string.IsNullOrWhiteSpace(itemId)) return (null, HttpStatusCode.BadRequest);
 
+        // The /item/{itemId} endpoint expects a REST-style ID (e.g. "v1|123456789|0"),
+        // NOT a raw numeric legacy ID. If the caller passes a numeric ID (extracted from
+        // an eBay listing URL), convert it to the expected format.
+        var restItemId = itemId.All(char.IsDigit) ? $"v1|{itemId}|0" : itemId;
+
+        // Use 0 retries for item lookups to avoid ballooning API requests.
         using var resp = await SendEbayAsync(
-            () => new HttpRequestMessage(HttpMethod.Get, $"https://api.ebay.com/buy/browse/v1/item/{Uri.EscapeDataString(itemId)}"),
+            () => new HttpRequestMessage(HttpMethod.Get, $"https://api.ebay.com/buy/browse/v1/item/{Uri.EscapeDataString(restItemId)}"),
             operation: "getItem",
+            maxRetriesOverride: 0,
             ct);
 
         if (!resp.IsSuccessStatusCode)
@@ -389,13 +509,21 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         return (item, resp.StatusCode);
     }
 
-    private async Task<(ItemResponse? Item, HttpStatusCode Status)> GetItemByLegacyIdWithStatusAsync(string legacyItemId, CancellationToken ct)
+    private async Task<(ItemResponse? Item, HttpStatusCode Status)> GetItemByLegacyIdWithStatusAsync(string legacyItemId, string? legacyVariationId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(legacyItemId)) return (null, HttpStatusCode.BadRequest);
 
+        // Build the query string. For multi-variation listings, eBay requires
+        // legacy_variation_id — without it the endpoint returns an error.
+        var url = $"https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id={Uri.EscapeDataString(legacyItemId)}";
+        if (!string.IsNullOrWhiteSpace(legacyVariationId))
+            url += $"&legacy_variation_id={Uri.EscapeDataString(legacyVariationId)}";
+
+        // Use 0 retries for item lookups to avoid ballooning API requests.
         using var resp = await SendEbayAsync(
-            () => new HttpRequestMessage(HttpMethod.Get, $"https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id={Uri.EscapeDataString(legacyItemId)}"),
+            () => new HttpRequestMessage(HttpMethod.Get, url),
             operation: "getItemByLegacyId",
+            maxRetriesOverride: 0,
             ct);
 
         if (!resp.IsSuccessStatusCode)
@@ -410,29 +538,73 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
     public async Task<IReadOnlyList<CartSmart.Core.Worker.NewListing>> SearchNewListingsAsync(long productId, string query, int? preferredConditionCategoryId, CancellationToken ct)
     {
+        // If MSRP is configured for the product, compute server-side price bounds
+        // to filter out low-cost accessories and overpriced bundles at the API level.
+        var productMsrp = await GetOrFetchProductMsrpAsync(productId, ct);
+
+        // Check for a per-product api_min_price override (populated after the MSRP fetch).
+        _productApiMinPriceCache.TryGetValue(productId, out var apiMinPriceOverride);
+
+        decimal? apiMinPrice = null;
+        decimal? apiMaxPrice = null;
+        if (productMsrp.HasValue && productMsrp.Value > 0)
+        {
+            // Use the override if set, otherwise default to 30% of MSRP.
+            apiMinPrice = apiMinPriceOverride ?? Math.Round(productMsrp.Value * 0.3m, 2);
+            apiMaxPrice = productMsrp.Value;
+        }
+        else if (apiMinPriceOverride.HasValue)
+        {
+            // Override is set but no MSRP — still apply the minimum.
+            apiMinPrice = apiMinPriceOverride.Value;
+        }
+
+        var sortOverride = Environment.GetEnvironmentVariable("EBAY_SEARCH_SORT") ?? "price";
+
         // Pull a single page of candidates to cap request volume.
         // We sort by lowest price so downstream selection can stop early.
         var items = await ExecuteSearchAsync(
             query,
             preferredConditionCategoryId,
             limitOverride: 200,
-            sortOverride: Environment.GetEnvironmentVariable("EBAY_SEARCH_SORT") ?? "price",
+            sortOverride: sortOverride,
+            minPrice: apiMinPrice,
+            maxPrice: apiMaxPrice,
             ct);
+
+        // Also search product aliases (alternate titles) – one API call per alias.
+        var maxAliases = int.TryParse(Environment.GetEnvironmentVariable("EBAY_QUERY_ALIAS_LIMIT"), out var aliasLimit) && aliasLimit >= 0 && aliasLimit <= 20 ? aliasLimit : 5;
+        if (productId > 0 && maxAliases > 0)
+        {
+            var aliases = await GetOrFetchProductSearchAliasesAsync(productId, ct);
+            foreach (var alias in aliases.Take(maxAliases))
+            {
+                if (string.Equals(alias, query, StringComparison.OrdinalIgnoreCase))
+                    continue; // skip duplicate of the primary query
+
+                var aliasItems = await ExecuteSearchAsync(
+                    alias,
+                    preferredConditionCategoryId,
+                    limitOverride: 200,
+                    sortOverride: sortOverride,
+                    minPrice: apiMinPrice,
+                    maxPrice: apiMaxPrice,
+                    ct);
+                if (aliasItems.Count > 0)
+                    items = items.Concat(aliasItems).ToList();
+            }
+        }
 
         if (items.Count == 0)
             return Array.Empty<CartSmart.Core.Worker.NewListing>();
 
-        // Collect raw candidates keyed by itemId (dedup)
+        // Collect raw candidates keyed by itemId (dedup across primary + alias searches)
         var rawById = new Dictionary<string, ItemSummary>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in items)
         {
             if (!rawById.ContainsKey(item.itemId))
                 rawById[item.itemId] = item;
         }
-
-        // If MSRP is configured for the product, require listings to be strictly cheaper than MSRP.
-        // (Only enforced when MSRP is available and > 0.)
-        var productMsrp = await GetOrFetchProductMsrpAsync(productId, ct);
 
         // Stage B: verification – aggressively filter out wrong/low-quality matches
 
@@ -591,27 +763,34 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             if (productId > int.MaxValue)
             {
                 _productMsrpCache[productId] = null;
+                _productApiMinPriceCache[productId] = null;
                 return null;
             }
 
             var resp = await _supabase
                 .From<CartSmart.API.Models.Product>()
                 .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
-                .Select("id, msrp")
+                .Select("id, msrp, api_min_price")
                 .Limit(1)
                 .Get(ct);
 
-            var msrpFloat = resp.Models.FirstOrDefault()?.MSRP;
+            var product = resp.Models.FirstOrDefault();
             decimal? msrp = null;
-            if (msrpFloat.HasValue && msrpFloat.Value > 0)
-                msrp = Convert.ToDecimal(msrpFloat.Value);
+            if (product?.MSRP is > 0)
+                msrp = Convert.ToDecimal(product.MSRP.Value);
+
+            decimal? apiMinOverride = null;
+            if (product?.ApiMinPrice is > 0)
+                apiMinOverride = Convert.ToDecimal(product.ApiMinPrice.Value);
 
             _productMsrpCache[productId] = msrp;
+            _productApiMinPriceCache[productId] = apiMinOverride;
             return msrp;
         }
         catch
         {
             _productMsrpCache[productId] = null;
+            _productApiMinPriceCache[productId] = null;
             return null;
         }
     }
@@ -1113,11 +1292,15 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
     }
 
-    private async Task<HttpResponseMessage> SendEbayAsync(Func<HttpRequestMessage> buildRequest, string operation, CancellationToken ct)
+    private Task<HttpResponseMessage> SendEbayAsync(Func<HttpRequestMessage> buildRequest, string operation, CancellationToken ct)
+        => SendEbayAsync(buildRequest, operation, maxRetriesOverride: null, ct);
+
+    private async Task<HttpResponseMessage> SendEbayAsync(Func<HttpRequestMessage> buildRequest, string operation, int? maxRetriesOverride, CancellationToken ct)
     {
-        var maxRetries = int.TryParse(Environment.GetEnvironmentVariable("EBAY_API_MAX_RETRIES"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var r) && r >= 0
-            ? r
-            : 3;
+        var maxRetries = maxRetriesOverride
+            ?? (int.TryParse(Environment.GetEnvironmentVariable("EBAY_API_MAX_RETRIES"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var r) && r >= 0
+                ? r
+                : 3);
 
         for (var attempt = 0; ; attempt++)
         {
@@ -1145,7 +1328,11 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             }
 
             if (resp.IsSuccessStatusCode)
+            {
+                // Reset circuit breaker on success.
+                Interlocked.Exchange(ref _consecutiveApiErrors, 0);
                 return resp;
+            }
 
             if (IsRetryableStatus(resp.StatusCode) && attempt < maxRetries)
             {
@@ -1156,8 +1343,43 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
                 continue;
             }
 
+            // Track consecutive failures for circuit breaker.
+            // Only count server-side errors (5xx) and throttling (429) — these indicate
+            // an API-wide issue. Client errors like 400 (BadRequest), 404 (NotFound),
+            // and 409 (Conflict) are per-item issues and should NOT trip the breaker.
+            var sc = (int)resp.StatusCode;
+            if (sc >= 500 || resp.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                var errors = Interlocked.Increment(ref _consecutiveApiErrors);
+                if (errors >= _circuitBreakerThreshold)
+                {
+                    _circuitOpenUntil = DateTimeOffset.UtcNow + _circuitBreakerCooldown;
+                    _logger.LogError(
+                        "eBay circuit breaker OPEN after {Errors} consecutive errors. Cooling down until {Until}.",
+                        errors, _circuitOpenUntil);
+                }
+            }
+            else if (sc < 500)
+            {
+                // A client error (4xx) means the API itself is healthy — reset the breaker.
+                Interlocked.Exchange(ref _consecutiveApiErrors, 0);
+            }
+
             return resp;
         }
+    }
+
+    private static bool IsCircuitOpen()
+    {
+        if (Interlocked.CompareExchange(ref _consecutiveApiErrors, 0, 0) < _circuitBreakerThreshold)
+            return false;
+        if (DateTimeOffset.UtcNow >= _circuitOpenUntil)
+        {
+            // Cooldown elapsed – allow a probe request and reset.
+            Interlocked.Exchange(ref _consecutiveApiErrors, 0);
+            return false;
+        }
+        return true;
     }
 
     private async Task<ItemResponse?> GetItemAsync(string itemId, CancellationToken ct)
@@ -1199,7 +1421,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     }
 
     // Execute a single eBay search call for a specific query variant
-    private async Task<IReadOnlyList<ItemSummary>> ExecuteSearchAsync(string query, int? preferredConditionCategoryId, int? limitOverride, string? sortOverride, CancellationToken ct)
+    private async Task<IReadOnlyList<ItemSummary>> ExecuteSearchAsync(string query, int? preferredConditionCategoryId, int? limitOverride, string? sortOverride, decimal? minPrice, decimal? maxPrice, CancellationToken ct)
     {
         // Base filter for Buy It Now (FIXED_PRICE) and acceptable conditions
         string BuildConditionFilter(int? category)
@@ -1218,6 +1440,15 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
         var condPart = BuildConditionFilter(preferredConditionCategoryId);
         var filter = string.IsNullOrEmpty(condPart) ? "buyingOptions:{FIXED_PRICE}" : $"buyingOptions:{{FIXED_PRICE}}|{condPart}";
+
+        // Server-side price filter: reduce junk results (accessories, overpriced bundles)
+        // eBay Browse API format: price:[min..max],priceCurrency:USD
+        if (minPrice.HasValue || maxPrice.HasValue)
+        {
+            var minPart = minPrice.HasValue ? minPrice.Value.ToString("F2", CultureInfo.InvariantCulture) : string.Empty;
+            var maxPart = maxPrice.HasValue ? maxPrice.Value.ToString("F2", CultureInfo.InvariantCulture) : string.Empty;
+            filter += $",price:[{minPart}..{maxPart}],priceCurrency:USD";
+        }
 
         // Optional category locking via environment variable (comma-separated category IDs)
         var categoryIdsRaw = Environment.GetEnvironmentVariable("EBAY_CATEGORY_IDS");
@@ -1280,7 +1511,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
     // Back-compat wrapper for older call sites in this file
     private Task<IReadOnlyList<ItemSummary>> ExecuteSearchAsync(string query, int? preferredConditionCategoryId, CancellationToken ct)
-        => ExecuteSearchAsync(query, preferredConditionCategoryId, limitOverride: null, sortOverride: null, ct);
+        => ExecuteSearchAsync(query, preferredConditionCategoryId, limitOverride: null, sortOverride: null, minPrice: null, maxPrice: null, ct);
 
     // Build 2-4 query variants from a canonical product query
     private static IReadOnlyList<string> BuildQueryVariants(string query, int maxVariants)
@@ -1465,6 +1696,37 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         return null;
     }
 
+    /// <summary>
+    /// Extracts the variation ID from an eBay listing URL's "var" query parameter.
+    /// Multi-variation listings require this to resolve via the legacy ID endpoint.
+    /// Example: https://www.ebay.com/itm/123456789?var=456789 → "456789"
+    /// </summary>
+    private static string? ExtractVariationId(string url)
+    {
+        try
+        {
+            var u = new Uri(url);
+            var query = u.Query;
+            if (string.IsNullOrWhiteSpace(query)) return null;
+
+            // Parse query string manually (avoid System.Web dependency)
+            var pairs = query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var pair in pairs)
+            {
+                var eqIdx = pair.IndexOf('=');
+                if (eqIdx < 0) continue;
+                var key = Uri.UnescapeDataString(pair.Substring(0, eqIdx));
+                if (string.Equals(key, "var", StringComparison.OrdinalIgnoreCase))
+                {
+                    var val = Uri.UnescapeDataString(pair.Substring(eqIdx + 1)).Trim();
+                    if (!string.IsNullOrWhiteSpace(val)) return val;
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
     private static int? MapConditionToCategory(int? conditionId)
     {
         // Internal condition table: 1=New, 2=Used, 3=Refurbished
@@ -1523,15 +1785,26 @@ internal class ItemResponse
     public Price? price { get; set; }
     public Availability? availability { get; set; }
     public string? availabilityStatus { get; set; }
+    public List<EstimatedAvailability>? estimatedAvailabilities { get; set; }
     public Seller? seller { get; set; }
     public string? itemGroupType { get; set; }
     public string? itemState { get; set; }
     public DateTimeOffset? itemEndDate { get; set; }
     public List<LocalizedAspect>? localizedAspects { get; set; }
+    public List<string>? buyingOptions { get; set; }
+    public bool? eligibleForInlineCheckout { get; set; }
 }
 internal class Price { public decimal? value { get; set; } public string? currency { get; set; } }
 internal class Availability { public ShipAvail? shipToLocationAvailability { get; set; } public string? availabilityStatus { get; set; } }
 internal class ShipAvail { public int? quantity { get; set; } }
+internal class EstimatedAvailability
+{
+    public string? estimatedAvailabilityStatus { get; set; }
+    public int? estimatedAvailableQuantity { get; set; }
+    public int? estimatedSoldQuantity { get; set; }
+    public int? availabilityThreshold { get; set; }
+    public string? availabilityThresholdType { get; set; }
+}
 internal class Seller { public decimal? feedbackPercentage { get; set; } }
 internal class ShippingOption { public string? shippingCostType { get; set; } }
 

@@ -36,7 +36,7 @@ export default function AdminProductModal({
   const [adminEditSaving, setAdminEditSaving] = useState(false);
   const [adminEditError, setAdminEditError] = useState('');
 
-  const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '', enableService: true });
+  const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '' });
   const [adminSearchAliasesText, setAdminSearchAliasesText] = useState('');
   const [adminNegativeKeywordsText, setAdminNegativeKeywordsText] = useState('');
   const [adminProductImageUrl, setAdminProductImageUrl] = useState('');
@@ -71,7 +71,7 @@ export default function AdminProductModal({
     setAdminEditError('');
     setAdminEditLoading(false);
     setAdminEditSaving(false);
-    setAdminProductDraft({ name: '', msrp: '', description: '', enableService: true });
+    setAdminProductDraft({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '' });
     setAdminSearchAliasesText('');
     setAdminNegativeKeywordsText('');
     setAdminProductImageUrl('');
@@ -98,7 +98,8 @@ export default function AdminProductModal({
       name: data?.product?.name ?? '',
       msrp: data?.product?.msrp ?? '',
       description: data?.product?.description ?? '',
-      enableService: data?.product?.enableService ?? true
+      enableService: data?.product?.enableService ?? true,
+      apiMinPrice: data?.product?.apiMinPrice ?? ''
     });
 
     const aliases = Array.isArray(data?.product?.searchAliases) ? data.product.searchAliases : [];
@@ -204,7 +205,8 @@ export default function AdminProductModal({
       name: data?.product?.name ?? '',
       msrp: data?.product?.msrp ?? '',
       description: data?.product?.description ?? '',
-      enableService: data?.product?.enableService ?? true
+      enableService: data?.product?.enableService ?? true,
+      apiMinPrice: data?.product?.apiMinPrice ?? ''
     });
 
     setAdminProductImageUrl(data?.product?.imageUrl ?? '');
@@ -367,6 +369,7 @@ export default function AdminProductModal({
     setAdminEditSaving(true);
     try {
       const msrpValue = adminProductDraft.msrp === '' ? null : Number(adminProductDraft.msrp);
+      const apiMinPriceValue = adminProductDraft.apiMinPrice === '' ? null : Number(adminProductDraft.apiMinPrice);
 
       const parsedAliases = (adminSearchAliasesText || '')
         .split(/\r?\n|,/g)
@@ -390,6 +393,7 @@ export default function AdminProductModal({
             productTypeId: Number(productTypeId),
             brandId: adminBrandId ? Number(adminBrandId) : null,
             enableService: adminProductDraft.enableService !== false,
+            apiMinPrice: apiMinPriceValue,
             searchAliases: parsedAliases,
             negativeKeywords: parsedNegativeKeywords
           })
@@ -431,6 +435,7 @@ export default function AdminProductModal({
           description: adminProductDraft.description,
           brandId: adminBrandId ? Number(adminBrandId) : null,
           enableService: adminProductDraft.enableService !== false,
+          apiMinPrice: apiMinPriceValue,
           searchAliases: parsedAliases,
           negativeKeywords: parsedNegativeKeywords
         })
@@ -813,6 +818,20 @@ export default function AdminProductModal({
                     placeholder="e.g. 19.99"
                     disabled={adminEditSaving}
                   />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">API Min Price</label>
+                  <input
+                    value={adminProductDraft.apiMinPrice}
+                    onChange={(e) => setAdminProductDraft((p) => ({ ...p, apiMinPrice: e.target.value }))}
+                    className="w-full px-3 py-2 border rounded-md text-sm"
+                    inputMode="decimal"
+                    placeholder="Leave blank to use 30% of MSRP"
+                    disabled={adminEditSaving}
+                  />
+                  <div className="text-xs text-gray-500 mt-1">
+                    Override the minimum price sent to eBay search. When blank, defaults to 30% of MSRP.
+                  </div>
                 </div>
 
                 <div className="md:col-span-2">

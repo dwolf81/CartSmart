@@ -431,6 +431,7 @@ namespace CartSmart.API.Controllers
                 UserId = user.Id,
                 BrandId = request.BrandId,
                 EnableService = request.EnableService ?? true,
+                ApiMinPrice = request.ApiMinPrice,
                 Deleted = false
             };
 
@@ -620,7 +621,8 @@ namespace CartSmart.API.Controllers
                     Slug = product.Slug,
                     ImageUrl = product.ImageUrl,
                     BrandId = product.BrandId,
-                    EnableService = product.EnableService
+                    EnableService = product.EnableService,
+                    ApiMinPrice = product.ApiMinPrice
                 },
                 Attributes = attributes
                     .OrderBy(a => a.AttributeKey)
@@ -1377,7 +1379,7 @@ namespace CartSmart.API.Controllers
             var authResult = await EnsureAdminAsync();
             if (authResult != null) return authResult;
 
-            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.EnableService == null && req.SearchAliases == null && req.NegativeKeywords == null)
+            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.EnableService == null && req.ApiMinPrice == null && req.SearchAliases == null && req.NegativeKeywords == null)
                 return BadRequest(new { message = "No fields provided" });
 
             var client = _supabase.GetServiceRoleClient();
@@ -1399,6 +1401,7 @@ namespace CartSmart.API.Controllers
             if (req.Description != null) updateRow.Description = req.Description;
             if (req.BrandId != null) updateRow.BrandId = req.BrandId;
             if (req.EnableService != null) updateRow.EnableService = req.EnableService;
+            updateRow.ApiMinPrice = req.ApiMinPrice; // always apply: null clears, value sets
 
             await client.From<ProductAdminUpdateRow>().Update(updateRow);
 
@@ -1455,7 +1458,8 @@ namespace CartSmart.API.Controllers
                 name = persisted.Name,
                 msrp = persisted.MSRP,
                 description = persisted.Description,
-                enableService = persisted.EnableService ?? expectedEnableService
+                enableService = persisted.EnableService ?? expectedEnableService,
+                apiMinPrice = persisted.ApiMinPrice
             });
         }
 

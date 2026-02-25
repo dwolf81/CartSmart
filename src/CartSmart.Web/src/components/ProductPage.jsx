@@ -1228,7 +1228,7 @@ const ProductPage = () => {
               >
                 <FaPlus className="w-4 h-4" />
                 <span>Beat the Price</span>
-                <span className="text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
+                <span className="hidden md:inline-flex text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
               </button>
               <button
                 onClick={() => {
@@ -1243,7 +1243,7 @@ const ProductPage = () => {
               >
                 <FaPlus className="w-4 h-4" />
                 <span>Stack Deals</span>
-                <span className="text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
+                <span className="hidden md:inline-flex text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
               </button>
               </div>
             </div>

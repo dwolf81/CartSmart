@@ -22,6 +22,7 @@ public interface IDealRepository
     Task<bool> ExistsDealByStoreItemAsync(string storeItemId, CancellationToken ct);
     Task<IReadOnlyList<Product>> GetActiveProductsAsync(CancellationToken ct);
     Task<Product?> GetProductByIdAsync(int productId, CancellationToken ct);
+    Task<IReadOnlyList<DealProduct>> GetDealProductsForDealAsync(int dealId, CancellationToken ct);
 }
 
 public interface IStoreClient

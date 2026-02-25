@@ -26,4 +26,7 @@ public class ProductAdminUpdateRow : BaseModel
 
     [Column("enable_service")]
     public bool? EnableService { get; set; }
+
+    [Column("api_min_price")]
+    public float? ApiMinPrice { get; set; }
 }
