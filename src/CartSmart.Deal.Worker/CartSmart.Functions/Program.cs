@@ -1,6 +1,5 @@
 using CartSmart.Core.Worker;
 using CartSmart.Providers;
-using CartSmart.Scraping;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -12,26 +11,9 @@ var host = new HostBuilder()
     .ConfigureServices((context, services) =>
     {
         var config = context.Configuration;
-        // Register JS renderer and scraper with JS fallback enabled via config
-        services.AddSingleton<IJsRenderer, PlaywrightRenderer>();
-        var enableJsRaw = config["Values:Scraping_EnableJsFallback"]
-                           ?? config["Scraping_EnableJsFallback"]
-                           ?? Environment.GetEnvironmentVariable("Scraping_EnableJsFallback");
-        var timeoutRaw = config["Values:Scraping_JsTimeoutMs"]
-                          ?? config["Scraping_JsTimeoutMs"]
-                          ?? Environment.GetEnvironmentVariable("Scraping_JsTimeoutMs");
-        var enableJs = bool.TryParse(enableJsRaw, out var e) ? e : true;
-        var timeoutMs = int.TryParse(timeoutRaw, out var t) ? t : 15000;
-        services.AddSingleton<IHtmlScraper>(sp =>
-        {
-            var logger = sp.GetRequiredService<ILogger<GenericHtmlScraper>>();
-            logger.LogInformation("Configuring GenericHtmlScraper: EnableJsFallback={Enable}, JsTimeoutMs={Timeout}", enableJs, timeoutMs);
-            return new GenericHtmlScraper(
-                logger,
-                sp.GetService<IJsRenderer>(),
-                enableJsFallback: enableJs,
-                jsTimeoutMs: timeoutMs);
-        });
+        // Scraping assembly is optional in local/dev due endpoint application-control policies.
+        // Register a no-op scraper so Function host can still start and API-backed checks continue.
+        services.AddSingleton<IHtmlScraper, NoopHtmlScraper>();
         // Prefer Functions configuration (local.settings.json Values) over raw environment.
         // When not running via the Functions host, local.settings.json is NOT loaded automatically.
         // To make F5 debugging work, load local.settings.json manually and hydrate environment if needed.

@@ -137,14 +137,6 @@ namespace CartSmart.API.Controllers
             return Regex.Replace(trimmed, "[^a-z0-9]+", "");
         }
 
-        private static string NormalizeKeyword(string? keyword)
-        {
-            if (string.IsNullOrWhiteSpace(keyword)) return string.Empty;
-            var trimmed = keyword.Trim().ToLowerInvariant();
-            // Match the DB generated column: lower(regexp_replace(keyword, '[^a-zA-Z0-9]+', '', 'g'))
-            return Regex.Replace(trimmed, "[^a-z0-9]+", "");
-        }
-
         private static IReadOnlyList<string> CleanAliasList(IEnumerable<string>? aliases)
         {
             if (aliases == null) return Array.Empty<string>();
@@ -175,8 +167,8 @@ namespace CartSmart.API.Controllers
             {
                 var v = (raw ?? string.Empty).Trim();
                 if (string.IsNullOrWhiteSpace(v)) continue;
-                var key = NormalizeKeyword(v);
-                if (string.IsNullOrWhiteSpace(key)) continue;
+                // Use trimmed lowercase as dedup key so punctuation-only keywords like "(2)" are preserved
+                var key = v.ToLowerInvariant();
                 if (seen.Add(key)) result.Add(v);
             }
 
@@ -241,8 +233,9 @@ namespace CartSmart.API.Controllers
                     });
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Console.Error.WriteLine($"[ProductsController] Failed to upsert product_negative_keyword for productId={productId}: {ex}");
                 // Swallow (best-effort). The admin UI can retry later.
             }
         }
@@ -253,7 +246,10 @@ namespace CartSmart.API.Controllers
             try
             {
                 var desired = CleanKeywordList(incomingKeywords);
-                var desiredNormalized = desired.Select(NormalizeKeyword).Where(x => !string.IsNullOrWhiteSpace(x)).ToHashSet(StringComparer.Ordinal);
+                // Use raw trimmed-lowercase as matching key so "(2)" stays distinct from "2"
+                var desiredByRaw = desired
+                    .Select(k => k.Trim().ToLowerInvariant())
+                    .ToHashSet(StringComparer.Ordinal);
 
                 var existingResp = await client
                     .From<ProductNegativeKeyword>()
@@ -261,16 +257,15 @@ namespace CartSmart.API.Controllers
                     .Get();
 
                 var existingRows = existingResp.Models ?? new List<ProductNegativeKeyword>();
-                var byNormalized = existingRows
-                    .Where(r => !string.IsNullOrWhiteSpace(r.NormalizedKeyword))
-                    .GroupBy(r => r.NormalizedKeyword)
+                var existingByRaw = existingRows
+                    .GroupBy(r => (r.Keyword ?? string.Empty).Trim().ToLowerInvariant())
                     .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
                 // Deactivate any currently active keyword not in the desired set.
                 foreach (var row in existingRows.Where(r => r.IsActive))
                 {
-                    if (string.IsNullOrWhiteSpace(row.NormalizedKeyword)) continue;
-                    if (desiredNormalized.Contains(row.NormalizedKeyword)) continue;
+                    var rawKey = (row.Keyword ?? string.Empty).Trim().ToLowerInvariant();
+                    if (desiredByRaw.Contains(rawKey)) continue;
                     await client.From<ProductNegativeKeywordUpdateRow>().Update(new ProductNegativeKeywordUpdateRow
                     {
                         Id = row.Id,
@@ -281,10 +276,9 @@ namespace CartSmart.API.Controllers
                 // Insert or reactivate desired keywords.
                 foreach (var keyword in desired)
                 {
-                    var normalized = NormalizeKeyword(keyword);
-                    if (string.IsNullOrWhiteSpace(normalized)) continue;
+                    var rawKey = keyword.Trim().ToLowerInvariant();
 
-                    if (byNormalized.TryGetValue(normalized, out var existing))
+                    if (existingByRaw.TryGetValue(rawKey, out var existing))
                     {
                         if (!existing.IsActive)
                         {

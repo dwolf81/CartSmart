@@ -582,6 +582,15 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         return resp.Models.Any();
     }
 
+    public async Task<DealProduct?> GetDealProductByStoreItemIdAsync(string storeItemId, CancellationToken ct)
+    {
+        var resp = await _client.From<DealProduct>()
+            .Filter("store_item_id", Supabase.Postgrest.Constants.Operator.Equals, storeItemId)
+            .Limit(1)
+            .Get(ct);
+        return resp.Models.FirstOrDefault();
+    }
+
     public async Task<DealProduct> CreateDealProductAsync(DealProduct dealProduct, CancellationToken ct)
     {
         var insert = await _client.From<DealProduct>().Insert(dealProduct);

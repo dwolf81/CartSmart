@@ -92,8 +92,11 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
 
         // Search results don't always include item specifics (localizedAspects).
-        // If we don't have aspects yet, try to pull them from the item details endpoint.
-        if (aspectValueNorms.Count == 0 && !string.IsNullOrWhiteSpace(listing.ItemId))
+        // Pulling item details is expensive (one API call per listing), so keep this opt-in.
+        var allowItemAspectFetch = bool.TryParse(Environment.GetEnvironmentVariable("EBAY_VARIANT_RESOLVE_FETCH_ITEM_ASPECTS"), out var fetchItemAspects)
+            ? fetchItemAspects
+            : false;
+        if (allowItemAspectFetch && aspectValueNorms.Count == 0 && !string.IsNullOrWhiteSpace(listing.ItemId))
         {
             var fetchedAspects = await GetOrFetchItemAspectsAsync(listing.ItemId!, ct);
             if (fetchedAspects != null)
@@ -162,7 +165,10 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
         // First pass: title + aspects.
         var constraints = DetectConstraints(titleNorm, aspectValueNorms, pageText: null);
-        if (constraints.Count == 0)
+        var allowPageTextFallback = bool.TryParse(Environment.GetEnvironmentVariable("EBAY_VARIANT_RESOLVE_USE_PAGE_TEXT"), out var usePageText)
+            ? usePageText
+            : false;
+        if (constraints.Count == 0 && allowPageTextFallback)
         {
             // Second pass: include listing page text (item specifics + description HTML).
             var page = await GetPageTextNormAsync();

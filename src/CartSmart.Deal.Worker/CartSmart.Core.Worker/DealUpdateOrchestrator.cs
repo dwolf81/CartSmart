@@ -190,8 +190,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             // Product-scoped negative keywords (listing exclusion)
             var negativeKeywords = await repoImpl.GetOrFetchProductNegativeKeywordsAsync(q.ProductId, ct);
             var normalizedNegativeKeywords = negativeKeywords
-                .Select(NormalizeForContains)
-                .Where(k => !string.IsNullOrWhiteSpace(k) && k.Length >= 3)
+                .Select(k => k?.Trim().ToLowerInvariant())
+                .Where(k => !string.IsNullOrWhiteSpace(k) && k!.Length >= 1)
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
 
@@ -264,6 +264,11 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             List<(NewListing Listing, long? VariantId)> selected;
             if (storeType == StoreType.Ebay)
             {
+                // Safety cap: limit variant-resolution calls per product to avoid excessive eBay item requests.
+                var maxVariantResolveAttempts = int.TryParse(Environment.GetEnvironmentVariable("EBAY_VARIANT_RESOLVE_MAX_ATTEMPTS"), out var parsedMaxVariantResolveAttempts)
+                    ? Math.Clamp(parsedMaxVariantResolveAttempts, 0, 500)
+                    : 40;
+
                 // EbayStoreClient already returns a price-sorted list capped at 200 item summaries.
                 // Still defensively sort and cap here.
                 var priced = candidates
@@ -289,8 +294,16 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     if (variantIds.Count == 0)
                     {
                         var resolvedFallback = new List<(NewListing Listing, long? VariantId)>();
+                        var variantResolveAttempts = 0;
                         foreach (var l in priced)
                         {
+                            if (variantResolveAttempts >= maxVariantResolveAttempts)
+                            {
+                                _logger.LogInformation("Reached variant resolve cap for product {ProductId}. Attempts={Attempts}", q.ProductId, variantResolveAttempts);
+                                break;
+                            }
+
+                            variantResolveAttempts++;
                             var vid = variantClient != null
                                 ? await variantClient.TryResolveProductVariantIdAsync(q.ProductId, l, ct)
                                 : null;
@@ -307,11 +320,20 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     {
                         var counts = variantIds.ToDictionary(id => id, _ => 0);
                         var picked = new List<(NewListing Listing, long? VariantId)>();
+                        var variantResolveAttempts = 0;
 
                         foreach (var l in priced)
                         {
                             if (picked.Count >= variantIds.Count * topPerProduct)
                                 break;
+
+                            if (variantResolveAttempts >= maxVariantResolveAttempts)
+                            {
+                                _logger.LogInformation("Reached variant resolve cap for product {ProductId}. Attempts={Attempts}", q.ProductId, variantResolveAttempts);
+                                break;
+                            }
+
+                            variantResolveAttempts++;
 
                             var vid = await variantClient!.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
                             if (!vid.HasValue) continue;
@@ -366,8 +388,26 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
             foreach (var (listing, variantId) in selected)
             {
-                if (listing.ItemId != null && await repoImpl.ExistsDealByStoreItemAsync(listing.ItemId, ct))
-                    continue;
+                if (listing.ItemId != null)
+                {
+                    var existing = await repoImpl.GetDealProductByStoreItemIdAsync(listing.ItemId, ct);
+                    if (existing != null)
+                    {
+                        // Listing already tracked — refresh price and scheduling timestamps
+                        // so the refresh pipeline doesn't re-check it shortly after ingest.
+                        var refreshNow = _timeProvider.GetUtcNow().UtcDateTime;
+                        if (listing.Price.HasValue && existing.Price != listing.Price.Value)
+                        {
+                            await repoImpl.AppendPriceHistoryForDealProductAsync(existing.Id, listing.Price.Value, listing.Currency, refreshNow, ct);
+                            existing.Price = listing.Price.Value;
+                        }
+                        existing.LastCheckedAt = refreshNow;
+                        existing.NextCheckAt = refreshNow.AddHours(6);
+                        await repoImpl.UpdateDealProductAsync(existing, ct);
+                        _logger.LogDebug("Refreshed existing deal_product {Id} (store_item_id={ItemId})", existing.Id, listing.ItemId);
+                        continue;
+                    }
+                }
                 var deal = new Deal
                 {
                     CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
@@ -896,12 +936,12 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
     {
         if (string.IsNullOrWhiteSpace(title)) return false;
         if (normalizedNegativeKeywords == null || normalizedNegativeKeywords.Count == 0) return false;
-        var normTitle = NormalizeForContains(title);
-        if (string.IsNullOrWhiteSpace(normTitle)) return false;
+        var lowerTitle = title.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(lowerTitle)) return false;
         foreach (var nk in normalizedNegativeKeywords)
         {
             if (string.IsNullOrWhiteSpace(nk)) continue;
-            if (normTitle.Contains(nk, StringComparison.Ordinal))
+            if (lowerTitle.Contains(nk, StringComparison.Ordinal))
                 return true;
         }
         return false;

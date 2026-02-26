@@ -20,6 +20,7 @@ public interface IDealRepository
     Task<Deal> CreateDealAsync(Deal deal, CancellationToken ct);
     Task<DealProduct> CreateDealProductAsync(DealProduct dealProduct, CancellationToken ct);
     Task<bool> ExistsDealByStoreItemAsync(string storeItemId, CancellationToken ct);
+    Task<DealProduct?> GetDealProductByStoreItemIdAsync(string storeItemId, CancellationToken ct);
     Task<IReadOnlyList<Product>> GetActiveProductsAsync(CancellationToken ct);
     Task<Product?> GetProductByIdAsync(int productId, CancellationToken ct);
     Task<IReadOnlyList<DealProduct>> GetDealProductsForDealAsync(int dealId, CancellationToken ct);
