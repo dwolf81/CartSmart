@@ -190,8 +190,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             // Product-scoped negative keywords (listing exclusion)
             var negativeKeywords = await repoImpl.GetOrFetchProductNegativeKeywordsAsync(q.ProductId, ct);
             var normalizedNegativeKeywords = negativeKeywords
-                .Select(k => k?.Trim().ToLowerInvariant())
-                .Where(k => !string.IsNullOrWhiteSpace(k) && k!.Length >= 1)
+                .Select(k => (k ?? string.Empty).Trim().ToLowerInvariant())
+                .Where(k => k.Length >= 1)
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
 
