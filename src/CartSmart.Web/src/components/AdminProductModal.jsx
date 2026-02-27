@@ -39,6 +39,7 @@ export default function AdminProductModal({
   const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '' });
   const [adminSearchAliasesText, setAdminSearchAliasesText] = useState('');
   const [adminNegativeKeywordsText, setAdminNegativeKeywordsText] = useState('');
+  const [adminProductTypeNegativeKeywordsText, setAdminProductTypeNegativeKeywordsText] = useState('');
   const [adminProductImageUrl, setAdminProductImageUrl] = useState('');
   const [adminProductImageUrlInput, setAdminProductImageUrlInput] = useState('');
   const [adminProductSelectedFile, setAdminProductSelectedFile] = useState(null);
@@ -74,6 +75,7 @@ export default function AdminProductModal({
     setAdminProductDraft({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '' });
     setAdminSearchAliasesText('');
     setAdminNegativeKeywordsText('');
+    setAdminProductTypeNegativeKeywordsText('');
     setAdminProductImageUrl('');
     setAdminProductImageUrlInput('');
     setAdminProductSelectedFile(null);
@@ -107,6 +109,9 @@ export default function AdminProductModal({
 
     const negativeKeywords = Array.isArray(data?.product?.negativeKeywords) ? data.product.negativeKeywords : [];
     setAdminNegativeKeywordsText(negativeKeywords.filter(Boolean).join(', '));
+
+    const productTypeNegativeKeywords = Array.isArray(data?.product?.productTypeNegativeKeywords) ? data.product.productTypeNegativeKeywords : [];
+    setAdminProductTypeNegativeKeywordsText(productTypeNegativeKeywords.filter(Boolean).join(', '));
 
     setAdminProductImageUrl(data?.product?.imageUrl ?? '');
     setAdminProductImageUrlInput('');
@@ -381,6 +386,11 @@ export default function AdminProductModal({
         .map((s) => (s || '').trim())
         .filter((s) => !!s);
 
+      const parsedProductTypeNegativeKeywords = (adminProductTypeNegativeKeywordsText || '')
+        .split(/\r?\n|,/g)
+        .map((s) => (s || '').trim())
+        .filter((s) => !!s);
+
       if (internalMode === 'add') {
         if (!productTypeId) throw new Error('Missing product type');
         const res = await authFetch(`${API_URL}/api/products/admin`, {
@@ -395,7 +405,8 @@ export default function AdminProductModal({
             enableService: adminProductDraft.enableService !== false,
             apiMinPrice: apiMinPriceValue,
             searchAliases: parsedAliases,
-            negativeKeywords: parsedNegativeKeywords
+            negativeKeywords: parsedNegativeKeywords,
+            productTypeNegativeKeywords: parsedProductTypeNegativeKeywords
           })
         });
         if (!res.ok) {
@@ -437,7 +448,8 @@ export default function AdminProductModal({
           enableService: adminProductDraft.enableService !== false,
           apiMinPrice: apiMinPriceValue,
           searchAliases: parsedAliases,
-          negativeKeywords: parsedNegativeKeywords
+          negativeKeywords: parsedNegativeKeywords,
+          productTypeNegativeKeywords: parsedProductTypeNegativeKeywords
         })
       });
 
@@ -953,6 +965,20 @@ export default function AdminProductModal({
                   />
                   <div className="text-xs text-gray-500 mt-1">
                     Listings containing any of these keywords in the title will be ignored during new-listing ingestion.
+                  </div>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Category negative keywords (listing exclusion)</label>
+                  <input
+                    value={adminProductTypeNegativeKeywordsText}
+                    onChange={(e) => setAdminProductTypeNegativeKeywordsText(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-md text-sm"
+                    placeholder={'Comma-separated (or one per line). Example: Case, Protector'}
+                    disabled={adminEditSaving}
+                  />
+                  <div className="text-xs text-gray-500 mt-1">
+                    Applies to all products in this category and is combined with product-level negative keywords.
                   </div>
                 </div>
               </div>

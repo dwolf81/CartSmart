@@ -305,6 +305,69 @@ namespace CartSmart.API.Controllers
             }
         }
 
+        private async Task UpsertProductTypeNegativeKeywordsAsync(Supabase.Client client, int productTypeId, IEnumerable<string>? incomingKeywords)
+        {
+            if (productTypeId <= 0) return;
+
+            try
+            {
+                var desired = CleanKeywordList(incomingKeywords);
+                var desiredByRaw = desired
+                    .Select(k => k.Trim().ToLowerInvariant())
+                    .ToHashSet(StringComparer.Ordinal);
+
+                var existingResp = await client
+                    .From<ProductTypeNegativeKeyword>()
+                    .Filter("product_type_id", Supabase.Postgrest.Constants.Operator.Equals, productTypeId)
+                    .Get();
+
+                var existingRows = existingResp.Models ?? new List<ProductTypeNegativeKeyword>();
+                var existingByRaw = existingRows
+                    .GroupBy(r => (r.Keyword ?? string.Empty).Trim().ToLowerInvariant())
+                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+                foreach (var row in existingRows.Where(r => r.IsActive))
+                {
+                    var rawKey = (row.Keyword ?? string.Empty).Trim().ToLowerInvariant();
+                    if (desiredByRaw.Contains(rawKey)) continue;
+                    await client.From<ProductTypeNegativeKeywordUpdateRow>().Update(new ProductTypeNegativeKeywordUpdateRow
+                    {
+                        Id = row.Id,
+                        IsActive = false
+                    });
+                }
+
+                foreach (var keyword in desired)
+                {
+                    var rawKey = keyword.Trim().ToLowerInvariant();
+
+                    if (existingByRaw.TryGetValue(rawKey, out var existing))
+                    {
+                        if (!existing.IsActive)
+                        {
+                            await client.From<ProductTypeNegativeKeywordUpdateRow>().Update(new ProductTypeNegativeKeywordUpdateRow
+                            {
+                                Id = existing.Id,
+                                IsActive = true
+                            });
+                        }
+                        continue;
+                    }
+
+                    await client.From<ProductTypeNegativeKeywordInsertRow>().Insert(new ProductTypeNegativeKeywordInsertRow
+                    {
+                        ProductTypeId = productTypeId,
+                        Keyword = keyword,
+                        IsActive = true
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[ProductsController] Failed to upsert product_type_negative_keyword for productTypeId={productTypeId}: {ex}");
+            }
+        }
+
         private static string GetContentType(string fileExtension)
         {
             return (fileExtension ?? string.Empty).ToLowerInvariant() switch
@@ -478,6 +541,11 @@ namespace CartSmart.API.Controllers
             if (request.NegativeKeywords != null)
             {
                 await UpsertProductNegativeKeywordsAsync(client, inserted.Id, request.NegativeKeywords);
+            }
+
+            if (request.ProductTypeNegativeKeywords != null)
+            {
+                await UpsertProductTypeNegativeKeywordsAsync(client, request.ProductTypeId, request.ProductTypeNegativeKeywords);
             }
 
             InvalidateProductCaches(inserted.Id, inserted.Slug);
@@ -700,6 +768,28 @@ namespace CartSmart.API.Controllers
             {
                 Console.Error.WriteLine($"[ProductsController] Failed to load product_negative_keyword for productId={productId}: {ex}");
                 dto.Product.NegativeKeywords = new List<string>();
+            }
+
+            // Include active product-type negative keywords for admin editing.
+            try
+            {
+                var typeKwResp = await client
+                    .From<ProductTypeNegativeKeyword>()
+                    .Filter("product_type_id", Supabase.Postgrest.Constants.Operator.Equals, product.ProductTypeId)
+                    .Get();
+
+                dto.Product.ProductTypeNegativeKeywords = (typeKwResp.Models ?? new List<ProductTypeNegativeKeyword>())
+                    .Where(k => k.IsActive)
+                    .Select(k => (k.Keyword ?? string.Empty).Trim())
+                    .Where(k => !string.IsNullOrWhiteSpace(k))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(k => k)
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[ProductsController] Failed to load product_type_negative_keyword for productTypeId={product.ProductTypeId}: {ex}");
+                dto.Product.ProductTypeNegativeKeywords = new List<string>();
             }
 
             return Ok(dto);
@@ -1373,7 +1463,7 @@ namespace CartSmart.API.Controllers
             var authResult = await EnsureAdminAsync();
             if (authResult != null) return authResult;
 
-            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.EnableService == null && req.ApiMinPrice == null && req.SearchAliases == null && req.NegativeKeywords == null)
+            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.EnableService == null && req.ApiMinPrice == null && req.SearchAliases == null && req.NegativeKeywords == null && req.ProductTypeNegativeKeywords == null)
                 return BadRequest(new { message = "No fields provided" });
 
             var client = _supabase.GetServiceRoleClient();
@@ -1409,6 +1499,12 @@ namespace CartSmart.API.Controllers
             if (req.NegativeKeywords != null)
             {
                 await UpsertProductNegativeKeywordsAsync(client, productId, req.NegativeKeywords);
+            }
+
+            // Optional: replace product-type negative keyword set.
+            if (req.ProductTypeNegativeKeywords != null)
+            {
+                await UpsertProductTypeNegativeKeywordsAsync(client, existing.ProductTypeId, req.ProductTypeNegativeKeywords);
             }
 
             var expectedName = req.Name != null ? req.Name.Trim() : existing.Name;

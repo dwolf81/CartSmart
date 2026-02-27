@@ -14,6 +14,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     private readonly TimeProvider _timeProvider;
 
     private readonly ConcurrentDictionary<int, IReadOnlyList<string>> _productNegativeKeywordsCache = new();
+    private readonly ConcurrentDictionary<int, IReadOnlyList<string>> _productTypeNegativeKeywordsCache = new();
 
     // Status mapping constants provided by user
     public const int DealStatusActive = 2;
@@ -643,6 +644,37 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         catch
         {
             _productNegativeKeywordsCache[productId] = Array.Empty<string>();
+            return Array.Empty<string>();
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetOrFetchProductTypeNegativeKeywordsAsync(int productTypeId, CancellationToken ct)
+    {
+        if (productTypeId <= 0) return Array.Empty<string>();
+        if (_productTypeNegativeKeywordsCache.TryGetValue(productTypeId, out var cached))
+            return cached;
+
+        try
+        {
+            var resp = await _client
+                .From<ProductTypeNegativeKeyword>()
+                .Filter("product_type_id", Supabase.Postgrest.Constants.Operator.Equals, productTypeId.ToString())
+                .Get(ct);
+
+            var keywords = (resp.Models ?? new List<ProductTypeNegativeKeyword>())
+                .Where(k => k.IsActive)
+                .Select(k => (k.Keyword ?? string.Empty).Trim())
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(100)
+                .ToList();
+
+            _productTypeNegativeKeywordsCache[productTypeId] = keywords;
+            return keywords;
+        }
+        catch
+        {
+            _productTypeNegativeKeywordsCache[productTypeId] = Array.Empty<string>();
             return Array.Empty<string>();
         }
     }

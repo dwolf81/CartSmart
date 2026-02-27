@@ -187,16 +187,18 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             var productName = product?.Name?.ToLowerInvariant() ?? string.Empty;
             var productTokens = NormalizeIdentityTokens(product?.Name ?? string.Empty);
 
-            // Product-scoped negative keywords (listing exclusion)
-            var negativeKeywords = await repoImpl.GetOrFetchProductNegativeKeywordsAsync(q.ProductId, ct);
-            var normalizedNegativeKeywords = negativeKeywords
+            // Product + product-type scoped negative keywords (listing exclusion)
+            var productNegativeKeywords = await repoImpl.GetOrFetchProductNegativeKeywordsAsync(q.ProductId, ct);
+            var productTypeNegativeKeywords = await repoImpl.GetOrFetchProductTypeNegativeKeywordsAsync(product?.ProductTypeId ?? 0, ct);
+            var normalizedNegativeKeywords = productNegativeKeywords
+                .Concat(productTypeNegativeKeywords)
                 .Select(k => (k ?? string.Empty).Trim().ToLowerInvariant())
                 .Where(k => k.Length >= 1)
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
 
-            // For eBay ingest we need all major condition categories (New/Used/Refurbished)
-            // so downstream selection can take top N per condition.
+            // For eBay ingest, preferredConditionForSearch narrows to a single condition when configured;
+            // otherwise search stays broad and downstream selection takes top N per condition.
             var preferredConditionForSearch = product?.PreferredConditionCategoryId;
             var listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, preferredConditionForSearch, ct);
             // Apply matching hierarchy and price sanity

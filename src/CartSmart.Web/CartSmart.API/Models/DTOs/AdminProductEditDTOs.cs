@@ -65,6 +65,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("negativeKeywords")]
         [JsonPropertyName("negativeKeywords")]
         public List<string> NegativeKeywords { get; set; } = new();
+
+        [JsonProperty("productTypeNegativeKeywords")]
+        [JsonPropertyName("productTypeNegativeKeywords")]
+        public List<string> ProductTypeNegativeKeywords { get; set; } = new();
     }
 
     public class AdminUpdateProductRequestDTO
@@ -105,6 +109,11 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("negativeKeywords")]
         [JsonPropertyName("negativeKeywords")]
         public List<string>? NegativeKeywords { get; set; }
+
+        // Optional. If provided (even empty), replaces the current product-type keyword set.
+        [JsonProperty("productTypeNegativeKeywords")]
+        [JsonPropertyName("productTypeNegativeKeywords")]
+        public List<string>? ProductTypeNegativeKeywords { get; set; }
     }
 
     public class AdminCreateProductRequestDTO
@@ -144,6 +153,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("negativeKeywords")]
         [JsonPropertyName("negativeKeywords")]
         public List<string>? NegativeKeywords { get; set; }
+
+        [JsonProperty("productTypeNegativeKeywords")]
+        [JsonPropertyName("productTypeNegativeKeywords")]
+        public List<string>? ProductTypeNegativeKeywords { get; set; }
     }
 
     public class AdminCreateProductResponseDTO
