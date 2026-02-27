@@ -95,7 +95,14 @@ jobs:
             set -e
 
             if [ $CODE -ne 0 ]; then
-              if echo "$OUT" | grep -q "The logs you are looking for were not found"; then
+              if echo "$OUT" | grep -q "Deployment was partially successful"; then
+                echo "⚠️ Config-zip returned partial success. Attempting trigger sync via ARM..."
+                SUB_ID=$(az account show --query id -o tsv)
+                SYNC_URL="https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RG}/providers/Microsoft.Web/sites/${{ env.AZURE_FUNCTIONAPP_NAME }}/syncfunctiontriggers?api-version=2023-12-01"
+                az rest --method post --url "$SYNC_URL" --only-show-errors || true
+                echo "ℹ️ Proceeding after manual trigger sync attempt."
+                echo "$OUT"
+              elif echo "$OUT" | grep -q "The logs you are looking for were not found"; then
                 echo "⚠️ Deployment logs not available (common on Flex Consumption); treating as success."
                 echo "$OUT"
               else
