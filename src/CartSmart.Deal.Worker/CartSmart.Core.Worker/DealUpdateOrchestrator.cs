@@ -195,17 +195,10 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
 
-            IReadOnlyList<NewListing> listings;
-            if (storeType == StoreType.Ebay)
-            {
-                // For eBay ingestion, do a single broad search unless the product pins a preferred condition.
-                // This avoids duplicate query-variant search calls (previously New + Used were searched separately).
-                listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, product?.PreferredConditionCategoryId, ct);
-            }
-            else
-            {
-                listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, product?.PreferredConditionCategoryId, ct);
-            }
+            // For eBay ingest we need all major condition categories (New/Used/Refurbished)
+            // so downstream selection can take top N per condition.
+            var preferredConditionForSearch = product?.PreferredConditionCategoryId;
+            var listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, preferredConditionForSearch, ct);
             // Apply matching hierarchy and price sanity
             var candidates = new List<NewListing>();
             foreach (var l in listings)
@@ -213,8 +206,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 if (normalizedNegativeKeywords.Count > 0 && TitleMatchesAnyNegativeKeyword(l.Title, normalizedNegativeKeywords))
                     continue;
 
-                // Respect product's preferred condition category if configured.
-                // For eBay, we also restrict the search when configured, but keep this guard as a safety net.
+                // Respect product's preferred condition category for all stores as a safety net.
                 if (product?.PreferredConditionCategoryId.HasValue == true)
                 {
                     if (l.ConditionCategoryId != product.PreferredConditionCategoryId.Value)
@@ -268,6 +260,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 var maxVariantResolveAttempts = int.TryParse(Environment.GetEnvironmentVariable("EBAY_VARIANT_RESOLVE_MAX_ATTEMPTS"), out var parsedMaxVariantResolveAttempts)
                     ? Math.Clamp(parsedMaxVariantResolveAttempts, 0, 500)
                     : 40;
+                var targetConditions = product?.PreferredConditionCategoryId is int preferred && (preferred == 1 || preferred == 2 || preferred == 3)
+                    ? new[] { preferred }
+                    : new[] { 1, 2, 3 }; // New, Used, Refurbished
 
                 // EbayStoreClient already returns a price-sorted list capped at 200 item summaries.
                 // Still defensively sort and cap here.
@@ -280,7 +275,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 if (!hasVariants)
                 {
                     selected = priced
-                        .Take(topPerProduct)
+                        .Where(l => l.ConditionCategoryId.HasValue && targetConditions.Contains(l.ConditionCategoryId.Value))
+                        .GroupBy(l => l.ConditionCategoryId!.Value)
+                        .SelectMany(g => g.Take(topPerProduct))
                         .Select(l => (Listing: l, VariantId: (long?)null))
                         .ToList();
                 }
@@ -312,19 +309,22 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         }
 
                         selected = resolvedFallback
-                            .GroupBy(x => x.VariantId!.Value)
+                            .Where(x => x.Listing.ConditionCategoryId.HasValue && targetConditions.Contains(x.Listing.ConditionCategoryId.Value))
+                            .GroupBy(x => (x.VariantId!.Value, x.Listing.ConditionCategoryId!.Value))
                             .SelectMany(g => g.Take(topPerProduct))
                             .ToList();
                     }
                     else
                     {
-                        var counts = variantIds.ToDictionary(id => id, _ => 0);
+                        var counts = variantIds
+                            .SelectMany(vid => targetConditions.Select(cond => (vid, cond)))
+                            .ToDictionary(k => k, _ => 0);
                         var picked = new List<(NewListing Listing, long? VariantId)>();
                         var variantResolveAttempts = 0;
 
                         foreach (var l in priced)
                         {
-                            if (picked.Count >= variantIds.Count * topPerProduct)
+                            if (picked.Count >= variantIds.Count * targetConditions.Length * topPerProduct)
                                 break;
 
                             if (variantResolveAttempts >= maxVariantResolveAttempts)
@@ -337,13 +337,18 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
                             var vid = await variantClient!.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
                             if (!vid.HasValue) continue;
-                            if (!counts.TryGetValue(vid.Value, out var c))
+                            if (!l.ConditionCategoryId.HasValue) continue;
+                            var condition = l.ConditionCategoryId.Value;
+                            if (!targetConditions.Contains(condition)) continue;
+
+                            var key = (vid.Value, condition);
+                            if (!counts.TryGetValue(key, out var c))
                                 continue; // ignore variants outside the configured active set
                             if (c >= topPerProduct)
                                 continue;
 
                             picked.Add((l, vid));
-                            counts[vid.Value] = c + 1;
+                            counts[key] = c + 1;
 
                             if (counts.Values.All(v => v >= topPerProduct))
                                 break;

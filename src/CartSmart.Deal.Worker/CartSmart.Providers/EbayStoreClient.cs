@@ -638,7 +638,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
 
         // Seller quality thresholds (can be overridden via environment variables)
-        var minPct = decimal.TryParse(Environment.GetEnvironmentVariable("EBAY_MIN_FEEDBACK_PERCENT"), out var p) ? p : 98m;
+        var minPct = decimal.TryParse(Environment.GetEnvironmentVariable("EBAY_MIN_FEEDBACK_PERCENT"), out var p) ? p : 95m;
         var minScore = int.TryParse(Environment.GetEnvironmentVariable("EBAY_MIN_FEEDBACK_SCORE"), out var sscore) ? sscore : 500;
         var requireTopRated = bool.TryParse(Environment.GetEnvironmentVariable("EBAY_REQUIRE_TOP_RATED"), out var rtr) ? rtr : false;
 
@@ -668,8 +668,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             }
 
             // Exclude obvious accessories/parts
-            if (accessories.Any(k => titleLower.Contains(k)))
-                continue;
+            //if (accessories.Any(k => titleLower.Contains(k)))
+            //    continue;
 
             // Pack / lot normalization: reject obvious pack-size mismatches
             var titlePack = ParsePackInfo(title);
