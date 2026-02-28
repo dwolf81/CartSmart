@@ -121,6 +121,7 @@ const ProductPage = () => {
   const [isImageOpen, setIsImageOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [isFlagModalOpen, setIsFlagModalOpen] = useState(false);
+  const [variantPicker, setVariantPicker] = useState({ open: false, title: 'Select variant', options: [] });
   const [dealToFlag, setDealToFlag] = useState(null);
   const [activatedExternal, setActivatedExternal] = useState({}); // deal_id -> bool
   const [expandedStackedSteps, setExpandedStackedSteps] = useState({}); // { `${parentId}:${stepId}`: true }
@@ -962,6 +963,213 @@ const ProductPage = () => {
     logDealClick(dealId, external);
   };
 
+  const groupDealsForDisplay = (rows) => {
+    const list = Array.isArray(rows) ? rows : [];
+    const groups = new Map();
+
+    list.forEach((row, idx) => {
+      const dealId = Number(row?.deal_id);
+      const key = Number.isFinite(dealId) && dealId > 0
+        ? `deal:${dealId}`
+        : `fallback:${row?.store_id ?? 'na'}:${row?.deal_type_id ?? 'na'}:${row?.coupon_code ?? ''}:${row?.url ?? ''}:${row?.external_offer_url ?? ''}`;
+
+      if (!groups.has(key)) {
+        groups.set(key, { rows: [row], firstIndex: idx });
+      } else {
+        groups.get(key).rows.push(row);
+      }
+    });
+
+    return Array.from(groups.values()).map((group, groupIndex) => {
+      const priced = group.rows
+        .map((r) => ({ row: r, price: Number(r?.price) }))
+        .filter((x) => Number.isFinite(x.price));
+
+      const backendVariantCount = group.rows
+        .map((r) => Number(r?.deal_variant_count ?? r?.dealVariantCount ?? 0))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const maxBackendVariantCount = backendVariantCount.length > 0
+        ? Math.max(...backendVariantCount)
+        : 0;
+      const variantCount = Math.max(group.rows.length, maxBackendVariantCount);
+
+      const lowest = priced.length > 0 ? Math.min(...priced.map((x) => x.price)) : null;
+      const highest = priced.length > 0 ? Math.max(...priced.map((x) => x.price)) : null;
+      const representative = priced.length > 0
+        ? priced.reduce((best, x) => (x.price < best.price ? x : best), priced[0]).row
+        : group.rows[0];
+
+      return {
+        deal: representative,
+        rawIndex: groupIndex,
+        variantRows: group.rows,
+        variantCount,
+        lowestPrice: lowest,
+        hasVariantPriceSpread: lowest != null && highest != null && lowest !== highest
+      };
+    });
+  };
+
+  const resolveActionForVariantRow = (row, action) => {
+    if (!row || !action) return null;
+
+    const hasStepContext = action.stepDealId != null || action.stepIndex != null;
+    const steps = Array.isArray(row.steps) ? row.steps : [];
+
+    if (hasStepContext) {
+      let step = null;
+      if (action.stepDealId != null) {
+        step = steps.find((s) => Number(s?.deal_id) === Number(action.stepDealId)) || null;
+      }
+      if (!step && action.stepIndex != null) {
+        const idx = Number(action.stepIndex);
+        if (Number.isInteger(idx) && idx >= 0 && idx < steps.length) {
+          step = steps[idx];
+        }
+      }
+      if (!step) return null;
+
+      const url = action.urlField === 'external_offer_url' ? step.external_offer_url : step.url;
+      if (!url) return null;
+
+      return {
+        row,
+        affiliateSource: step,
+        url,
+        dealId: step.deal_id || row.deal_id,
+        external: !!action.external
+      };
+    }
+
+    const url = action.urlField === 'external_offer_url' ? row.external_offer_url : row.url;
+    if (!url) return null;
+
+    return {
+      row,
+      affiliateSource: row,
+      url,
+      dealId: row.deal_id,
+      external: !!action.external
+    };
+  };
+
+  const openResolvedVariantAction = (resolved) => {
+    if (!resolved?.url) return;
+    const source = resolved.affiliateSource || resolved.row;
+    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(source, resolved.external ? 'external' : 'normal');
+    window.open(appendAffiliateParam(resolved.url, affiliateCodeVar, affiliateCode), '_blank', 'noopener,noreferrer');
+    logDealClick(resolved.dealId, resolved.external);
+  };
+
+  const prioritizeVariantDetailsText = (text) => {
+    const raw = (text || '').toString().trim();
+    if (!raw) return raw;
+
+    const prioritizedKeys = [
+      'color', 'colour', 'size', 'storage', 'capacity', 'memory', 'ram',
+      'model', 'style', 'material', 'finish', 'version', 'generation'
+    ];
+    const rankPart = (part) => {
+      const label = part.split(':')[0]?.trim().toLowerCase() || '';
+      const idx = prioritizedKeys.findIndex((k) => label.includes(k));
+      return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+    };
+
+    const parts = raw.split(' • ').map((p) => p.trim()).filter(Boolean);
+    if (parts.length <= 1) return raw;
+
+    parts.sort((a, b) => {
+      const rankDiff = rankPart(a) - rankPart(b);
+      if (rankDiff !== 0) return rankDiff;
+      return a.localeCompare(b);
+    });
+
+    return parts.join(' • ');
+  };
+
+  const variantLabelForRow = (row, idx) => {
+    const backendDetails = prioritizeVariantDetailsText((row?.variant_details ?? row?.variantDetails ?? '').toString().trim());
+
+    const parts = [];
+    if (row?.condition_name) parts.push(row.condition_name);
+    if (row?.price != null) parts.push(formatPrice(row.price));
+    const domain = getDomain(row?.store_url || row?.url || row?.external_store_url || row?.external_offer_url);
+    if (domain) parts.push(domain);
+
+    return {
+      title: backendDetails || `Variant ${idx + 1}`,
+      subtitle: parts.join(' • ')
+    };
+  };
+
+  const handleVariantAwareActionClick = async (event, {
+    variantRows,
+    fallbackRow,
+    action,
+    title = 'Select variant',
+    storeId = null,
+    expectedVariantCount = null
+  }) => {
+    event.preventDefault();
+
+    let sourceRows = Array.isArray(variantRows) && variantRows.length > 0
+      ? variantRows
+      : (fallbackRow ? [fallbackRow] : []);
+
+    const expectedCount = Number(expectedVariantCount ?? 0);
+    const shouldLoadExpandedRows = expectedCount > 1 && sourceRows.length <= 1 && Number(storeId) > 0;
+    if (shouldLoadExpandedRows) {
+      try {
+        const expandedRows = await ensureExpandedStoreDeals(Number(storeId));
+        const parentDealId = Number(fallbackRow?.deal_id ?? 0);
+        if (Array.isArray(expandedRows) && expandedRows.length > 0 && Number.isFinite(parentDealId) && parentDealId > 0) {
+          const matching = expandedRows.filter((r) => Number(r?.deal_id) === parentDealId);
+          if (matching.length > 0) {
+            sourceRows = matching;
+          }
+        }
+      } catch (e) {
+        console.error('Failed loading expanded rows for variant modal:', e);
+      }
+    }
+
+    const resolved = sourceRows
+      .map((row) => resolveActionForVariantRow(row, action))
+      .filter(Boolean);
+
+    const seen = new Set();
+    const uniqueResolved = resolved.filter((item) => {
+      const key = `${item.row?.deal_product_id ?? 'na'}|${item.dealId ?? 'na'}|${item.url}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (uniqueResolved.length === 0) return;
+
+    const shouldForceModal = expectedCount > 1;
+    if (!shouldForceModal && uniqueResolved.length === 1) {
+      openResolvedVariantAction(uniqueResolved[0]);
+      return;
+    }
+
+    const baseOptions = uniqueResolved.map((item, idx) => {
+      const label = variantLabelForRow(item.row, idx);
+      return {
+        ...item,
+        key: `${item.row?.deal_product_id ?? idx}:${item.url}`,
+        label: label.title,
+        sublabel: label.subtitle
+      };
+    });
+
+    setVariantPicker({
+      open: true,
+      title,
+      options: baseOptions
+    });
+  };
+
   const [descExpanded, setDescExpanded] = useState(false);
   const isMobile = useIsMobile();
   const renderUpfrontCost = (cost, termId) => {
@@ -1589,8 +1797,7 @@ const ProductPage = () => {
                         ? (expandedStoreDealsById[storeId] || [primaryDeal])
                         : [primaryDeal];
 
-                      const visibleDealsForStore = rawDealsForStore
-                        .map((deal, rawIndex) => ({ deal, rawIndex }));
+                      const visibleDealsForStore = groupDealsForDisplay(rawDealsForStore);
 
                       if (visibleDealsForStore.length === 0) return null;
 
@@ -1634,10 +1841,11 @@ const ProductPage = () => {
                           </div>
 
                           <div className="space-y-4">
-                            {visibleDealsForStore.map(({ deal, rawIndex }, idx) => {
+                            {visibleDealsForStore.map(({ deal, rawIndex, variantRows, variantCount, lowestPrice, hasVariantPriceSpread }, idx) => {
                               // Anonymous obfuscation toggle: keep logic here for possible future re-enable.
                               const ENABLE_ANON_OBFUSCATION = false;
                               const shouldObfuscate = ENABLE_ANON_OBFUSCATION && !isAuthenticated && isExpanded && rawIndex > 0;
+                              const displayPrice = variantCount > 1 && lowestPrice != null ? lowestPrice : deal.price;
                               return (
                               <div
                                 key={deal.deal_id}
@@ -1650,15 +1858,20 @@ const ProductPage = () => {
                               <span className="bg-green-100 text-green-700 text-xs font-semibold px-2 py-1 rounded-full">
                                 {deal.discount_percent}% Off
                               </span>
-                            )}                            
+                            )}
+                            {variantCount > 1 && (
+                              <span className="bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-1 rounded-full">
+                                {variantCount} variants
+                              </span>
+                            )}
                             <span className="font-bold text-green-600 text-xl">
-                              {formatPrice(deal.price)}
+                              {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)}
                             </span>
 
                           </div>
-                          {deal.msrp != null && deal.msrp > deal.price && (
+                          {deal.msrp != null && deal.msrp > Number(displayPrice) && (
                             <span className="text-xs text-red-600 font-semibold">
-                              Save {formatPrice(deal.msrp - deal.price)}
+                              Save {formatPrice(deal.msrp - Number(displayPrice))}
                             </span>
                           )}
                           {deal.free_shipping && (
@@ -1842,10 +2055,22 @@ const ProductPage = () => {
                                                         )}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
-                                                        onClick={(e) => handleGetDealClick(e, step.deal_id, false, step.url)}
+                                                        onClick={(e) => handleVariantAwareActionClick(e, {
+                                                          variantRows,
+                                                          fallbackRow: deal,
+                                                          action: {
+                                                            external: false,
+                                                            urlField: 'url',
+                                                            stepDealId: step.deal_id,
+                                                            stepIndex: idx
+                                                          },
+                                                          title: 'Select variant to continue',
+                                                          storeId,
+                                                          expectedVariantCount: variantCount
+                                                        })}
                                                         className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
                                                       >
-                                                        Buy at {getDomain(step.store_url || step.url)}
+                                                        View
                                                       </a>
                                                     </div>
                                                   ) : (
@@ -1862,7 +2087,19 @@ const ProductPage = () => {
                                                       )}
                                                       target="_blank"
                                                       rel="noopener noreferrer"
-                                                      onClick={(e) => handleGetDealClick(e, step.deal_id, false, step.url)}
+                                                      onClick={(e) => handleVariantAwareActionClick(e, {
+                                                        variantRows,
+                                                        fallbackRow: deal,
+                                                        action: {
+                                                          external: false,
+                                                          urlField: 'url',
+                                                          stepDealId: step.deal_id,
+                                                          stepIndex: idx
+                                                        },
+                                                        title: 'Select variant to continue',
+                                                        storeId,
+                                                        expectedVariantCount: variantCount
+                                                      })}
                                                       className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
                                                     >
                                                       View
@@ -1895,6 +2132,12 @@ const ProductPage = () => {
                                   {DEAL_TYPE_META[deal.deal_type_id]?.label} Deal
                                 </span>
                               </div>
+                              {variantCount > 1 && (
+                                <div className="mb-2 text-xs text-slate-500">
+                                  Applies to {variantCount} variants
+                                  {hasVariantPriceSpread ? ' (price varies by variant)' : ''}
+                                </div>
+                              )}
 
 
                               {deal.external_offer_url != null && (
@@ -1978,10 +2221,17 @@ const ProductPage = () => {
                                   )}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  onClick={(e) => handleGetDealClick(e, deal.deal_id, false, deal.url)}
+                                  onClick={(e) => handleVariantAwareActionClick(e, {
+                                    variantRows,
+                                    fallbackRow: deal,
+                                    action: { external: false, urlField: 'url' },
+                                    title: 'Select variant to continue',
+                                    storeId,
+                                    expectedVariantCount: variantCount
+                                  })}
                                   className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
                                 >
-                                  Buy at {getDomain(deal.store_url || deal.url)}
+                                  View
                                 </a>
                               </div>
                             )}
@@ -2000,7 +2250,14 @@ const ProductPage = () => {
                                   )}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  onClick={(e) => handleGetDealClick(e, deal.deal_id, false, deal.url)}
+                                  onClick={(e) => handleVariantAwareActionClick(e, {
+                                    variantRows,
+                                    fallbackRow: deal,
+                                    action: { external: false, urlField: 'url' },
+                                    title: 'Select variant to continue',
+                                    storeId,
+                                    expectedVariantCount: variantCount
+                                  })}
                                   className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
                                 >
                                   View
@@ -2105,6 +2362,45 @@ const ProductPage = () => {
         onClose={() => setIsRatingModalOpen(false)}
         sources={ratingSources}
       />
+
+      {/* Variant Picker Modal */}
+      {variantPicker.open && (
+        <div className="fixed inset-0 z-50 overflow-auto bg-black/50 flex items-center justify-center">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-lg">
+            <h3 className="text-lg font-semibold mb-2">{variantPicker.title || 'Select variant'}</h3>
+            <p className="text-sm text-gray-600 mb-4">This deal has multiple variant-specific links. Choose one to continue.</p>
+
+            <div className="max-h-72 overflow-y-auto space-y-2">
+              {(variantPicker.options || []).map((opt, idx) => (
+                <button
+                  key={opt.key || idx}
+                  type="button"
+                  onClick={() => {
+                    openResolvedVariantAction(opt);
+                    setVariantPicker({ open: false, title: 'Select variant', options: [] });
+                  }}
+                  className="w-full text-left px-3 py-2 border rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  <div className="text-sm font-medium text-slate-700">{opt.label || `Variant ${idx + 1}`}</div>
+                  {opt.sublabel && (
+                    <div className="text-xs text-slate-500 mt-0.5">{opt.sublabel}</div>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex justify-end gap-3 mt-5">
+              <button
+                type="button"
+                onClick={() => setVariantPicker({ open: false, title: 'Select variant', options: [] })}
+                className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Flag Deal Modal (Reasons) */}
       {isFlagModalOpen && (

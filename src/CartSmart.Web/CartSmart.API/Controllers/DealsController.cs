@@ -70,6 +70,18 @@ namespace CartSmart.API.Controllers
             return Ok(result);
         }
 
+        [HttpGet("variant-options/{dealId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<IEnumerable<DealVariantOptionDTO>>> GetDealVariantOptions(
+            long dealId,
+            [FromQuery] int productId,
+            [FromQuery] int? conditionId = null)
+        {
+            if (dealId <= 0 || productId <= 0) return BadRequest(new { message = "Invalid dealId or productId." });
+            var result = await _dealService.GetDealVariantOptionsAsync(productId, dealId, conditionId);
+            return Ok(result);
+        }
+
         [HttpGet("getreviewdeals")]
         [AllowAnonymous]
         public async Task<ActionResult<IEnumerable<DealNav>>> GetReviewDeals()

@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using Microsoft.Extensions.Caching.Memory;
+using AttributeModel = CartSmart.API.Models.Attribute;
 
 namespace CartSmart.API.Services;
 
@@ -592,7 +593,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                 p_deal_type_id = dealTypeId,
                 p_condition_id = conditionId,
                 p_attribute_filters = rpcAttributeFilters
-            });
+            })
+            ?? new List<DealDisplayDTO>();
 
         // If authenticated, annotate which deals this user already flagged
         if (currentUserId != null)
@@ -607,7 +609,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
             if (dpIds.Length > 0)
             {
-                var flags = await _supabase.GetAllAsync<DealFlag>();
+                var flags = await _supabase.GetAllAsync<DealFlag>() ?? new List<DealFlag>();
                 var flaggedSet = flags
                     .Where(f => f.UserId == me && f.DealProductId.HasValue && dpIds.Contains(f.DealProductId.Value))
                     .Select(f => f.DealProductId!.Value)
@@ -637,6 +639,210 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         }*/
 
         return deals;
+    }
+
+    public async Task<IEnumerable<DealVariantOptionDTO>> GetDealVariantOptionsAsync(int productId, long dealId, int? conditionId = null)
+    {
+        if (productId <= 0 || dealId <= 0 || dealId > int.MaxValue)
+            return Enumerable.Empty<DealVariantOptionDTO>();
+
+        var client = _supabase.GetServiceRoleClient();
+        var resp = await client
+            .From<DealProduct>()
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+            .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, (int)dealId)
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Select("id,product_variant_id,url,condition_id,price,primary")
+            .Get();
+
+        var rows = (resp.Models ?? new List<DealProduct>())
+            .Where(r => r.Id > 0)
+            .ToList();
+
+        if (conditionId.HasValue)
+        {
+            rows = rows.Where(r => r.ConditionId == conditionId.Value).ToList();
+        }
+
+        if (rows.Count == 0)
+            return Enumerable.Empty<DealVariantOptionDTO>();
+
+        var variantIds = rows
+            .Select(r => r.ProductVariantId)
+            .Where(v => v.HasValue && v.Value > 0)
+            .Select(v => v!.Value)
+            .Distinct()
+            .ToList();
+
+        var variantDetailsById = await GetVariantDetailsByVariantIdAsync(variantIds);
+
+        var result = rows
+            .OrderBy(r => r.Primary ? 0 : 1)
+            .ThenBy(r => r.Price)
+            .ThenBy(r => r.Id)
+            .Select(r =>
+            {
+                var variantId = r.ProductVariantId;
+                var details = (variantId.HasValue && variantId.Value > 0 && variantDetailsById.TryGetValue(variantId.Value, out var d))
+                    ? d
+                    : null;
+
+                return new DealVariantOptionDTO
+                {
+                    DealProductId = r.Id,
+                    ProductVariantId = variantId,
+                    Url = r.Url,
+                    VariantDetails = details,
+                    ConditionId = r.ConditionId,
+                    Price = r.Price
+                };
+            })
+            .ToList();
+
+        return result;
+    }
+
+    private async Task<Dictionary<long, string>> GetVariantDetailsByVariantIdAsync(IEnumerable<long>? variantIds)
+    {
+        var ids = (variantIds ?? Enumerable.Empty<long>())
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0) return new Dictionary<long, string>();
+
+        var client = _supabase.GetServiceRoleClient();
+        var idObjects = ids.Cast<object>().ToArray();
+
+        var pvaResp = await client
+            .From<ProductVariantAttribute>()
+            .Filter("product_variant_id", Supabase.Postgrest.Constants.Operator.In, idObjects)
+            .Select("product_variant_id,attribute_id,enum_value_id")
+            .Get();
+
+        var pvaRows = (pvaResp.Models ?? new List<ProductVariantAttribute>())
+            .Where(r => r.ProductVariantId > 0 && r.AttributeId > 0 && r.EnumValueId.HasValue)
+            .ToList();
+
+        if (pvaRows.Count == 0) return new Dictionary<long, string>();
+
+        var attributeIds = pvaRows.Select(r => r.AttributeId).Distinct().ToList();
+        var attributeIdObjects = attributeIds.Cast<object>().ToArray();
+
+        var attrsResp = await client
+            .From<AttributeModel>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.In, attributeIdObjects)
+            .Select("id,attribute_key,description")
+            .Get();
+
+        var enumsResp = await client
+            .From<AttributeEnumValue>()
+            .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.In, attributeIdObjects)
+            .Select("id,attribute_id,display_name,sort_order,enum_key")
+            .Get();
+
+        var attrs = attrsResp.Models ?? new List<AttributeModel>();
+        var enums = enumsResp.Models ?? new List<AttributeEnumValue>();
+
+        var attrLabelById = attrs.ToDictionary(
+            a => a.Id,
+            a => !string.IsNullOrWhiteSpace(a.Description) ? a.Description! : (a.AttributeKey ?? $"Attribute {a.Id}")
+        );
+
+        var enumLabelById = enums.ToDictionary(
+            e => e.Id,
+            e => !string.IsNullOrWhiteSpace(e.DisplayName) ? e.DisplayName! : (e.EnumKey ?? e.Id.ToString())
+        );
+
+        var result = new Dictionary<long, string>();
+
+        foreach (var group in pvaRows.GroupBy(r => r.ProductVariantId))
+        {
+            var parts = group
+                .GroupBy(r => r.AttributeId)
+                .Select(g =>
+                {
+                    var attrId = g.Key;
+                    var attrLabel = attrLabelById.TryGetValue(attrId, out var lbl) ? lbl : $"Attribute {attrId}";
+                    var values = g
+                        .Select(x => x.EnumValueId!.Value)
+                        .Distinct()
+                        .Select(enumId => enumLabelById.TryGetValue(enumId, out var enumLabel) ? enumLabel : enumId.ToString())
+                        .OrderBy(x => x)
+                        .ToList();
+
+                    return new
+                    {
+                        AttrLabel = attrLabel,
+                        Text = $"{attrLabel}: {string.Join(", ", values)}"
+                    };
+                })
+                .OrderBy(x => x.AttrLabel)
+                .Select(x => x.Text)
+                .ToList();
+
+            if (parts.Count > 0)
+            {
+                result[group.Key] = string.Join(" • ", parts);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<Dictionary<long, int>> GetVariantCountByDealIdAsync(int productId, IEnumerable<long>? dealIds, int? conditionId)
+    {
+        var ids = (dealIds ?? Enumerable.Empty<long>())
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0) return new Dictionary<long, int>();
+
+        var table = await _supabase.QueryTable<DealProduct>();
+        var resp = await table
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
+            .Filter("deal_id", Supabase.Postgrest.Constants.Operator.In, ids.Cast<object>().ToArray())
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Select("id,deal_id,product_variant_id,condition_id")
+            .Get();
+
+        var rows = (resp.Models ?? new List<DealProduct>())
+            .Where(r => r.DealId > 0)
+            .ToList();
+
+        if (conditionId.HasValue)
+        {
+            rows = rows
+                .Where(r => r.ConditionId == conditionId.Value)
+                .ToList();
+        }
+
+        var result = new Dictionary<long, int>();
+        foreach (var group in rows.GroupBy(r => r.DealId))
+        {
+            var variantCount = group
+                .Select(r => r.ProductVariantId)
+                .Where(v => v.HasValue && v.Value > 0)
+                .Select(v => v!.Value)
+                .Distinct()
+                .Count();
+
+            if (variantCount <= 0)
+            {
+                variantCount = group
+                    .Select(r => r.Id)
+                    .Distinct()
+                    .Count();
+            }
+
+            if (variantCount > 0)
+            {
+                result[group.Key] = variantCount;
+            }
+        }
+
+        return result;
     }
 
     public async Task<IEnumerable<DealDisplayDTO>> GetReviewDealsAsync()
@@ -669,7 +875,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
         // Fetch all submitted deals (unpaged RPC as before)
         var allDeals = await client
-            .Rpc<List<DealDisplayDTO>>("f_get_deals_review", new { p_user_id = effectiveUserId, p_mode = "Submitted" });
+            .Rpc<List<DealDisplayDTO>>("f_get_deals_review", new { p_user_id = effectiveUserId, p_mode = "Submitted" })
+            ?? new List<DealDisplayDTO>();
 
         // Optional: if dealId provided but not present, we still proceed (client can show not found message)
         DealDisplayDTO? target = null;

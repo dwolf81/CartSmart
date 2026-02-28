@@ -42,6 +42,8 @@ namespace CartSmart.API.Models.DTOs
         public string? store_slug { get; set; } // Store slug
         public long? deal_product_id { get; set; } // Deal Product ID (null for store-wide deals)
         public int? product_variant_id { get; set; } // Product Variant ID (enriched from deal_product)
+        public string? variant_details { get; set; } // Human-readable variant attribute summary
+        public int? deal_variant_count { get; set; } // Distinct variants covered by this deal for this product
         public float? discount_amt { get; set; } // Calculated discount amount
         public float? discount_percent { get; set; } // Calculated discount percent
         public string? product_image_url { get; set; } // Product name

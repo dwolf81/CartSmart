@@ -16,6 +16,7 @@ namespace CartSmart.API.Services
             int? conditionId = null,
             int? userId = null,
             List<ProductAttributeFilterDTO>? attributeFilters = null);
+        Task<IEnumerable<DealVariantOptionDTO>> GetDealVariantOptionsAsync(int productId, long dealId, int? conditionId = null);
 
         Task<IEnumerable<DealDisplayDTO>> GetReviewDealsAsync();
         Task<PagedDealsResultDTO<DealDisplayDTO>> GetReviewDealsPagedAsync(int page, int pageSize);
