@@ -100,6 +100,38 @@ public class DealService : IDealService
         }
     }
 
+    private async Task TryApplyStackedDealProductsForStoreAsync(bool isAdmin, int? dealTypeId, int dealId)
+    {
+        if (!isAdmin) return;
+        if (dealId <= 0) return;
+
+        var dt = dealTypeId ?? 0;
+        if (dt != 1 && dt != 3) return;
+
+        try
+        {
+            var svc = _supabase.GetServiceRoleClient();
+            if (dt == 1)
+            {
+                await svc.Rpc<int>(
+                    "f_upsert_stacked_deal_products_for_store",
+                    new { p_stacked_deal_id = (int?)null, p_direct_deal_id = dealId }
+                );
+            }
+            else
+            {
+                await svc.Rpc<int>(
+                    "f_upsert_stacked_deal_products_for_store",
+                    new { p_stacked_deal_id = dealId, p_direct_deal_id = (int?)null }
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DealService] Failed to apply stacked derived deal_products. dealId={dealId}, dealTypeId={dt}: {ex}");
+        }
+    }
+
 /*
     private static string? NormalizeDealUrl(Deal d)
     {
@@ -1167,6 +1199,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
                 // Admin direct deals are auto-approved; apply derived store-wide deal_product rows immediately (backend-only).
                 await TryApplyStoreWideDealProductsForDirectDealAsync(user?.Admin == true, dto.DealTypeId, createdDeal.Id);
+                await TryApplyStackedDealProductsForStoreAsync(user?.Admin == true, dto.DealTypeId, createdDeal.Id);
 
         // Note: derived store-wide deal_product rows are now created ONLY:
         // - immediately after an admin submits/edits an auto-approved direct deal, or
@@ -1383,6 +1416,42 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         var result = await _supabase.InsertAsync(combo);
         inserted.Add(result);
     }
+
+    // After combo rows exist, backfill stacked derived rows when the parent stacked deal is approved.
+    if (dealCombos.Count > 0)
+    {
+        var parentDealId = dealCombos[0].DealId;
+        if (parentDealId > 0)
+        {
+            try
+            {
+                var svc = _supabase.GetServiceRoleClient();
+                var dealResp = await svc
+                    .From<Deal>()
+                    .Select("id,deal_type_id,deal_status_id,deleted")
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, parentDealId)
+                    .Limit(1)
+                    .Get();
+
+                var parent = dealResp.Models?.FirstOrDefault();
+                if (parent != null
+                    && parent.DealTypeId == 3
+                    && parent.DealStatusId == 2
+                    && !parent.Deleted)
+                {
+                    await svc.Rpc<int>(
+                        "f_upsert_stacked_deal_products_for_store",
+                        new { p_stacked_deal_id = parentDealId, p_direct_deal_id = (int?)null }
+                    );
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[DealService] Failed to apply stacked derived deal_products after combo update. dealId={parentDealId}: {ex}");
+            }
+        }
+    }
+
     return inserted;
    
     }
@@ -1570,6 +1639,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
         // Admin direct deals are auto-approved; apply derived store-wide deal_product rows immediately (backend-only).
         await TryApplyStoreWideDealProductsForDirectDealAsync(u?.Admin == true, deal.DealTypeId, deal.Id);
+        await TryApplyStackedDealProductsForStoreAsync(u?.Admin == true, deal.DealTypeId, deal.Id);
 
         // Note: derived store-wide deal_product rows are now created ONLY:
         // - immediately after an admin submits/edits an auto-approved direct deal, or

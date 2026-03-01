@@ -1010,6 +1010,33 @@ const ProductPage = () => {
     });
   };
 
+  const groupStackedStepsForDisplay = (steps) => {
+    const list = Array.isArray(steps) ? steps : [];
+    const groups = new Map();
+
+    list.forEach((step, idx) => {
+      const stepDealId = Number(step?.deal_id);
+      const key = Number.isFinite(stepDealId) && stepDealId > 0
+        ? `deal:${stepDealId}`
+        : `fallback:${idx}:${step?.deal_type_id ?? 'na'}:${step?.coupon_code ?? ''}:${step?.url ?? ''}:${step?.external_offer_url ?? ''}`;
+
+      if (!groups.has(key)) {
+        groups.set(key, { rows: [step], firstIndex: idx });
+      } else {
+        groups.get(key).rows.push(step);
+      }
+    });
+
+    return Array.from(groups.values()).map((group) => {
+      const representative = group.rows[0];
+      return {
+        step: representative,
+        stepRows: group.rows,
+        variantCount: group.rows.length
+      };
+    });
+  };
+
   const resolveActionForVariantRow = (row, action) => {
     if (!row || !action) return null;
 
@@ -1913,6 +1940,10 @@ const ProductPage = () => {
                           {/* Stacked (combo) deal */}
                           {deal.deal_type_id === 3 && (
                             <div>
+                              {(() => {
+                                const groupedSteps = groupStackedStepsForDisplay(deal.steps || []);
+                                return (
+                                  <>
                               {/* Stacked Deal Header (always visible) */}
                               <div className="flex flex-wrap items-center gap-2 mb-2">
                                 <span
@@ -1922,7 +1953,7 @@ const ProductPage = () => {
                                   {DEAL_TYPE_META[3].icon} Stacked Deal
                                 </span>
                                 <span className="text-sm text-amber-700 font-medium">
-                                  {deal.steps?.length || 0} deals
+                                  {groupedSteps.length || 0} deals
                                 </span>
 
 
@@ -1943,7 +1974,7 @@ const ProductPage = () => {
                               {/* Steps list (each step has its own accordion header) */}
                               {deal.steps && (
                                 <div className="mt-2 flex flex-col divide-y border rounded-md overflow-hidden">
-                                  {deal.steps.map((step, idx) => {
+                                  {groupedSteps.map(({ step, variantCount: stepVariantCount }, idx) => {
                                     const key = step.deal_id || `${deal.deal_id}-${idx}`;
                                     const open = !!expandedStackedSteps[`${deal.deal_id}:${key}`];
                                     const meta = DEAL_TYPE_META[step.deal_type_id] || {};
@@ -2056,7 +2087,7 @@ const ProductPage = () => {
                                                         target="_blank"
                                                         rel="noopener noreferrer"
                                                         onClick={(e) => handleVariantAwareActionClick(e, {
-                                                          variantRows,
+                                                            variantRows,
                                                           fallbackRow: deal,
                                                           action: {
                                                             external: false,
@@ -2066,7 +2097,7 @@ const ProductPage = () => {
                                                           },
                                                           title: 'Select variant to continue',
                                                           storeId,
-                                                          expectedVariantCount: variantCount
+                                                          expectedVariantCount: stepVariantCount
                                                         })}
                                                         className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
                                                       >
@@ -2098,7 +2129,7 @@ const ProductPage = () => {
                                                         },
                                                         title: 'Select variant to continue',
                                                         storeId,
-                                                        expectedVariantCount: variantCount
+                                                        expectedVariantCount: stepVariantCount
                                                       })}
                                                       className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
                                                     >
@@ -2117,6 +2148,9 @@ const ProductPage = () => {
                                   })}
                                 </div>
                               )}
+                                  </>
+                                );
+                              })()}
                             </div>
                           )}
 
