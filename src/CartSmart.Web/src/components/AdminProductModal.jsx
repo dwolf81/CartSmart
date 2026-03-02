@@ -405,8 +405,7 @@ export default function AdminProductModal({
             enableService: adminProductDraft.enableService !== false,
             apiMinPrice: apiMinPriceValue,
             searchAliases: parsedAliases,
-            negativeKeywords: parsedNegativeKeywords,
-            productTypeNegativeKeywords: parsedProductTypeNegativeKeywords
+            negativeKeywords: parsedNegativeKeywords
           })
         });
         if (!res.ok) {
@@ -968,6 +967,7 @@ export default function AdminProductModal({
                   </div>
                 </div>
 
+                {internalMode !== 'add' && (
                 <div className="md:col-span-2">
                   <label className="block text-sm font-medium text-gray-700 mb-1">Category negative keywords (listing exclusion)</label>
                   <input
@@ -981,6 +981,7 @@ export default function AdminProductModal({
                     Applies to all products in this category and is combined with product-level negative keywords.
                   </div>
                 </div>
+                )}
               </div>
 
               <div className="flex justify-end mt-4">

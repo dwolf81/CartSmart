@@ -290,7 +290,9 @@ BEGIN
       RETURN NEW;
     END IF;
 
-    -- If direct deal is active, backfill/update eligible stacked rows for this direct deal.
+    -- If direct deal is active, backfill/update eligible store-wide + stacked rows for this direct deal.
+    -- This keeps behavior correct even when approval paths update deal status directly.
+    PERFORM public.f_upsert_storewide_deal_products_for_direct_deal(NEW.id);
     PERFORM public.f_upsert_stacked_deal_products_for_store(NULL, NEW.id);
     RETURN NEW;
   END IF;
