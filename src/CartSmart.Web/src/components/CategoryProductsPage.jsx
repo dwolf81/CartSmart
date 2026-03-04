@@ -167,7 +167,7 @@ const CategoryProductsPage = () => {
 
   if (loading) return <LoadingSpinner />;
 
-  const pageTitle = categoryName ? `${categoryName} — Lowest Price, Deals & Price Comparison` : 'Category Deals — CartSmart';
+  const pageTitle = categoryName ? `${categoryName} — Lowest Price & Deals | CartSmart` : 'Category Deals | CartSmart';
   const pageDescription = categoryName
     ? `Browse today’s best ${categoryName} deals on CartSmart.`
     : 'Browse today’s best deals on CartSmart.';

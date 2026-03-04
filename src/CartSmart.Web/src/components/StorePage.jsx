@@ -449,7 +449,7 @@ const StorePage = () => {
   const filteredStoreDealsEmpty = !filteredStoreDeals || filteredStoreDeals.length === 0;
   const productsEmpty = !products || products.length === 0;
 
-  const pageTitle = `${storeName} — Lowest Price, Deals & Price Comparison`;
+  const pageTitle = `${storeName} — Lowest Price & Deals | CartSmart`;
   const pageDescription = `Browse today’s best deals from ${storeName} on CartSmart.`;
 
   return (

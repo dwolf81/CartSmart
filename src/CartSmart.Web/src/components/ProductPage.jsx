@@ -1256,7 +1256,7 @@ const ProductPage = () => {
 
   const siteUrl = SITE_URL;
   const canonical = `${siteUrl}/products/${product.slug}`;
-  const title = `${product.name} — Lowest Price, Deals & Price Comparison`;
+  const title = `${product.name} — Lowest Price & Deals | CartSmart`;
   const desc = (product.description || '').replace(/\s+/g, ' ').slice(0, 155);
   const firstImage = (product?.imageUrl || (Array.isArray(galleryImages) && galleryImages[0])) || '';
   const imageAbs = firstImage && firstImage.startsWith('http') ? firstImage : (firstImage ? `${siteUrl}${firstImage.startsWith('/') ? '' : '/'}${firstImage}` : '');
@@ -2060,6 +2060,11 @@ const ProductPage = () => {
                                   <span className="text-sm">{deal.additional_details}</span>
                                 </div>
                               )}
+                              {variantCount <= 1 && deal.variant_details && (
+                                <div className="mb-2 text-xs text-slate-500">
+                                  {prioritizeVariantDetailsText(deal.variant_details)}
+                                </div>
+                              )}
                               </div>
 
                               {/* Steps list (each step has its own accordion header) */}
@@ -2263,6 +2268,11 @@ const ProductPage = () => {
                                   {hasVariantPriceSpread ? ' (price varies by variant)' : ''}
                                 </div>
                               )}
+                              {variantCount <= 1 && deal.variant_details && (
+                                <div className="mb-2 text-xs text-slate-500">
+                                  {prioritizeVariantDetailsText(deal.variant_details)}
+                                </div>
+                              )}
 
 
                               {deal.external_offer_url != null && (
@@ -2444,27 +2454,27 @@ const ProductPage = () => {
                             const nextBatch = Math.min(moreAvailable, PAGE_SIZE);
 
                             return (
-                              <>
+                              <div className="flex items-center mt-4 gap-4">
                                 {storeId && nextBatch > 0 && (
                                   <button
                                     type="button"
                                     onClick={onExpand}
-                                    className="mt-4 text-xs text-[#4CAF50] hover:underline"
+                                    className="text-xs text-[#4CAF50] hover:underline"
                                     disabled={dealsLoading}
                                   >
-                                    View {nextBatch} more from {storeName} 
+                                    View {nextBatch} more from {storeName}
                                   </button>
                                 )}
                                 {storeId && isExpanded && (
                                   <button
                                     type="button"
                                     onClick={onCollapse}
-                                    className={`${nextBatch > 0 ? 'mt-1' : 'mt-4'} text-xs text-[#4CAF50] hover:underline`}
+                                    className="text-xs text-[#4CAF50] hover:underline"
                                   >
                                     Hide {storeName} deals
                                   </button>
                                 )}
-                              </>
+                              </div>
                             );
                           })()}
                         </div>
