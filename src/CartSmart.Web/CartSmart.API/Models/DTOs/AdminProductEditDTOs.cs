@@ -69,6 +69,14 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("productTypeNegativeKeywords")]
         [JsonPropertyName("productTypeNegativeKeywords")]
         public List<string> ProductTypeNegativeKeywords { get; set; } = new();
+
+        [JsonProperty("countEnabled")]
+        [JsonPropertyName("countEnabled")]
+        public bool CountEnabled { get; set; }
+
+        [JsonProperty("defaultCount")]
+        [JsonPropertyName("defaultCount")]
+        public int DefaultCount { get; set; } = 1;
     }
 
     public class AdminUpdateProductRequestDTO
@@ -114,6 +122,14 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("productTypeNegativeKeywords")]
         [JsonPropertyName("productTypeNegativeKeywords")]
         public List<string>? ProductTypeNegativeKeywords { get; set; }
+
+        [JsonProperty("countEnabled")]
+        [JsonPropertyName("countEnabled")]
+        public bool? CountEnabled { get; set; }
+
+        [JsonProperty("defaultCount")]
+        [JsonPropertyName("defaultCount")]
+        public int? DefaultCount { get; set; }
     }
 
     public class AdminCreateProductRequestDTO
@@ -157,6 +173,14 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("productTypeNegativeKeywords")]
         [JsonPropertyName("productTypeNegativeKeywords")]
         public List<string>? ProductTypeNegativeKeywords { get; set; }
+
+        [JsonProperty("countEnabled")]
+        [JsonPropertyName("countEnabled")]
+        public bool? CountEnabled { get; set; }
+
+        [JsonProperty("defaultCount")]
+        [JsonPropertyName("defaultCount")]
+        public int? DefaultCount { get; set; }
     }
 
     public class AdminCreateProductResponseDTO

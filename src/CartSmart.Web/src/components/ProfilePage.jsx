@@ -714,12 +714,48 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
                               </span>
                             )}
                             {!isStoreDeal && (
-                              <span className="font-bold text-green-600 text-xl">{formatPrice(deal.price)}</span>
+                              (() => {
+                                const pCountEnabled = !!deal.count_enabled;
+                                const pItemCount = Number(deal.item_count) || 1;
+                                if (pCountEnabled && pItemCount > 1) {
+                                  return (
+                                    <span className="flex flex-col items-end">
+                                      <span className="font-bold text-green-600 text-xl">
+                                        {formatPrice(Number(deal.price) / pItemCount)}
+                                        <span className="text-sm font-normal text-gray-500"> / ea</span>
+                                      </span>
+                                      <span className="text-xs text-gray-500">{formatPrice(deal.price)} total ({pItemCount}-pack)</span>
+                                    </span>
+                                  );
+                                }
+                                return <span className="font-bold text-green-600 text-xl">{formatPrice(deal.price)}</span>;
+                              })()
                             )}
                           </div>
                           {!isStoreDeal && (
-                            <div className="text-sm text-gray-500 line-through">{formatPrice(deal.msrp)}</div>
+                            (() => {
+                              const pCountEnabled = !!deal.count_enabled;
+                              const pDefaultCount = Number(deal.default_count) || 1;
+                              if (pCountEnabled && pDefaultCount > 1) {
+                                return <div className="text-sm text-gray-500"><span className="line-through">{formatPrice(deal.msrp / pDefaultCount)}</span><span className="text-xs text-gray-400"> / ea</span></div>;
+                              }
+                              return <div className="text-sm text-gray-500 line-through">{formatPrice(deal.msrp)}</div>;
+                            })()
                           )}
+                          {!isStoreDeal && (() => {
+                            const pCountEnabled = !!deal.count_enabled;
+                            const pDefaultCount = Number(deal.default_count) || 1;
+                            const pItemCount = Number(deal.item_count) || 1;
+                            const perItemMsrp = pCountEnabled && pDefaultCount > 0 ? deal.msrp / pDefaultCount : deal.msrp;
+                            const perItemDealPrice = pCountEnabled && pItemCount > 0 ? Number(deal.price) / pItemCount : Number(deal.price);
+                            const perItemSavings = perItemMsrp - perItemDealPrice;
+                            if (!perItemSavings || perItemSavings <= 0) return null;
+                            return pCountEnabled && pItemCount > 1 ? (
+                              <div className="text-xs text-red-600 font-semibold">Save {formatPrice(perItemSavings)}/ea</div>
+                            ) : (
+                              <div className="text-xs text-red-600 font-semibold">Save {formatPrice(perItemSavings)}</div>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>
@@ -869,6 +905,8 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
             msrpPrice={editingDeal?.msrp}   // ADDED
             mode="edit"
             deal={editingDeal}
+            countEnabled={!!editingDeal?.count_enabled}
+            defaultCount={editingDeal?.default_count || 1}
           />
           <ComboDealModal
             isOpen={isEditComboOpen}

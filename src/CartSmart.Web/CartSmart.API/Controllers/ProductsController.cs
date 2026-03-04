@@ -489,6 +489,8 @@ namespace CartSmart.API.Controllers
                 BrandId = request.BrandId,
                 EnableService = request.EnableService ?? true,
                 ApiMinPrice = request.ApiMinPrice,
+                CountEnabled = request.CountEnabled ?? false,
+                DefaultCount = request.DefaultCount ?? 1,
                 Deleted = false
             };
 
@@ -684,7 +686,9 @@ namespace CartSmart.API.Controllers
                     ImageUrl = product.ImageUrl,
                     BrandId = product.BrandId,
                     EnableService = product.EnableService,
-                    ApiMinPrice = product.ApiMinPrice
+                    ApiMinPrice = product.ApiMinPrice,
+                    CountEnabled = product.CountEnabled,
+                    DefaultCount = product.DefaultCount
                 },
                 Attributes = attributes
                     .OrderBy(a => a.AttributeKey)
@@ -1463,7 +1467,7 @@ namespace CartSmart.API.Controllers
             var authResult = await EnsureAdminAsync();
             if (authResult != null) return authResult;
 
-            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.EnableService == null && req.ApiMinPrice == null && req.SearchAliases == null && req.NegativeKeywords == null && req.ProductTypeNegativeKeywords == null)
+            if (req.Name == null && req.Msrp == null && req.Description == null && req.BrandId == null && req.EnableService == null && req.ApiMinPrice == null && req.SearchAliases == null && req.NegativeKeywords == null && req.ProductTypeNegativeKeywords == null && req.CountEnabled == null && req.DefaultCount == null)
                 return BadRequest(new { message = "No fields provided" });
 
             var client = _supabase.GetServiceRoleClient();
@@ -1486,6 +1490,8 @@ namespace CartSmart.API.Controllers
             if (req.BrandId != null) updateRow.BrandId = req.BrandId;
             if (req.EnableService != null) updateRow.EnableService = req.EnableService;
             updateRow.ApiMinPrice = req.ApiMinPrice; // always apply: null clears, value sets
+            if (req.CountEnabled != null) updateRow.CountEnabled = req.CountEnabled;
+            if (req.DefaultCount != null) updateRow.DefaultCount = req.DefaultCount;
 
             await client.From<ProductAdminUpdateRow>().Update(updateRow);
 
@@ -1549,7 +1555,9 @@ namespace CartSmart.API.Controllers
                 msrp = persisted.MSRP,
                 description = persisted.Description,
                 enableService = persisted.EnableService ?? expectedEnableService,
-                apiMinPrice = persisted.ApiMinPrice
+                apiMinPrice = persisted.ApiMinPrice,
+                countEnabled = persisted.CountEnabled,
+                defaultCount = persisted.DefaultCount
             });
         }
 

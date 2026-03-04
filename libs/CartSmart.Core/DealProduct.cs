@@ -62,5 +62,10 @@ namespace CartSmart.API.Models
         [Column("original_deal_product_id")]
         public int? OriginalDealProductId { get; set; }
 
+        // Number of items in this deal listing (e.g. 12 for a 12-pack of golf balls).
+        // Used to compute price-per-item when the product has count_enabled = true.
+        [Column("item_count")]
+        public int ItemCount { get; set; } = 1;
+
     }
 }

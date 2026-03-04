@@ -20,6 +20,9 @@ namespace CartSmart.API.Models.DTOs
         public string? ImageUrl { get; set; }
 
         public string? BrandName { get; set; }
+
+        public bool CountEnabled { get; set; }
+        public int DefaultCount { get; set; } = 1;
     }
 
     public class DealDisplayDTO
@@ -80,6 +83,11 @@ namespace CartSmart.API.Models.DTOs
 
         public string? external_affiliate_code { get; set; } // store affiliate code
         public string? external_affiliate_code_var { get; set; }
+
+        // Product-level count fields (for per-item pricing)
+        public bool? count_enabled { get; set; }
+        public int? default_count { get; set; }
+        public int? item_count { get; set; }
     }
 
     // Used by /categories/{productType} to show all products in that product type.
@@ -101,6 +109,11 @@ namespace CartSmart.API.Models.DTOs
         public string? user_name { get; set; }
         public string? user_image_url { get; set; }
         public int? level { get; set; }
+
+        // Per-item count fields
+        public bool? count_enabled { get; set; }
+        public int? default_count { get; set; }
+        public int? item_count { get; set; }
     }
 
         public class ReviewDisplayDTO
@@ -144,6 +157,9 @@ namespace CartSmart.API.Models.DTOs
         public float? UpfrontCost { get; set; }
         public int? UpfrontCostTermId { get; set; }
         public List<int> DealIds { get; set; } = new List<int>();  // List of existing Deal IDs to link to (for type=3)
+
+        // Per-item count for multi-pack products (e.g. 12-pack golf balls)
+        public int? ItemCount { get; set; }
 
         // Optional: selected product attributes (enum values) used to resolve/create product_variant(s).
         // Multiple enumValueIds per attribute means "this URL covers multiple options".

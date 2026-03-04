@@ -64,6 +64,16 @@ namespace CartSmart.API.Models;
         [Column("product_type_id")]
         public int ProductTypeId { get; set; }        
 
+        // When true, deals for this product track an item count (e.g. golf balls per pack)
+        // and the UI shows price-per-item alongside total price.
+        [Column("count_enabled")]
+        public bool CountEnabled { get; set; }
+
+        // Default item count for new deals on this product (e.g. 12 for a dozen golf balls).
+        // Only meaningful when CountEnabled is true.
+        [Column("default_count")]
+        public int DefaultCount { get; set; } = 1;
+
         // Navigation property
         public User? User { get; set; }
 

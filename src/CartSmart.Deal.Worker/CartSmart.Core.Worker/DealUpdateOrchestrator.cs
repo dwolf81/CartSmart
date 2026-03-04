@@ -1,5 +1,6 @@
 using CartSmart.API.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.RegularExpressions;
 
 namespace CartSmart.Core.Worker;
 
@@ -415,6 +416,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         continue;
                     }
                 }
+                var itemCount = product?.CountEnabled == true
+                    ? (ParsePackCount(listing.Title ?? string.Empty) ?? product.DefaultCount)
+                    : 1;
                 var deal = new Deal
                 {
                     CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
@@ -422,7 +426,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     DealTypeId = 1,                    
                     AdditionalDetails = listing.Title,
                     StoreId = 4,
-                    DiscountPercent = ComputeDiscountPercent(msrp, listing.Price),
+                    DiscountPercent = ComputeDiscountPercent(msrp, listing.Price,
+                        product?.CountEnabled == true, product?.DefaultCount ?? 1, itemCount),
                     UserId = 1 // TODO: system user
                 };
                 deal = await repoImpl.CreateDealAsync(deal, ct);
@@ -438,7 +443,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     StoreItemId = listing.ItemId,
                     FreeShipping = listing.FreeShipping ?? false,
                     CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
-                    NextCheckAt = _timeProvider.GetUtcNow().UtcDateTime.AddHours(6)
+                    NextCheckAt = _timeProvider.GetUtcNow().UtcDateTime.AddHours(6),
+                    ItemCount = itemCount
                 };
                 await repoImpl.CreateDealProductAsync(dp, ct);
                 await _repo.UpdateProductBestDealAsync(q.ProductId, ct);
@@ -857,12 +863,23 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         };
     }
 
-    private int? ComputeDiscountPercent(float? msrp, decimal? price)
+    private int? ComputeDiscountPercent(float? msrp, decimal? price, bool countEnabled = false, int defaultCount = 1, int itemCount = 1)
     {
         if (!msrp.HasValue || !price.HasValue || msrp.Value <= 0) return null;
         try
         {
-            var pct = (int)Math.Round((1.0 - ((double)price.Value / (double)msrp.Value)) * 100.0);
+            double effectiveMsrp = (double)msrp.Value;
+            double effectivePrice = (double)price.Value;
+
+            if (countEnabled && defaultCount > 0 && itemCount > 0)
+            {
+                // Compare per-item prices for multi-pack products
+                effectiveMsrp /= defaultCount;
+                effectivePrice /= itemCount;
+            }
+
+            if (effectiveMsrp <= 0) return null;
+            var pct = (int)Math.Round((1.0 - (effectivePrice / effectiveMsrp)) * 100.0);
             return pct;
         }
         catch
@@ -964,5 +981,25 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             if (char.IsLetterOrDigit(ch)) sb.Append(ch);
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Extract the pack/item count from a listing title (e.g. "12 pack", "dozen", "6ct").
+    /// Returns the parsed quantity, or null if none found.
+    /// </summary>
+    private static int? ParsePackCount(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        var lower = title.ToLowerInvariant();
+        try
+        {
+            var m = Regex.Match(lower, @"(\d+)\s*(pack|pk|ct|count|pc|pcs)");
+            if (m.Success && int.TryParse(m.Groups[1].Value, out var n) && n > 0)
+                return n;
+            if (lower.Contains("dozen"))
+                return 12;
+        }
+        catch { }
+        return null;
     }
 }

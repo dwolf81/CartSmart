@@ -1145,7 +1145,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                 CreatedAt = DateTime.UtcNow,
                 Deleted = false,
                 Primary = true,
-                DealStatusId = user?.Admin == true ? 2 : 1
+                DealStatusId = user?.Admin == true ? 2 : 1,
+                ItemCount = dto.ItemCount ?? 1
             });
         }
         else
@@ -1167,7 +1168,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                     CreatedAt = DateTime.UtcNow,
                     Deleted = false,
                     Primary = i == 0,
-                    DealStatusId = user?.Admin == true ? 2 : 1
+                    DealStatusId = user?.Admin == true ? 2 : 1,
+                    ItemCount = dto.ItemCount ?? 1
                 });
             }
         }
@@ -1592,6 +1594,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             dealProduct.FreeShipping = dto.FreeShipping;
             dealProduct.ConditionId = dto.ConditionId ?? dealProduct.ConditionId;
             dealProduct.DealStatusId = u?.Admin == true ? 2 : 5;
+            if (dto.ItemCount.HasValue) dealProduct.ItemCount = dto.ItemCount.Value;
             await _supabase.UpdateAsync(dealProduct);
         }
         else
@@ -1625,7 +1628,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                     CreatedAt = DateTime.UtcNow,
                     Deleted = false,
                     Primary = i == 0,
-                    DealStatusId = u?.Admin == true ? 2 : 5
+                    DealStatusId = u?.Admin == true ? 2 : 5,
+                    ItemCount = dto.ItemCount ?? 1
                 });
             }
         }

@@ -29,4 +29,10 @@ public class ProductAdminUpdateRow : BaseModel
 
     [Column("api_min_price")]
     public float? ApiMinPrice { get; set; }
+
+    [Column("count_enabled")]
+    public bool? CountEnabled { get; set; }
+
+    [Column("default_count")]
+    public int? DefaultCount { get; set; }
 }

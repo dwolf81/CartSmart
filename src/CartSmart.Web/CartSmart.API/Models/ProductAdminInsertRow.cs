@@ -38,4 +38,10 @@ public class ProductAdminInsertRow : BaseModel
 
     [Column("deleted")]
     public bool Deleted { get; set; } = false;
+
+    [Column("count_enabled")]
+    public bool CountEnabled { get; set; } = false;
+
+    [Column("default_count")]
+    public int DefaultCount { get; set; } = 1;
 }

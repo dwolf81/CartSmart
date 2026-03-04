@@ -36,7 +36,7 @@ export default function AdminProductModal({
   const [adminEditSaving, setAdminEditSaving] = useState(false);
   const [adminEditError, setAdminEditError] = useState('');
 
-  const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '' });
+  const [adminProductDraft, setAdminProductDraft] = useState({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '', countEnabled: false, defaultCount: 1 });
   const [adminSearchAliasesText, setAdminSearchAliasesText] = useState('');
   const [adminNegativeKeywordsText, setAdminNegativeKeywordsText] = useState('');
   const [adminProductTypeNegativeKeywordsText, setAdminProductTypeNegativeKeywordsText] = useState('');
@@ -72,7 +72,7 @@ export default function AdminProductModal({
     setAdminEditError('');
     setAdminEditLoading(false);
     setAdminEditSaving(false);
-    setAdminProductDraft({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '' });
+    setAdminProductDraft({ name: '', msrp: '', description: '', enableService: true, apiMinPrice: '', countEnabled: false, defaultCount: 1 });
     setAdminSearchAliasesText('');
     setAdminNegativeKeywordsText('');
     setAdminProductTypeNegativeKeywordsText('');
@@ -101,7 +101,9 @@ export default function AdminProductModal({
       msrp: data?.product?.msrp ?? '',
       description: data?.product?.description ?? '',
       enableService: data?.product?.enableService ?? true,
-      apiMinPrice: data?.product?.apiMinPrice ?? ''
+      apiMinPrice: data?.product?.apiMinPrice ?? '',
+      countEnabled: data?.product?.countEnabled ?? false,
+      defaultCount: data?.product?.defaultCount ?? 1
     });
 
     const aliases = Array.isArray(data?.product?.searchAliases) ? data.product.searchAliases : [];
@@ -405,7 +407,9 @@ export default function AdminProductModal({
             enableService: adminProductDraft.enableService !== false,
             apiMinPrice: apiMinPriceValue,
             searchAliases: parsedAliases,
-            negativeKeywords: parsedNegativeKeywords
+            negativeKeywords: parsedNegativeKeywords,
+            countEnabled: adminProductDraft.countEnabled === true,
+            defaultCount: adminProductDraft.countEnabled ? (Number(adminProductDraft.defaultCount) || 1) : 1
           })
         });
         if (!res.ok) {
@@ -448,7 +452,9 @@ export default function AdminProductModal({
           apiMinPrice: apiMinPriceValue,
           searchAliases: parsedAliases,
           negativeKeywords: parsedNegativeKeywords,
-          productTypeNegativeKeywords: parsedProductTypeNegativeKeywords
+          productTypeNegativeKeywords: parsedProductTypeNegativeKeywords,
+          countEnabled: adminProductDraft.countEnabled === true,
+          defaultCount: adminProductDraft.countEnabled ? (Number(adminProductDraft.defaultCount) || 1) : 1
         })
       });
 
@@ -859,6 +865,42 @@ export default function AdminProductModal({
                   <div className="text-xs text-gray-500 mt-1">
                     When disabled, RefreshDeals and IngestNewListings will skip this product.
                   </div>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Item Count Pricing</label>
+                  <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={adminProductDraft.countEnabled === true}
+                      onChange={(e) => setAdminProductDraft((p) => ({ ...p, countEnabled: e.target.checked }))}
+                      disabled={adminEditSaving}
+                    />
+                    Enable per-item pricing (count_enabled)
+                  </label>
+                  <div className="text-xs text-gray-500 mt-1">
+                    When enabled, deals track item count and show price-per-item (e.g. golf balls per pack).
+                  </div>
+
+                  {adminProductDraft.countEnabled && (
+                    <div className="mt-2">
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Default item count</label>
+                      <input
+                        type="number"
+                        value={adminProductDraft.defaultCount}
+                        onChange={(e) => setAdminProductDraft((p) => ({ ...p, defaultCount: e.target.value }))}
+                        className="w-32 px-3 py-2 border rounded-md text-sm"
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        placeholder="e.g. 12"
+                        disabled={adminEditSaving}
+                      />
+                      <div className="text-xs text-gray-500 mt-1">
+                        Standard pack size for this product (e.g. 12 for a dozen golf balls). New deals will default to this count.
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="md:col-span-2">

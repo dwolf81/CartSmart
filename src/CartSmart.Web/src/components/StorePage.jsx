@@ -449,7 +449,7 @@ const StorePage = () => {
   const filteredStoreDealsEmpty = !filteredStoreDeals || filteredStoreDeals.length === 0;
   const productsEmpty = !products || products.length === 0;
 
-  const pageTitle = `${storeName} — Stores — CartSmart`;
+  const pageTitle = `${storeName} — Lowest Price, Deals & Price Comparison`;
   const pageDescription = `Browse today’s best deals from ${storeName} on CartSmart.`;
 
   return (
@@ -1031,15 +1031,45 @@ const StorePage = () => {
                         <div className="flex items-center justify-between mb-4">
                           <div>
                             <span className="text-sm text-gray-500">Regular price</span>
-                            <div className="text-lg text-gray-900 line-through">{formatPrice(bestDeal.msrp)}</div>
+                            {bestDeal.count_enabled && Number(bestDeal.default_count) > 1 ? (
+                              <div className="text-lg text-gray-900">
+                                <span className="line-through">{formatPrice(bestDeal.msrp / Number(bestDeal.default_count))}</span>
+                                <span className="text-xs font-normal text-gray-400"> / ea</span>
+                              </div>
+                            ) : (
+                              <div className="text-lg text-gray-900 line-through">{formatPrice(bestDeal.msrp)}</div>
+                            )}
                           </div>
                           <div className="text-right">
                             <span className="text-sm text-gray-500">Lowest price</span>
-                            <div className="text-2xl font-bold text-green-600">{formatPrice(bestDeal.price)}</div>
+                            {bestDeal.count_enabled && Number(bestDeal.item_count) > 1 ? (
+                              <>
+                                <div className="text-2xl font-bold text-green-600">
+                                  {formatPrice(Number(bestDeal.price) / Number(bestDeal.item_count))}
+                                  <span className="text-sm font-normal text-gray-500"> / ea</span>
+                                </div>
+                                <div className="text-xs text-gray-500">{formatPrice(bestDeal.price)} total ({bestDeal.item_count}-pack)</div>
+                              </>
+                            ) : (
+                              <div className="text-2xl font-bold text-green-600">{formatPrice(bestDeal.price)}</div>
+                            )}
                             <div>
-                              {bestDeal.discount_amt != null && (
-                                <span className="text-sm text-red-600 font-semibold">Save {formatPrice(bestDeal.discount_amt)}</span>
-                              )}
+                              {(() => {
+                                const perItemMsrp = bestDeal.count_enabled && Number(bestDeal.default_count) > 0
+                                  ? bestDeal.msrp / Number(bestDeal.default_count)
+                                  : bestDeal.msrp;
+                                const itemCount = Number(bestDeal.item_count) || 1;
+                                const perItemDealPrice = bestDeal.count_enabled && itemCount > 0
+                                  ? Number(bestDeal.price) / itemCount
+                                  : Number(bestDeal.price);
+                                const perItemSavings = perItemMsrp - perItemDealPrice;
+                                if (perItemSavings <= 0) return null;
+                                return bestDeal.count_enabled && itemCount > 1 ? (
+                                  <span className="text-sm text-red-600 font-semibold">Save {formatPrice(perItemSavings)}/ea</span>
+                                ) : (
+                                  <span className="text-sm text-red-600 font-semibold">Save {formatPrice(perItemSavings)}</span>
+                                );
+                              })()}
                             </div>
                           </div>
                         </div>

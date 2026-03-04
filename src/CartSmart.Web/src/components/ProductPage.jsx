@@ -109,6 +109,7 @@ const ProductPage = () => {
   const [availableStores, setAvailableStores] = useState([]); // [{ store_id, store_name, store_image_url }]
   const [expandedStoreIds, setExpandedStoreIds] = useState([]); // number[]
   const [expandedStoreDealsById, setExpandedStoreDealsById] = useState({}); // { [storeId]: rows }
+  const [expandedDealLimits, setExpandedDealLimits] = useState({}); // { [storeId]: number } — how many grouped deals to show
   const expandedStoreCacheRef = useRef(new Map()); // key: `${productId}:${storeId}:${dealTypeId}:${conditionId}` -> rows
 
   const [initialLoading, setInitialLoading] = useState(true);
@@ -276,6 +277,7 @@ const ProductPage = () => {
   const clearExpandedCacheAndCollapse = (nextExpandedStoreId = null) => {
     expandedStoreCacheRef.current.clear();
     setExpandedStoreDealsById({});
+    setExpandedDealLimits({});
     setExpandedStoreIds(nextExpandedStoreId ? [nextExpandedStoreId] : []);
   };
 
@@ -451,6 +453,7 @@ const ProductPage = () => {
         if (cancelled) return;
         setCollapsedStoreDeals([]);
         setExpandedStoreDealsById({});
+        setExpandedDealLimits({});
       } finally {
         if (cancelled) return;
         setInitialLoading(false);
@@ -981,8 +984,17 @@ const ProductPage = () => {
     });
 
     return Array.from(groups.values()).map((group, groupIndex) => {
+      // Compute effective comparison price (per-item for count-enabled)
+      const effectivePrice = (r) => {
+        const p = Number(r?.price);
+        if (!Number.isFinite(p)) return Infinity;
+        const countEnabled = !!r?.count_enabled;
+        const itemCount = Number(r?.item_count) || 1;
+        return countEnabled && itemCount > 0 ? p / itemCount : p;
+      };
+
       const priced = group.rows
-        .map((r) => ({ row: r, price: Number(r?.price) }))
+        .map((r) => ({ row: r, price: Number(r?.price), effectivePrice: effectivePrice(r) }))
         .filter((x) => Number.isFinite(x.price));
 
       const backendVariantCount = group.rows
@@ -996,7 +1008,7 @@ const ProductPage = () => {
       const lowest = priced.length > 0 ? Math.min(...priced.map((x) => x.price)) : null;
       const highest = priced.length > 0 ? Math.max(...priced.map((x) => x.price)) : null;
       const representative = priced.length > 0
-        ? priced.reduce((best, x) => (x.price < best.price ? x : best), priced[0]).row
+        ? priced.reduce((best, x) => (x.effectivePrice < best.effectivePrice ? x : best), priced[0]).row
         : group.rows[0];
 
       return {
@@ -1119,7 +1131,15 @@ const ProductPage = () => {
 
     const parts = [];
     if (row?.condition_name) parts.push(row.condition_name);
-    if (row?.price != null) parts.push(formatPrice(row.price));
+    if (row?.price != null) {
+      const rowItemCount = Number(row?.item_count) || 1;
+      const rowCountEnabled = !!row?.count_enabled;
+      if (rowCountEnabled && rowItemCount > 1) {
+        parts.push(`${formatPrice(Number(row.price) / rowItemCount)}/ea (${formatPrice(row.price)} for ${rowItemCount})`);
+      } else {
+        parts.push(formatPrice(row.price));
+      }
+    }
     const domain = getDomain(row?.store_url || row?.url || row?.external_store_url || row?.external_offer_url);
     if (domain) parts.push(domain);
 
@@ -1236,7 +1256,7 @@ const ProductPage = () => {
 
   const siteUrl = SITE_URL;
   const canonical = `${siteUrl}/products/${product.slug}`;
-  const title = `${product.name} — Shop Smarter | CartSmart`;
+  const title = `${product.name} — Lowest Price, Deals & Price Comparison`;
   const desc = (product.description || '').replace(/\s+/g, ' ').slice(0, 155);
   const firstImage = (product?.imageUrl || (Array.isArray(galleryImages) && galleryImages[0])) || '';
   const imageAbs = firstImage && firstImage.startsWith('http') ? firstImage : (firstImage ? `${siteUrl}${firstImage.startsWith('/') ? '' : '/'}${firstImage}` : '');
@@ -1258,7 +1278,7 @@ const ProductPage = () => {
         <meta property="og:url" content={canonical} />
         {imageAbs ? <meta property="og:image" content={imageAbs} /> : null}
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content={title} />
+        <meta name="twitter:title" content={title}  />
         <meta name="twitter:description" content={desc} />
         {imageAbs ? <meta name="twitter:image" content={imageAbs} /> : null}
         <script type="application/ld+json">{JSON.stringify({
@@ -1402,7 +1422,15 @@ const ProductPage = () => {
             </div>
             <div className="mb-4">
               <span className="text-gray-600">Regular Price: </span>
-              <span className="font-semibold">{formatPrice(product.msrp)}</span>
+              {product.countEnabled && product.defaultCount > 1 ? (
+                <span className="font-semibold">
+                  {formatPrice(product.msrp / product.defaultCount)}
+                  <span className="text-sm text-gray-500"> / ea</span>
+                  <span className="text-sm text-gray-400 ml-1">({formatPrice(product.msrp)} for {product.defaultCount})</span>
+                </span>
+              ) : (
+                <span className="font-semibold">{formatPrice(product.msrp)}</span>
+              )}
             </div>
             {/*
             <div className="mb-6">
@@ -1828,24 +1856,43 @@ const ProductPage = () => {
 
                       if (visibleDealsForStore.length === 0) return null;
 
+                      const PAGE_SIZE = 5;
+                      const MAX_ADDITIONAL = 10;
+                      const currentLimit = expandedDealLimits[storeId] || 0;
+
                       const onExpand = async () => {
                         if (!storeId) return;
-                        setExpandedStoreIds(prev => (prev.includes(storeId) ? prev : [...prev, storeId]));
-                        try {
-                          setDealsLoading(true);
-                          const rows = await ensureExpandedStoreDeals(storeId);
-                          setExpandedStoreDealsById(prev => ({ ...prev, [storeId]: rows }));
-                          seedFlaggedDealsFromBatch(rows);
-                        } catch (e) {
-                          console.error(e);
-                        } finally {
-                          setDealsLoading(false);
+                        const alreadyExpanded = expandedStoreIds.includes(storeId);
+                        if (!alreadyExpanded) {
+                          setExpandedStoreIds(prev => [...prev, storeId]);
+                        }
+                        // Set initial page limit (1 primary + PAGE_SIZE additional)
+                        setExpandedDealLimits(prev => ({
+                          ...prev,
+                          [storeId]: Math.min((prev[storeId] || 0) + PAGE_SIZE, MAX_ADDITIONAL) + 1
+                        }));
+                        if (!alreadyExpanded) {
+                          try {
+                            setDealsLoading(true);
+                            const rows = await ensureExpandedStoreDeals(storeId);
+                            setExpandedStoreDealsById(prev => ({ ...prev, [storeId]: rows }));
+                            seedFlaggedDealsFromBatch(rows);
+                          } catch (e) {
+                            console.error(e);
+                          } finally {
+                            setDealsLoading(false);
+                          }
                         }
                       };
 
                       const onCollapse = () => {
                         setExpandedStoreIds(prev => prev.filter(id => id !== storeId));
                         setExpandedStoreDealsById(prev => {
+                          const next = { ...prev };
+                          delete next[storeId];
+                          return next;
+                        });
+                        setExpandedDealLimits(prev => {
                           const next = { ...prev };
                           delete next[storeId];
                           return next;
@@ -1868,11 +1915,22 @@ const ProductPage = () => {
                           </div>
 
                           <div className="space-y-4">
-                            {visibleDealsForStore.map(({ deal, rawIndex, variantRows, variantCount, lowestPrice, hasVariantPriceSpread }, idx) => {
+                            {(isExpanded && currentLimit > 0
+                              ? visibleDealsForStore.slice(0, currentLimit)
+                              : visibleDealsForStore
+                            ).map(({ deal, rawIndex, variantRows, variantCount, lowestPrice, hasVariantPriceSpread }, idx) => {
                               // Anonymous obfuscation toggle: keep logic here for possible future re-enable.
                               const ENABLE_ANON_OBFUSCATION = false;
                               const shouldObfuscate = ENABLE_ANON_OBFUSCATION && !isAuthenticated && isExpanded && rawIndex > 0;
-                              const displayPrice = variantCount > 1 && lowestPrice != null ? lowestPrice : deal.price;
+                              // Per-item pricing
+                              const dealCountEnabled = !!deal.count_enabled;
+                              const dealItemCount = Number(deal.item_count) || 1;
+                              // For count-enabled products, use the representative's price (best per-item)
+                              // rather than lowestPrice (lowest total) to keep item_count consistent.
+                              const displayPrice = dealCountEnabled
+                                ? deal.price
+                                : (variantCount > 1 && lowestPrice != null ? lowestPrice : deal.price);
+                              const perItemPrice = dealCountEnabled && dealItemCount > 1 ? Number(displayPrice) / dealItemCount : null;
                               return (
                               <div
                                 key={deal.deal_id}
@@ -1891,16 +1949,47 @@ const ProductPage = () => {
                                 {variantCount} variants
                               </span>
                             )}
-                            <span className="font-bold text-green-600 text-xl">
-                              {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)}
-                            </span>
+                            {dealCountEnabled && dealItemCount > 1 && (
+                              <span className="bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-1 rounded-full">
+                                {dealItemCount}-pack
+                              </span>
+                            )}
+                            {perItemPrice != null ? (
+                              <span className="flex flex-col items-end">
+                                <span className="font-bold text-green-600 text-xl">
+                                  {variantCount > 1 ? `From ${formatPrice(perItemPrice)}` : formatPrice(perItemPrice)}
+                                  <span className="text-sm font-normal text-gray-500"> / ea</span>
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)} total
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="font-bold text-green-600 text-xl">
+                                {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)}
+                              </span>
+                            )}
 
                           </div>
-                          {deal.msrp != null && deal.msrp > Number(displayPrice) && (
-                            <span className="text-xs text-red-600 font-semibold">
-                              Save {formatPrice(deal.msrp - Number(displayPrice))}
-                            </span>
-                          )}
+                          {deal.msrp != null && (() => {
+                            const perItemMsrp = dealCountEnabled && Number(deal.default_count) > 0
+                              ? deal.msrp / Number(deal.default_count)
+                              : deal.msrp;
+                            const perItemDealPrice = dealCountEnabled && dealItemCount > 0
+                              ? Number(displayPrice) / dealItemCount
+                              : Number(displayPrice);
+                            const perItemSavings = perItemMsrp - perItemDealPrice;
+                            if (perItemSavings <= 0) return null;
+                            return dealCountEnabled && dealItemCount > 1 ? (
+                              <span className="text-xs text-red-600 font-semibold">
+                                Save {formatPrice(perItemSavings)}/ea
+                              </span>
+                            ) : (
+                              <span className="text-xs text-red-600 font-semibold">
+                                Save {formatPrice(perItemSavings)}
+                              </span>
+                            );
+                          })()}
                           {deal.free_shipping && (
                             <span className="flex items-center gap-1 text-xs text-gray-600 mt-1">
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1945,6 +2034,7 @@ const ProductPage = () => {
                                 return (
                                   <>
                               {/* Stacked Deal Header (always visible) */}
+                              <div className="pr-44">
                               <div className="flex flex-wrap items-center gap-2 mb-2">
                                 <span
                                   className={`flex items-center px-2 py-1 rounded font-semibold text-sm ${DEAL_TYPE_META[3].badge}`}
@@ -1970,6 +2060,7 @@ const ProductPage = () => {
                                   <span className="text-sm">{deal.additional_details}</span>
                                 </div>
                               )}
+                              </div>
 
                               {/* Steps list (each step has its own accordion header) */}
                               {deal.steps && (
@@ -2156,7 +2247,7 @@ const ProductPage = () => {
 
                           {/* Non-stacked deals */}
                           {deal.deal_type_id !== 3 && (
-                            <>
+                            <div className="pr-44">
                               <div className="mb-2 flex items-center">
                                 <span
                                   className={`flex items-center px-2 py-1 rounded font-semibold mr-2 text-sm ${DEAL_TYPE_META[deal.deal_type_id]?.badge}`}
@@ -2219,7 +2310,7 @@ const ProductPage = () => {
                                   {deal.additional_details}
                                 </div>
                               )}
-                            </>
+                            </div>
                           )}
                         </div>
 
@@ -2337,26 +2428,45 @@ const ProductPage = () => {
                           </div>
 
                           {/* Expand/Collapse CTA */}
-                          {storeId && !isExpanded && additionalCount > 0 && (
-                            <button
-                              type="button"
-                              onClick={onExpand}
-                              className="mt-4 text-xs text-[#4CAF50] hover:underline"
-                              disabled={dealsLoading}
-                            >
-                              View {Math.min(additionalCount, 5)} more from {storeName}
-                            </button>
-                          )}
+                          {(() => {
+                            const totalGrouped = visibleDealsForStore.length;
+                            const shownCount = isExpanded && currentLimit > 0
+                              ? Math.min(currentLimit, totalGrouped)
+                              : (isExpanded ? totalGrouped : 1);
+                            const remainingInData = totalGrouped - shownCount;
+                            // additional_deal_count from SQL reflects total deals beyond the primary,
+                            // but we cap at MAX_ADDITIONAL for display purposes.
+                            const totalAdditional = Math.min(additionalCount, MAX_ADDITIONAL);
+                            const additionalShown = shownCount - 1; // subtract the primary deal
+                            const moreAvailable = !isExpanded
+                              ? totalAdditional
+                              : Math.max(0, Math.min(remainingInData, totalAdditional - additionalShown));
+                            const nextBatch = Math.min(moreAvailable, PAGE_SIZE);
 
-                          {storeId && isExpanded && (
-                            <button
-                              type="button"
-                              onClick={onCollapse}
-                              className="mt-4 text-xs text-[#4CAF50] hover:underline"
-                            >
-                              Hide {storeName} deals
-                            </button>
-                          )}
+                            return (
+                              <>
+                                {storeId && nextBatch > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={onExpand}
+                                    className="mt-4 text-xs text-[#4CAF50] hover:underline"
+                                    disabled={dealsLoading}
+                                  >
+                                    View {nextBatch} more from {storeName} 
+                                  </button>
+                                )}
+                                {storeId && isExpanded && (
+                                  <button
+                                    type="button"
+                                    onClick={onCollapse}
+                                    className={`${nextBatch > 0 ? 'mt-1' : 'mt-4'} text-xs text-[#4CAF50] hover:underline`}
+                                  >
+                                    Hide {storeName} deals
+                                  </button>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       );
                     })
@@ -2378,6 +2488,8 @@ const ProductPage = () => {
         onClose={() => setIsModalOpen(false)}
         productId={product.id}
         msrpPrice={product.msrp}   // ADDED
+        countEnabled={!!product.countEnabled}
+        defaultCount={product.defaultCount || 1}
       />
       <ComboDealModal
         isOpen={isComboModalOpen}
@@ -2387,6 +2499,7 @@ const ProductPage = () => {
         onComboCreated={() => {
           expandedStoreCacheRef.current.clear();
           setExpandedStoreDealsById({});
+          setExpandedDealLimits({});
           setExpandedStoreIds(dealFilters.storeId ? [dealFilters.storeId] : []);
           setInitialLoading(true);
         }}

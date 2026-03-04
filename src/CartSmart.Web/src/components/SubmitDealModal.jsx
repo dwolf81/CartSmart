@@ -5,7 +5,7 @@ import { FaTag, FaTicketAlt, FaLink, FaLayerGroup } from 'react-icons/fa';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null, scope = 'product', mode = 'create', deal = null, onSubmitted }) => {
+const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null, scope = 'product', mode = 'create', deal = null, onSubmitted, countEnabled = false, defaultCount = 1 }) => {
   const { user } = useAuth();
 
   const isStoreDeal = scope === 'store';
@@ -27,6 +27,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
     condition: 'new',
     discountPercent: '',
     expirationDate: '',
+    itemCount: countEnabled ? (defaultCount || 1) : 1,
   };
   const [formData, setFormData] = useState(initialFormData);
   const [visibleSteps, setVisibleSteps] = useState(2);
@@ -243,6 +244,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
       expirationDate: deal.expiration_date
         ? new Date(deal.expiration_date).toISOString().slice(0, 16)
         : (deal.expirationDate ? new Date(deal.expirationDate).toISOString().slice(0, 16) : ''),
+      itemCount: deal.item_count ?? deal.itemCount ?? (countEnabled ? (defaultCount || 1) : 1),
     });
   }, [isOpen, mode, deal, isStoreDeal]);
 
@@ -283,6 +285,27 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
       setFormData(p => ({ ...p, price: value }));
       return;
     }
+    if (name === 'itemCount' && countEnabled) {
+      // When item count changes, recalculate discount % if price is already set
+      const base = (baselinePrice != null ? baselinePrice : msrpPrice);
+      setFormData(p => {
+        const updated = { ...p, itemCount: value };
+        if (base && base > 0 && p.price !== '' && p.price != null) {
+          const num = parseFloat(p.price);
+          const newItemCount = parseInt(value, 10) || 1;
+          if (!isNaN(num) && num >= 0) {
+            const perItemMsrp = defaultCount > 0 ? base / defaultCount : base;
+            const perItemPrice = num / newItemCount;
+            let pct = perItemMsrp === 0 ? 0 : ((perItemMsrp - perItemPrice) / perItemMsrp) * 100;
+            pct = Math.round(pct);
+            pct = Math.min(Math.max(pct, 0), 100);
+            updated.discountPercent = pct;
+          }
+        }
+        return updated;
+      });
+      return;
+    }
     setFormData(p => ({ ...p, [name]: value }));
   };
 
@@ -297,7 +320,11 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
       const num = parseInt(val, 10);
       if (isNaN(num)) return p;
       const pct = Math.min(Math.max(num, 0), 100);
-      const newPrice = base * (1 - pct / 100);
+      // For count-enabled products, compute price using per-item MSRP
+      const perItemMsrp = countEnabled && defaultCount > 0 ? base / defaultCount : base;
+      const dealItemCount = countEnabled ? (parseInt(p.itemCount, 10) || 1) : 1;
+      const perItemPrice = perItemMsrp * (1 - pct / 100);
+      const newPrice = perItemPrice * dealItemCount;
       return { ...p, discountPercent: pct, price: (Math.round(newPrice * 100) / 100).toFixed(2) };
     });
   };
@@ -311,7 +338,11 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
       if (p.discountPercent !== '' && p.discountPercent != null) return p; // do not overwrite existing discount
       const num = parseFloat(val);
       if (isNaN(num) || num < 0) return p;
-      let pct = base === 0 ? 0 : ((base - num) / base) * 100;
+      // For count-enabled products, compare per-item prices
+      const perItemMsrp = countEnabled && defaultCount > 0 ? base / defaultCount : base;
+      const dealItemCount = countEnabled ? (parseInt(p.itemCount, 10) || 1) : 1;
+      const perItemPrice = num / dealItemCount;
+      let pct = perItemMsrp === 0 ? 0 : ((perItemMsrp - perItemPrice) / perItemMsrp) * 100;
       pct = Math.round(pct); // integer rounding
       pct = Math.min(Math.max(pct, 0), 100);
       return { ...p, price: val, discountPercent: pct };
@@ -494,6 +525,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         discountPercent: formData.discountPercent === '' ? null : parseFloat(formData.discountPercent),
         expirationDate: formData.expirationDate || null,
         ...(shouldSendVariantAttributes && variantAttributes.length > 0 ? { variantAttributes } : {}),
+        ...(countEnabled ? { itemCount: parseInt(formData.itemCount, 10) || 1 } : {}),
       };
 
       if (mode === 'edit' && deal?.deal_product_id) {
@@ -698,12 +730,39 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         
 
 
-          {/* Pricing Row: Discount % (when applicable) + Deal Price */}
+          {/* Item Count (only for count-enabled products, product-scoped deals) — shown before price row */}
+          {!isStoreDeal && countEnabled && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Item Count
+              </label>
+              <input
+                type="number"
+                name="itemCount"
+                value={formData.itemCount}
+                onChange={handleChange}
+                min="1"
+                step="1"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                placeholder={`e.g. ${defaultCount || 1}`}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                How many items are included in this deal (e.g. pack of {defaultCount || 1}).
+              </p>
+            </div>
+          )}
+
+          {/* Pricing Row: Deal Price + Discount % */}
           {!isStoreDeal && (
             <div className="flex flex-col md:flex-row md:items-start gap-4">
                         <div className={`w-full ${ (formData.dealType === 'external' || formData.dealType === 'coupon') ? 'md:w-1/2' : 'md:w-full'}`}>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Deal Price ($)
+                {countEnabled && defaultCount > 1 && msrpPrice && (
+                  <span className="text-xs text-gray-400 ml-1">
+                    (regular: ${(msrpPrice / defaultCount).toFixed(2)}/ea)
+                  </span>
+                )}
               </label>
               <input
                 type="number"

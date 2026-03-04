@@ -244,7 +244,9 @@ public class ProductService : IProductService
             DealId = product.DealId,
             ImageUrl = product.ImageUrl,
             BrandName = product.Brand.Name,
-            Rating = product.Rating
+            Rating = product.Rating,
+            CountEnabled = product.CountEnabled,
+            DefaultCount = product.DefaultCount
         };
         _cache.Set(cacheKey, dto, ProductTtl);
         _cache.Set($"product:id:{dto.Id}", dto, ProductTtl);
