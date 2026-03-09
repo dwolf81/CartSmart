@@ -70,7 +70,7 @@ export default function AdminStoreModal({
     upfrontCost: '',
     upfrontCostTermId: '',
     apiEnabled: false,
-    scrapeEnabled: false,
+    scrapeModeId: '0',
     scrapeConfig: '',
     requiredQueryVars: ''
   });
@@ -114,7 +114,7 @@ export default function AdminStoreModal({
       upfrontCost: '',
       upfrontCostTermId: '',
       apiEnabled: false,
-      scrapeEnabled: false,
+      scrapeModeId: '0',
       scrapeConfig: '',
       requiredQueryVars: ''
     });
@@ -135,7 +135,7 @@ export default function AdminStoreModal({
       upfrontCost: s?.upfrontCost != null ? String(s.upfrontCost) : '',
       upfrontCostTermId: s?.upfrontCostTermId != null ? String(s.upfrontCostTermId) : '',
       apiEnabled: !!s?.apiEnabled,
-      scrapeEnabled: !!s?.scrapeEnabled,
+      scrapeModeId: s?.scrapeModeId != null ? String(s.scrapeModeId) : '0',
       scrapeConfig: s?.scrapeConfig ?? '',
       requiredQueryVars: s?.requiredQueryVars ?? ''
     });
@@ -253,7 +253,7 @@ export default function AdminStoreModal({
         upfrontCost: draft.upfrontCost === '' ? null : Number(draft.upfrontCost),
         upfrontCostTermId: draft.upfrontCostTermId ? Number(draft.upfrontCostTermId) : null,
         apiEnabled: !!draft.apiEnabled,
-        scrapeEnabled: !!draft.scrapeEnabled,
+        scrapeModeId: draft.scrapeModeId ? Number(draft.scrapeModeId) : 0,
         scrapeConfig: (draft.scrapeConfig || '').trim() || null,
         requiredQueryVars: (draft.requiredQueryVars || '').trim() || null
       };
@@ -574,15 +574,18 @@ export default function AdminStoreModal({
                   <label htmlFor="apiEnabled" className="text-sm text-gray-700">API Enabled</label>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <input
-                    id="scrapeEnabled"
-                    type="checkbox"
-                    checked={!!draft.scrapeEnabled}
-                    onChange={(e) => setDraft((p) => ({ ...p, scrapeEnabled: e.target.checked }))}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Scrape Mode</label>
+                  <select
+                    value={draft.scrapeModeId}
+                    onChange={(e) => setDraft((p) => ({ ...p, scrapeModeId: e.target.value }))}
+                    className="w-full px-3 py-2 border rounded-md text-sm"
                     disabled={saving}
-                  />
-                  <label htmlFor="scrapeEnabled" className="text-sm text-gray-700">Scrape Enabled</label>
+                  >
+                    <option value="0">None</option>
+                    <option value="1">All (Service + Extension)</option>
+                    <option value="2">Browser Extension Only</option>
+                  </select>
                 </div>
 
                 <div className="md:col-span-2">

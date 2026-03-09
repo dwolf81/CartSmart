@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "CartSmart Price Tracker",
+  "version": "1.0.0",
+  "description": "Automatically extracts product prices from supported stores to keep CartSmart pricing up to date.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "activeTab",
+    "identity",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://cartsmart.com/admin/manual-price*",
+        "http://localhost:*/admin/manual-price*",
+        "http://127.0.0.1:*/admin/manual-price*"
+      ],
+      "js": ["content-autoscan.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

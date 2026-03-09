@@ -60,11 +60,64 @@ public class GenericHtmlScraper : IHtmlScraper
                 _logger.LogInformation("Skipping scrape for {Url}: no override selectors provided", uri);
                 return null;
             }
+
+            var activeSelectors = overridePriceSelectors;
+            var candidates = new List<(decimal amount, string? currency, bool struck, bool promo)>();
+            bool blockedByBot = false;
+
+            // ── Step 1: Raw HTML fetch (AngleSharp static parse) ──
+            _logger.LogInformation("Step 1: Fetching raw HTML for {Url}", uri);
             var doc = await _context.OpenAsync(uri.ToString(), ct);
 
             if (LooksLikeBotProtectionPage(doc))
             {
-                _logger.LogWarning("Scrape blocked (bot protection) for {Url}", uri);
+                _logger.LogWarning("Raw HTML blocked by bot protection for {Url}; will try Playwright fallback", uri);
+                blockedByBot = true;
+            }
+            else
+            {
+                candidates = ExtractPriceCandidates(doc, activeSelectors);
+                _logger.LogInformation("Step 1 result: {Count} price candidate(s) from raw HTML for {Url}", candidates.Count, uri);
+            }
+
+            // ── Step 2: Playwright JS-rendered fallback ──
+            if (candidates.Count == 0 && _jsRenderer != null)
+            {
+                _logger.LogInformation("Step 2: Running Playwright JS-rendered fallback for {Url}", uri);
+                var effectiveTimeout = _jsTimeoutMs < 8000 ? 15000 : _jsTimeoutMs;
+                if (effectiveTimeout != _jsTimeoutMs)
+                    _logger.LogInformation("Using elevated JS timeout: {TimeoutMs}ms (configured {ConfiguredMs}ms)", effectiveTimeout, _jsTimeoutMs);
+
+                var rendered = await _jsRenderer.RenderAsync(uri, effectiveTimeout, ct);
+                if (!string.IsNullOrEmpty(rendered))
+                {
+                    var doc2 = await _context.OpenAsync(req => req.Content(rendered));
+
+                    if (LooksLikeBotProtectionPage(doc2))
+                    {
+                        _logger.LogWarning("Playwright render also blocked by bot protection for {Url}", uri);
+                        blockedByBot = true;
+                    }
+                    else
+                    {
+                        candidates = ExtractPriceCandidates(doc2, activeSelectors);
+                        _logger.LogInformation("Step 2 result: {Count} price candidate(s) from Playwright for {Url}", candidates.Count, uri);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("Playwright returned empty content for {Url}", uri);
+                }
+            }
+            else if (candidates.Count == 0)
+            {
+                _logger.LogInformation("No JS renderer available; skipping Playwright fallback for {Url}", uri);
+            }
+
+            // ── Step 3: Manual review fallback ──
+            if (candidates.Count == 0)
+            {
+                _logger.LogWarning("No price found after all scraping attempts for {Url}; triggering manual review", uri);
                 TryOpenBrowserForManualReview(uri);
                 return new ScrapeResult
                 {
@@ -73,170 +126,47 @@ public class GenericHtmlScraper : IHtmlScraper
                     Currency = null,
                     InStock = null,
                     Sold = null,
-                    BlockedByBotProtection = true,
+                    BlockedByBotProtection = blockedByBot,
                     RawSignals = new Dictionary<string, string>
                     {
-                        ["blocked"] = "bot_protection"
+                        ["blocked"] = blockedByBot ? "bot_protection" : "no_price_found"
                     }
                 };
             }
-            var result = new ScrapeResult();
 
-            // Collect candidates then choose best (avoid struck-through/promotional; prefer lowest current price)
-            var candidates = new List<(decimal amount, string? currency, bool struck, bool promo)>();
-            IElement? regionRoot = null;
-            bool RegionContains(IElement el)
-            {
-                if (regionRoot == null) return false;
-                var cur = el;
-                while (cur != null)
-                {
-                    if (cur == regionRoot) return true;
-                    cur = cur.ParentElement;
-                }
-                return false;
-            }
-            IElement SelectRegionRoot(IElement el)
-            {
-                var cur = el;
-                while (cur.ParentElement != null && cur.ParentElement.TagName != "BODY")
-                {
-                    var clsId = (cur.ClassName + " " + cur.Id).ToLowerInvariant();
-                    if (clsId.Contains("product") || clsId.Contains("price") || clsId.Contains("buy") || clsId.Contains("main") || clsId.Contains("summary") || clsId.Contains("detail"))
-                        return cur;
-                    cur = cur.ParentElement;
-                }
-                return el.ParentElement ?? el; // fallback
-            }
-            var activeSelectors = overridePriceSelectors;
-            foreach (var sel in activeSelectors)
-            {
-                var els = doc.QuerySelectorAll(sel);
-                _logger.LogDebug("Selector '{Selector}' found {Count} elements", sel, els.Length);
-                foreach (var el in els)
-                {
-                    if (regionRoot != null && !RegionContains(el))
-                        continue; // ignore elements outside first price region
-                    // Prefer explicit aria-label when present
-                    var raw = el.GetAttribute("aria-label") ?? el.GetAttribute("content") ?? el.TextContent;
-                    _logger.LogDebug("  Element: tag={Tag}, class={Class}, aria-label={AriaLabel}, content={Content}, text={Text}", 
-                        el.TagName, el.ClassName, el.GetAttribute("aria-label"), el.GetAttribute("content"), el.TextContent?.Substring(0, Math.Min(30, el.TextContent?.Length ?? 0)));
-                    if (string.IsNullOrWhiteSpace(raw)) continue;
-                    var promo = LooksPromotional(raw);
-                    var struck = IsStruckThrough(el);
-                    var cleaned = CleanPriceText(raw);
-                    if (TryParsePrice(cleaned, out var p))
-                    {
-                        var curr = DetectCurrency(raw ?? el.TextContent ?? string.Empty);
-                        candidates.Add((p, curr, struck, promo));
-                        if (regionRoot == null)
-                        {
-                            regionRoot = SelectRegionRoot(el);
-                            _logger.LogInformation("Price region locked: tag={Tag}, id={Id}, class={Class}", regionRoot.TagName, regionRoot.Id, regionRoot.ClassName);
-                        }
-                        _logger.LogDebug("Price candidate: {Amount} {Currency}, struck={Struck}, promo={Promo}, raw={Raw}", p, curr, struck, promo, raw?.Substring(0, Math.Min(50, raw.Length)));
-                    }
-                }
-                if (regionRoot != null)
-                {
-                    // After locking region, we continue current selector loop but skip remaining selectors once a reasonable number of candidates collected
-                    if (candidates.Count >= 6) break; // heuristic limit
-                }
-            }
-
-            // JS-rendered fallback: re-run selectors only (no heuristic expansion)
-            if (candidates.Count == 0 && _enableJsFallback && _jsRenderer != null)
-            {
-                _logger.LogInformation("Running JS-rendered fallback (profile selectors only) for {Url}", uri);
-                var effectiveTimeout = _jsTimeoutMs < 8000 ? 15000 : _jsTimeoutMs;
-                if (effectiveTimeout != _jsTimeoutMs)
-                    _logger.LogInformation("Using elevated JS timeout: {TimeoutMs}ms (configured {ConfiguredMs}ms)", effectiveTimeout, _jsTimeoutMs);
-                var rendered = await _jsRenderer.RenderAsync(uri, effectiveTimeout, ct);
-                if (!string.IsNullOrEmpty(rendered))
-                {
-                    var doc2 = await _context.OpenAsync(req => req.Content(rendered));
-
-                    if (LooksLikeBotProtectionPage(doc2))
-                    {
-                        _logger.LogWarning("JS-rendered scrape still blocked (bot protection) for {Url}", uri);
-                        TryOpenBrowserForManualReview(uri);
-                        return new ScrapeResult
-                        {
-                            Html = null,
-                            ExtractedPrice = null,
-                            Currency = null,
-                            InStock = null,
-                            Sold = null,
-                            BlockedByBotProtection = true,
-                            RawSignals = new Dictionary<string, string>
-                            {
-                                ["blocked"] = "bot_protection"
-                            }
-                        };
-                    }
-
-                    foreach (var sel in activeSelectors)
-                    {
-                        var els = doc2.QuerySelectorAll(sel);
-                        foreach (var el in els)
-                        {
-                            if (regionRoot != null && !RegionContains(el)) continue;
-                            var raw = el.GetAttribute("aria-label") ?? el.GetAttribute("content") ?? el.TextContent;
-                            if (string.IsNullOrWhiteSpace(raw)) continue;
-                            var promo = LooksPromotional(raw);
-                            var struck = IsStruckThrough(el);
-                            var cleaned = CleanPriceText(raw);
-                            if (TryParsePrice(cleaned, out var p))
-                            {
-                                var curr = DetectCurrency(raw ?? el.TextContent ?? string.Empty);
-                                candidates.Add((p, curr, struck, promo));
-                                if (regionRoot == null)
-                                {
-                                    regionRoot = SelectRegionRoot(el);
-                                    _logger.LogInformation("(JS) Price region locked: tag={Tag}, id={Id}, class={Class}", regionRoot.TagName, regionRoot.Id, regionRoot.ClassName);
-                                }
-                                _logger.LogDebug("(JS) Price candidate: {Amount} {Currency}, struck={Struck}, promo={Promo}", p, curr, struck, promo);
-                            }
-                        }
-                        if (regionRoot != null && candidates.Count >= 6) break;
-                    }
-                }
-            }
-
+            // ── Price selection ──
             decimal? price = null;
             string? currency = null;
             _logger.LogInformation("Total price candidates found: {Count}", candidates.Count);
-            if (candidates.Count > 0)
-            {
-                // Prefer non-struck, non-promo candidates; if multiple, choose the lowest amount (current sale price)
-                var preferred = candidates
-                    .Where(c => !c.struck && !c.promo)
-                    .DefaultIfEmpty()
-                    .OrderBy(c => c.amount)
-                    .FirstOrDefault();
 
-                if (preferred.amount != 0)
+            // Prefer non-struck, non-promo candidates; if multiple, choose the lowest amount (current sale price)
+            var preferred = candidates
+                .Where(c => !c.struck && !c.promo)
+                .DefaultIfEmpty()
+                .OrderBy(c => c.amount)
+                .FirstOrDefault();
+
+            if (preferred.amount != 0)
+            {
+                price = preferred.amount;
+                currency = preferred.currency;
+                _logger.LogDebug("Selected preferred price: {Price} {Currency}", price, currency);
+            }
+            else
+            {
+                // Fallback: any non-struck candidate
+                var alt = candidates.Where(c => !c.struck).OrderBy(c => c.amount).FirstOrDefault();
+                if (alt.amount != 0)
                 {
-                    price = preferred.amount;
-                    currency = preferred.currency;
-                    _logger.LogDebug("Selected preferred price: {Price} {Currency}", price, currency);
+                    price = alt.amount;
+                    currency = alt.currency;
                 }
                 else
                 {
-                    // Fallback: any non-struck candidate
-                    var alt = candidates.Where(c => !c.struck).OrderBy(c => c.amount).FirstOrDefault();
-                    if (alt.amount != 0)
-                    {
-                        price = alt.amount;
-                        currency = alt.currency;
-                    }
-                    else
-                    {
-                        // Last resort: take the lowest among all candidates
-                        var any = candidates.OrderBy(c => c.amount).First();
-                        price = any.amount;
-                        currency = any.currency;
-                    }
+                    // Last resort: take the lowest among all candidates
+                    var any = candidates.OrderBy(c => c.amount).First();
+                    price = any.amount;
+                    currency = any.currency;
                 }
             }
 
@@ -264,6 +194,79 @@ public class GenericHtmlScraper : IHtmlScraper
             _logger.LogError(ex, "Scrape failed {Url}", uri);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Runs the configured price selectors against the parsed document and returns all
+    /// price candidates found, scoped to the first "price region" detected in the DOM.
+    /// </summary>
+    private List<(decimal amount, string? currency, bool struck, bool promo)> ExtractPriceCandidates(
+        IDocument doc, string[] selectors)
+    {
+        var candidates = new List<(decimal amount, string? currency, bool struck, bool promo)>();
+        IElement? regionRoot = null;
+
+        bool RegionContains(IElement el)
+        {
+            if (regionRoot == null) return false;
+            var cur = el;
+            while (cur != null)
+            {
+                if (cur == regionRoot) return true;
+                cur = cur.ParentElement;
+            }
+            return false;
+        }
+
+        IElement SelectRegionRoot(IElement el)
+        {
+            var cur = el;
+            while (cur.ParentElement != null && cur.ParentElement.TagName != "BODY")
+            {
+                var clsId = (cur.ClassName + " " + cur.Id).ToLowerInvariant();
+                if (clsId.Contains("product") || clsId.Contains("price") || clsId.Contains("buy")
+                    || clsId.Contains("main") || clsId.Contains("summary") || clsId.Contains("detail"))
+                    return cur;
+                cur = cur.ParentElement;
+            }
+            return el.ParentElement ?? el; // fallback
+        }
+
+        foreach (var sel in selectors)
+        {
+            var els = doc.QuerySelectorAll(sel);
+            _logger.LogDebug("Selector '{Selector}' found {Count} elements", sel, els.Length);
+            foreach (var el in els)
+            {
+                if (regionRoot != null && !RegionContains(el))
+                    continue; // ignore elements outside first price region
+                // Prefer explicit aria-label when present
+                var raw = el.GetAttribute("aria-label") ?? el.GetAttribute("content") ?? el.TextContent;
+                _logger.LogDebug("  Element: tag={Tag}, class={Class}, aria-label={AriaLabel}, content={Content}, text={Text}",
+                    el.TagName, el.ClassName, el.GetAttribute("aria-label"), el.GetAttribute("content"),
+                    el.TextContent?.Substring(0, Math.Min(30, el.TextContent?.Length ?? 0)));
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                var promo = LooksPromotional(raw);
+                var struck = IsStruckThrough(el);
+                var cleaned = CleanPriceText(raw);
+                if (TryParsePrice(cleaned, out var p))
+                {
+                    var curr = DetectCurrency(raw ?? el.TextContent ?? string.Empty);
+                    candidates.Add((p, curr, struck, promo));
+                    if (regionRoot == null)
+                    {
+                        regionRoot = SelectRegionRoot(el);
+                        _logger.LogInformation("Price region locked: tag={Tag}, id={Id}, class={Class}",
+                            regionRoot.TagName, regionRoot.Id, regionRoot.ClassName);
+                    }
+                    _logger.LogDebug("Price candidate: {Amount} {Currency}, struck={Struck}, promo={Promo}, raw={Raw}",
+                        p, curr, struck, promo, raw?.Substring(0, Math.Min(50, raw.Length)));
+                }
+            }
+            if (regionRoot != null && candidates.Count >= 6) break; // heuristic limit
+        }
+
+        return candidates;
     }
 
     private static bool LooksLikeBotProtectionPage(IDocument doc)

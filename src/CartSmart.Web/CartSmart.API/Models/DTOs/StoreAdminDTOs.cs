@@ -11,7 +11,7 @@ namespace CartSmart.API.Models.DTOs
         public float? upfrontCost { get; set; }
         public int? upfrontCostTermId { get; set; }
         public bool? apiEnabled { get; set; }
-        public bool? scrapeEnabled { get; set; }
+        public int? scrapeModeId { get; set; }
         public string? scrapeConfig { get; set; }
         public string? requiredQueryVars { get; set; }
         public string? slug { get; set; }
@@ -35,7 +35,7 @@ namespace CartSmart.API.Models.DTOs
         public float? upfrontCost { get; set; }
         public int? upfrontCostTermId { get; set; }
         public bool? apiEnabled { get; set; }
-        public bool? scrapeEnabled { get; set; }
+        public int? scrapeModeId { get; set; }
         public string? scrapeConfig { get; set; }
         public string? requiredQueryVars { get; set; }
         public string? slug { get; set; }

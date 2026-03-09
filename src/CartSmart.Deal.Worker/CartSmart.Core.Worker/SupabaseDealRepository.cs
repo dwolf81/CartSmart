@@ -81,15 +81,35 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     {
         // Select active, non-deleted products that are due now.
         // Note: refresh should only run for DIRECT deals (deal_type_id = 1).
+        // We need two queries because NULL next_check_at is never <= now in SQL.
         var nowIso = _timeProvider.GetUtcNow().UtcDateTime.ToString("O");
-        var response = await _client.From<DealProduct>()
+
+        // 1) Rows where next_check_at <= now (scheduled and due)
+        var dueResponse = await _client.From<DealProduct>()
             .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
             .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.Equals, "2")
             .Filter("next_check_at", Supabase.Postgrest.Constants.Operator.LessThanOrEqual, nowIso)
             .Limit(batchSize)
             .Get(ct);
 
-        var due = response.Models ?? new List<DealProduct>();
+        // 2) Rows where next_check_at IS NULL (never scheduled — treat as immediately due)
+        var nullResponse = await _client.From<DealProduct>()
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.Equals, "2")
+            .Filter("next_check_at", Supabase.Postgrest.Constants.Operator.Is, "null")
+            .Limit(batchSize)
+            .Get(ct);
+
+        var dueModels = dueResponse.Models ?? new List<DealProduct>();
+        var nullModels = nullResponse.Models ?? new List<DealProduct>();
+
+        // Merge and deduplicate by Id
+        var due = dueModels
+            .Concat(nullModels)
+            .GroupBy(dp => dp.Id)
+            .Select(g => g.First())
+            .ToList();
+
         if (due.Count == 0) return due;
 
         // Also ensure the parent deal itself is not deleted.
@@ -614,6 +634,14 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             .Limit(1)
             .Get(ct);
         return resp.Models.FirstOrDefault();
+    }
+
+    public async Task<IReadOnlyList<Brand>> GetAllBrandsAsync(CancellationToken ct)
+    {
+        var resp = await _client.From<Brand>()
+            .Select("id, name")
+            .Get(ct);
+        return resp.Models ?? new List<Brand>();
     }
 
     public async Task<IReadOnlyList<string>> GetOrFetchProductNegativeKeywordsAsync(int productId, CancellationToken ct)

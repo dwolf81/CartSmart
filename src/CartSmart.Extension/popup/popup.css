@@ -1,0 +1,278 @@
+/* ─── Reset & Base ──────────────────────────────────────────────────────── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  color: #1f2937;
+  background: #ffffff;
+  min-width: 320px;
+}
+
+.popup {
+  padding: 16px;
+}
+
+/* ─── Header ───────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logo h1 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #4CAF50;
+}
+
+.version {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* ─── Sections ─────────────────────────────────────────────────────────── */
+.section {
+  margin-bottom: 16px;
+}
+
+.section h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin-bottom: 8px;
+}
+
+/* ─── Status card ──────────────────────────────────────────────────────── */
+.status-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.status-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex-shrink: 0;
+}
+
+.status-indicator.active {
+  background: #10b981;
+}
+
+.status-indicator.inactive {
+  background: #9ca3af;
+}
+
+.status-indicator.working {
+  background: #2563eb;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-indicator.error {
+  background: #ef4444;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#status-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.status-detail {
+  font-size: 11px;
+  color: #6b7280;
+  word-break: break-all;
+}
+
+/* ─── Stats ────────────────────────────────────────────────────────────── */
+.stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+/* ─── Buttons ──────────────────────────────────────────────────────────── */
+.btn {
+  display: block;
+  width: 100%;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.btn:active {
+  opacity: 0.8;
+}
+
+.btn-secondary {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.btn-secondary:hover {
+  background: #d1d5db;
+}
+
+/* ─── Report list ──────────────────────────────────────────────────────── */
+.report-list {
+  list-style: none;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.report-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 12px;
+}
+
+.report-list li:last-child {
+  border-bottom: none;
+}
+
+.report-list .empty {
+  color: #9ca3af;
+  font-style: italic;
+  justify-content: center;
+  padding: 16px 0;
+}
+
+.report-store {
+  font-weight: 600;
+  color: #374151;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-price {
+  font-weight: 700;
+  color: #059669;
+}
+
+.report-price.failed {
+  color: #ef4444;
+}
+
+.report-time {
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+/* ─── Footer ───────────────────────────────────────────────────────────── */
+.footer {
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+  text-align: center;
+}
+
+.footer a {
+  font-size: 12px;
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.footer a:hover {
+  text-decoration: underline;
+}
+
+/* ─── Auth bar ─────────────────────────────────────────────────────────── */
+.auth-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.auth-bar.signed-in {
+  background: #d1fae5;
+  border-color: #6ee7b7;
+}
+
+.auth-text {
+  color: #92400e;
+  font-weight: 500;
+}
+
+.auth-bar.signed-in .auth-text {
+  color: #065f46;
+}
+
+.auth-link {
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.auth-link:hover {
+  text-decoration: underline;
+}

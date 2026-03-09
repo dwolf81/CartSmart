@@ -33,8 +33,8 @@ public class StoreAdminInsertRow : BaseModel
     [Column("api_enabled")]
     public bool? ApiEnabled { get; set; }
 
-    [Column("scrape_enabled")]
-    public bool? ScrapeEnabled { get; set; }
+    [Column("scrape_mode_id")]
+    public int? ScrapeModeId { get; set; }
 
     // Stored as jsonb in database. We accept raw JSON string from admin UI.
     [Column("scrape_config")]

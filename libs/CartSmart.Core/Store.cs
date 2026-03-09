@@ -39,9 +39,9 @@ namespace CartSmart.API.Models
         [Column("api_enabled")]
         public bool? ApiEnabled { get; set; }
 
-        // Enable/disable HTML scraping fallback per store
-        [Column("scrape_enabled")]
-        public bool? ScrapeEnabled { get; set; }
+        // Scraping mode: 0=None, 1=All (service+extension), 2=BrowserOnly (extension only)
+        [Column("scrape_mode_id")]
+        public int? ScrapeModeId { get; set; }
 
         // JSONB configuration for scraping selectors (e.g. {"price_selectors":["#price",".offer-price"]})
         [Column("scrape_config")]

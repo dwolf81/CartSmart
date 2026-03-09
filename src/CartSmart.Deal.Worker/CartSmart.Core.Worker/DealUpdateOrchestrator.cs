@@ -17,6 +17,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
     private HashSet<string>? _stopWords;
 
     private readonly Dictionary<StoreType, IStoreClient> _clientMap;
+    // Cache for brand name → brand ID lookups (populated lazily during ingest)
+    private Dictionary<string, int>? _brandNameToIdCache;
 
     public DealUpdateOrchestrator(
         IDealRepository repo,
@@ -457,7 +459,32 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
     private async Task<int?> InferBrandIdAsync(string brandName, CancellationToken ct)
     {
-        // Placeholder: assumes brand names map by slug/name; implement lookup if Brand model present
+        if (string.IsNullOrWhiteSpace(brandName)) return null;
+
+        // Lazily load and cache all brands on first use
+        if (_brandNameToIdCache == null)
+        {
+            try
+            {
+                var brands = await _repo.GetAllBrandsAsync(ct);
+                _brandNameToIdCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var b in brands)
+                {
+                    if (!string.IsNullOrWhiteSpace(b.Name))
+                        _brandNameToIdCache.TryAdd(b.Name.Trim(), b.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to load brands for InferBrandIdAsync");
+                _brandNameToIdCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        var normalized = brandName.Trim();
+        if (_brandNameToIdCache.TryGetValue(normalized, out var id))
+            return id;
+
         return null;
     }
 
@@ -556,7 +583,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             if (useApi)
             {
                 data = await client!.GetByUrlAsync(url, ct);
-                if (!forceApi && data == null && store?.ScrapeEnabled == true && overrideSelectors != null && overrideSelectors.Length > 0)
+                if (!forceApi && data == null && ScrapeMode.AllowsServiceScrape(store?.ScrapeModeId) && overrideSelectors != null && overrideSelectors.Length > 0)
                 {
                     // fallback to scraping (only if enabled)
                     var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, ct);
@@ -574,7 +601,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     data = scrapeOutcome.Data;
                 }
             }
-            else if (store?.ScrapeEnabled == true && overrideSelectors != null && overrideSelectors.Length > 0)
+            else if (ScrapeMode.AllowsServiceScrape(store?.ScrapeModeId) && overrideSelectors != null && overrideSelectors.Length > 0)
             {
                 var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, ct);
                 if (scrapeOutcome.BlockedByBotProtection)
@@ -596,9 +623,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 // This refresh pipeline only runs on ACTIVE + DIRECT deals that are due, so flag for manual verification.
                 if (dealProduct.DealStatusId == SupabaseDealRepository.DealStatusActive)
                 {
-                    var reason = store?.ScrapeEnabled == true
+                    var reason = ScrapeMode.AllowsServiceScrape(store?.ScrapeModeId)
                         ? (overrideSelectors == null || overrideSelectors.Length == 0 ? "scrape_selectors_missing" : "no_auto_refresh")
-                        : "scrape_disabled";
+                        : ScrapeMode.AllowsBrowserScrape(store?.ScrapeModeId) ? "browser_only" : "scrape_disabled";
 
                     var taskId = await repoImpl.CreateOrGetPendingManualPriceTaskAsync(
                         string.IsNullOrWhiteSpace(dealProduct.Url) ? new DealProduct { Id = dealProduct.Id, Url = url } : dealProduct,
@@ -621,41 +648,29 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
                 if (newErrorCount > 20)
                 {
-                    // Too many consecutive failures — expire the deal_product so we stop wasting API calls.
+                    // Too many consecutive failures — mark stale and create a manual price task,
+                    // but do NOT auto-expire. Only expiration_date should drive the Expired status.
                     _logger.LogWarning(
-                        "deal_product {DealProductId} (deal {DealId}) has {ErrorCount} consecutive errors. Auto-expiring.",
+                        "deal_product {DealProductId} (deal {DealId}) has {ErrorCount} consecutive errors. Marking stale and creating manual task.",
                         dealProduct.Id, dealProduct.DealId, newErrorCount);
 
-                    dealProduct.DealStatusId = SupabaseDealRepository.DealStatusExpired;
-                    await repoImpl.UpdateDealProductAsync(dealProduct, ct);
+                    await repoImpl.MarkStaleAsync(dealProduct, ct);
 
-                    // If ALL deal_products on this deal are now expired, expire the parent deal too.
-                    if (deal != null)
+                    try
                     {
-                        try
-                        {
-                            var siblingResp = await _repo.GetDealProductsForDealAsync(dealProduct.DealId, ct);
-                            var allExpired = siblingResp != null && siblingResp.All(dp =>
-                                dp.Deleted || dp.DealStatusId == SupabaseDealRepository.DealStatusExpired);
-                            if (allExpired && deal.DealStatusId != SupabaseDealRepository.DealStatusExpired)
-                            {
-                                deal.DealStatusId = SupabaseDealRepository.DealStatusExpired;
-                                await _repo.UpdateDealsAsync(new[] { deal }, ct);
-                                _logger.LogWarning("All deal_products expired for deal {DealId}. Auto-expired the parent deal.", deal.Id);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning(ex, "Failed to check/expire sibling deal_products for deal {DealId}", deal.Id);
-                        }
+                        var taskId = await repoImpl.CreateOrGetPendingManualPriceTaskAsync(dealProduct, "consecutive_errors", ct);
+                        _logger.LogWarning(
+                            "Created/reused manual_price_task {TaskId} for deal_product {DealProductId} due to {ErrorCount} consecutive errors.",
+                            taskId, dealProduct.Id, newErrorCount);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to create manual price task for deal_product {DealProductId}", dealProduct.Id);
                     }
 
-                    try { await _repo.UpdateProductBestDealAsync(dealProduct.ProductId, ct); }
-                    catch (Exception ex) { _logger.LogWarning(ex, "Best deal RPC failed (auto-expire) for product {ProductId}", dealProduct.ProductId); }
-
-                    // Push next check very far out so the scheduler effectively stops retrying.
-                    await repoImpl.SetNextCheckAsync(dealProduct, _timeProvider.GetUtcNow().UtcDateTime.AddDays(365), ct);
-                    return DealProcessOutcome.Expired;
+                    // Push next check far out so we stop retrying frequently.
+                    await repoImpl.SetNextCheckAsync(dealProduct, _timeProvider.GetUtcNow().UtcDateTime.AddHours(48), ct);
+                    return DealProcessOutcome.Error;
                 }
 
                 if (newErrorCount > 10)

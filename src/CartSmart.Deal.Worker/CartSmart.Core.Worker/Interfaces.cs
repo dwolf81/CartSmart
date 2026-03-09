@@ -24,6 +24,7 @@ public interface IDealRepository
     Task<IReadOnlyList<Product>> GetActiveProductsAsync(CancellationToken ct);
     Task<Product?> GetProductByIdAsync(int productId, CancellationToken ct);
     Task<IReadOnlyList<DealProduct>> GetDealProductsForDealAsync(int dealId, CancellationToken ct);
+    Task<IReadOnlyList<Brand>> GetAllBrandsAsync(CancellationToken ct);
 }
 
 public interface IStoreClient

@@ -1445,7 +1445,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         }
 
         var condPart = BuildConditionFilter(preferredConditionCategoryId);
-        var filter = string.IsNullOrEmpty(condPart) ? "buyingOptions:{FIXED_PRICE}" : $"buyingOptions:{{FIXED_PRICE}}|{condPart}";
+        var filter = string.IsNullOrEmpty(condPart) ? "buyingOptions:{FIXED_PRICE}" : $"buyingOptions:{{FIXED_PRICE}},{condPart}";
 
         // Server-side price filter: reduce junk results (accessories, overpriced bundles)
         // eBay Browse API format: price:[min..max],priceCurrency:USD
