@@ -1934,72 +1934,47 @@ const ProductPage = () => {
                               return (
                               <div
                                 key={deal.deal_id}
-                                className="border rounded-lg p-4 hover:shadow-md transition-shadow relative flex flex-col text-base overflow-hidden"
+                                className="border rounded-lg p-4 hover:shadow-md transition-shadow flex flex-col text-base overflow-hidden"
                               >
-                        {/* Price & badges */}
-                        <span className="absolute top-4 right-4 flex flex-col items-end">
+                        {/* Card header: deal type + price & badges */}
+                        <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+                          {/* Deal type badge (left) */}
+                          <div className="flex flex-wrap items-center gap-2">
+                            {deal.deal_type_id === 3 ? (
+                              <>
+                                <span
+                                  className={`flex items-center px-2 py-1 rounded font-semibold text-sm ${DEAL_TYPE_META[3].badge}`}
+                                  title={DEAL_TYPE_META[3].desc}
+                                >
+                                  {DEAL_TYPE_META[3].icon} Stacked Deal
+                                </span>
+                                <span className="text-sm text-amber-700 font-medium">
+                                  {(() => { const gs = groupStackedStepsForDisplay(deal.steps || []); return gs.length || 0; })()} deals
+                                </span>
+                              </>
+                            ) : (
+                              <span
+                                className={`flex items-center px-2 py-1 rounded font-semibold text-sm ${DEAL_TYPE_META[deal.deal_type_id]?.badge}`}
+                                title={DEAL_TYPE_META[deal.deal_type_id]?.desc}
+                              >
+                                {DEAL_TYPE_META[deal.deal_type_id]?.icon}
+                                {DEAL_TYPE_META[deal.deal_type_id]?.label} Deal
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Price & discount (right) */}
                           <div className="flex items-center gap-2">
                             {deal.discount_percent > 0 && (
                               <span className="bg-green-100 text-green-700 text-xs font-semibold px-2 py-1 rounded-full">
                                 {deal.discount_percent}% Off
                               </span>
                             )}
-                            {variantCount > 1 && (
-                              <span className="bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-1 rounded-full">
-                                {variantCount} variants
-                              </span>
-                            )}
-                            {dealCountEnabled && dealItemCount > 1 && (
-                              <span className="bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-1 rounded-full">
-                                {dealItemCount}-pack
-                              </span>
-                            )}
-                            {perItemPrice != null ? (
-                              <span className="flex flex-col items-end">
-                                <span className="font-bold text-green-600 text-xl">
-                                  {variantCount > 1 ? `From ${formatPrice(perItemPrice)}` : formatPrice(perItemPrice)}
-                                  <span className="text-sm font-normal text-gray-500"> / ea</span>
-                                </span>
-                                <span className="text-xs text-gray-500">
-                                  {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)} total
-                                </span>
-                              </span>
-                            ) : (
-                              <span className="font-bold text-green-600 text-xl">
-                                {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)}
-                              </span>
-                            )}
-
-                          </div>
-                          {deal.msrp != null && (() => {
-                            const perItemMsrp = dealCountEnabled && Number(deal.default_count) > 0
-                              ? deal.msrp / Number(deal.default_count)
-                              : deal.msrp;
-                            const perItemDealPrice = dealCountEnabled && dealItemCount > 0
-                              ? Number(displayPrice) / dealItemCount
-                              : Number(displayPrice);
-                            const perItemSavings = perItemMsrp - perItemDealPrice;
-                            if (perItemSavings <= 0) return null;
-                            return dealCountEnabled && dealItemCount > 1 ? (
-                              <span className="text-xs text-red-600 font-semibold">
-                                Save {formatPrice(perItemSavings)}/ea
-                              </span>
-                            ) : (
-                              <span className="text-xs text-red-600 font-semibold">
-                                Save {formatPrice(perItemSavings)}
-                              </span>
-                            );
-                          })()}
-                          {deal.free_shipping && (
-                            <span className="flex items-center gap-1 text-xs text-gray-600 mt-1">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-                                  d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-                              </svg>
-                              Free Shipping
+                            <span className="font-bold text-green-600 text-xl">
+                              {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)}
                             </span>
-                          )}
-                        </span>
+                          </div>
+                        </div>
 
                         {/* Login overlay (only for expanded secondary deals) */}
                         {shouldObfuscate && (
@@ -2033,36 +2008,56 @@ const ProductPage = () => {
                                 const groupedSteps = groupStackedStepsForDisplay(deal.steps || []);
                                 return (
                                   <>
-                              {/* Stacked Deal Header (always visible) */}
-                              <div className="pr-44">
-                              <div className="flex flex-wrap items-center gap-2 mb-2">
-                                <span
-                                  className={`flex items-center px-2 py-1 rounded font-semibold text-sm ${DEAL_TYPE_META[3].badge}`}
-                                  title={DEAL_TYPE_META[3].desc}
-                                >
-                                  {DEAL_TYPE_META[3].icon} Stacked Deal
-                                </span>
-                                <span className="text-sm text-amber-700 font-medium">
-                                  {groupedSteps.length || 0} deals
-                                </span>
-
-
-                              </div>
-
-                              <div className="mb-1">
-                                <span className="text-gray-600 font-medium text-sm">Condition:</span>{' '}
-                                <span className="text-sm">{deal.condition_name}</span>
-                              </div>
+                              {/* Stacked Deal data fields */}
+                              <div>
+                              {variantCount > 1 && (
+                                <div className="mb-2 text-xs text-slate-500">
+                                  Applies to {variantCount} variants
+                                  {hasVariantPriceSpread ? ' (price varies by variant)' : ''}
+                                </div>
+                              )}
+                              {(deal.condition_name || (variantCount <= 1 && deal.variant_details)) && (
+                                <div className="mb-2 text-xs text-slate-500">
+                                  {[deal.condition_name, variantCount <= 1 && deal.variant_details ? prioritizeVariantDetailsText(deal.variant_details) : null].filter(Boolean).join(' • ')}
+                                </div>
+                              )}
+                              {perItemPrice != null && (
+                                <div className="mb-1">
+                                  <span className="text-gray-600 font-medium text-sm">Price per item:</span>{' '}
+                                  <span className="text-sm">{formatPrice(perItemPrice)}</span>
+                                </div>
+                              )}
+                              {deal.msrp != null && (() => {
+                                const perItemMsrp = dealCountEnabled && Number(deal.default_count) > 0
+                                  ? deal.msrp / Number(deal.default_count)
+                                  : deal.msrp;
+                                const perItemDealPrice = dealCountEnabled && dealItemCount > 0
+                                  ? Number(displayPrice) / dealItemCount
+                                  : Number(displayPrice);
+                                const perItemSavings = perItemMsrp - perItemDealPrice;
+                                if (perItemSavings <= 0) return null;
+                                return (
+                                  <div className="mb-1">
+                                    <span className="text-gray-600 font-medium text-sm">You save:</span>{' '}
+                                    <span className="text-sm text-red-600 font-semibold">
+                                      {dealCountEnabled && dealItemCount > 1
+                                        ? `${formatPrice(perItemSavings)}/ea`
+                                        : formatPrice(perItemSavings)}
+                                    </span>
+                                  </div>
+                                );
+                              })()}
+                              {deal.free_shipping && (
+                                <div className="mb-1">
+                                  <span className="text-gray-600 font-medium text-sm">Shipping:</span>{' '}
+                                  <span className="text-sm text-green-600">Free</span>
+                                </div>
+                              )}
 
                               {deal.additional_details && (
                                 <div className="mb-1">
-                                  <span className="text-gray-600 font-medium text-sm">Additional Details:</span>{' '}
+                                  <span className="text-gray-600 font-medium text-sm">Additional details:</span>{' '}
                                   <span className="text-sm">{deal.additional_details}</span>
-                                </div>
-                              )}
-                              {variantCount <= 1 && deal.variant_details && (
-                                <div className="mb-2 text-xs text-slate-500">
-                                  {prioritizeVariantDetailsText(deal.variant_details)}
                                 </div>
                               )}
                               </div>
@@ -2149,7 +2144,7 @@ const ProductPage = () => {
                                             )}
                                             {step.additional_details && (
                                               <div className="mt-2 text-sm text-gray-600">
-                                                <span className="text-gray-600 font-medium">Additional Details:</span> {step.additional_details}
+                                                <span className="text-gray-600 font-medium">Additional details:</span> {step.additional_details}
                                               </div>
                                             )}
                                           
@@ -2252,25 +2247,16 @@ const ProductPage = () => {
 
                           {/* Non-stacked deals */}
                           {deal.deal_type_id !== 3 && (
-                            <div className="pr-44">
-                              <div className="mb-2 flex items-center">
-                                <span
-                                  className={`flex items-center px-2 py-1 rounded font-semibold mr-2 text-sm ${DEAL_TYPE_META[deal.deal_type_id]?.badge}`}
-                                  title={DEAL_TYPE_META[deal.deal_type_id]?.desc}
-                                >
-                                  {DEAL_TYPE_META[deal.deal_type_id]?.icon}
-                                  {DEAL_TYPE_META[deal.deal_type_id]?.label} Deal
-                                </span>
-                              </div>
+                            <div>
                               {variantCount > 1 && (
                                 <div className="mb-2 text-xs text-slate-500">
                                   Applies to {variantCount} variants
                                   {hasVariantPriceSpread ? ' (price varies by variant)' : ''}
                                 </div>
                               )}
-                              {variantCount <= 1 && deal.variant_details && (
+                              {(deal.condition_name || (variantCount <= 1 && deal.variant_details)) && (
                                 <div className="mb-2 text-xs text-slate-500">
-                                  {prioritizeVariantDetailsText(deal.variant_details)}
+                                  {[deal.condition_name, variantCount <= 1 && deal.variant_details ? prioritizeVariantDetailsText(deal.variant_details) : null].filter(Boolean).join(' • ')}
                                 </div>
                               )}
 
@@ -2310,13 +2296,41 @@ const ProductPage = () => {
                                   </code>
                                 </div>
                               )}
-                              <div className="mb-1">
-                                <span className="text-gray-600 font-medium text-sm">Condition:</span>{' '}
-                                <span className="text-sm">{deal.condition_name}</span>
-                              </div>
+                              {perItemPrice != null && (
+                                <div className="mb-1">
+                                  <span className="text-gray-600 font-medium text-sm">Price per item:</span>{' '}
+                                  <span className="text-sm">{formatPrice(perItemPrice)}</span>
+                                </div>
+                              )}
+                              {deal.msrp != null && (() => {
+                                const perItemMsrp = dealCountEnabled && Number(deal.default_count) > 0
+                                  ? deal.msrp / Number(deal.default_count)
+                                  : deal.msrp;
+                                const perItemDealPrice = dealCountEnabled && dealItemCount > 0
+                                  ? Number(displayPrice) / dealItemCount
+                                  : Number(displayPrice);
+                                const perItemSavings = perItemMsrp - perItemDealPrice;
+                                if (perItemSavings <= 0) return null;
+                                return (
+                                  <div className="mb-1">
+                                    <span className="text-gray-600 font-medium text-sm">You save:</span>{' '}
+                                    <span className="text-sm text-red-600 font-semibold">
+                                      {dealCountEnabled && dealItemCount > 1
+                                        ? `${formatPrice(perItemSavings)}/ea`
+                                        : formatPrice(perItemSavings)}
+                                    </span>
+                                  </div>
+                                );
+                              })()}
+                              {deal.free_shipping && (
+                                <div className="mb-1">
+                                  <span className="text-gray-600 font-medium text-sm">Shipping:</span>{' '}
+                                  <span className="text-sm text-green-600">Free</span>
+                                </div>
+                              )}
                               {deal.additional_details && (
                                 <div className="mb-1 text-sm">
-                                  <span className="text-gray-600 font-medium">Additional Details:</span>{' '}
+                                  <span className="text-gray-600 font-medium">Additional details:</span>{' '}
                                   {deal.additional_details}
                                 </div>
                               )}
