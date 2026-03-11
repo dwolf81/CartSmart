@@ -89,6 +89,12 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
     .filter(Boolean)
     .some(d => d.deal_type_id === 1);
 
+  // Derived: whether a Coupon or External deal is already selected (gate for step 2)
+  const hasSelectedCouponOrExternal = selectedDeals
+    .map(id => deals.find(d => d.deal_id === id))
+    .filter(Boolean)
+    .some(d => d.deal_type_id === 2 || d.deal_type_id === 4);
+
   // RESET when modal opens
   useEffect(() => {
     if (!isOpen) return;
@@ -304,6 +310,11 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
     e.preventDefault(); // CHANGED: handle form submit
     if (!user) { alert('Please log in to submit a deal'); return; }
     if (selectedDeals.length < 2) { alert('Select at least two deals to create a stacked deal.'); return; }
+    const selObjs = selectedDeals.map(id => deals.find(d => d.deal_id === id)).filter(Boolean);
+    if (!selObjs.some(d => d.deal_type_id === 2 || d.deal_type_id === 4)) {
+      alert('A stacked deal must include at least one coupon or external deal.');
+      return;
+    }
     if (!description || description.trim().length === 0) {  // NEW: manual validation
       alert('Please enter a description for the stacked deal.');
       return;
@@ -372,7 +383,12 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
       const sid = getStoreId(d);
       return filterStoreId === null || sid === filterStoreId;
     })
-    .filter(d => !(hasSelectedDirect && d.deal_type_id === 1));
+    .filter(d => !(hasSelectedDirect && d.deal_type_id === 1))
+    .filter(d => {
+      // Step 1: only show coupon/external until one is selected
+      if (!hasSelectedCouponOrExternal) return d.deal_type_id === 2 || d.deal_type_id === 4;
+      return true;
+    });
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -390,7 +406,7 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
             <b>{mode === 'edit' ? 'Edit your Stacked Deal' : 'What is a Stacked Deal?'}</b><br />
             {mode === 'edit'
               ? 'Update the description, steps, and order, then save your changes.'
-              : 'A Stacked Deal lets you combine two or more existing deals for this product into a single, step-by-step offer.'}
+              : 'A Stacked Deal combines a coupon or external deal with a direct deal from the same store. Start by selecting a coupon or external deal, then pick a direct deal to pair it with.'}
           </div>
           <div className="space-y-6">
 
@@ -556,7 +572,11 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
             {/* Possible deals to stack */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center justify-between">
-                <span>Possible deals to stack:</span>
+                <span>
+                  {!hasSelectedCouponOrExternal
+                    ? 'Step 1: Select a coupon or external deal'
+                    : 'Step 2: Add a direct deal from the same store'}
+                </span>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -645,8 +665,12 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
                     </div>
                   );
                 })}
-                {!loading && dealsArray.filter(d => !selectedDeals.includes(d.deal_id)).length === 0 && (
-                  <div className="text-gray-400 text-sm">No more deals to select.</div>
+                {!loading && availableDeals.length === 0 && !hasMoreDeals && (
+                  <div className="text-gray-400 text-sm">
+                    {!hasSelectedCouponOrExternal
+                      ? 'No coupon or external deals available. Add one using the "+ Add New Deal" button above.'
+                      : 'No more deals to select.'}
+                  </div>
                 )}
                 {(loadingMoreDeals || hasMoreDeals) && (
                   <div className="text-center py-1 text-xs text-gray-500">

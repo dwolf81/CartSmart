@@ -555,8 +555,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         decimal? apiMaxPrice = null;
         if (productMsrp.HasValue && productMsrp.Value > 0)
         {
-            // Use the override if set, otherwise default to 30% of MSRP.
-            apiMinPrice = apiMinPriceOverride ?? Math.Round(productMsrp.Value * 0.3m, 2);
+            // Use the override if set, otherwise default to 40% of MSRP.
+            apiMinPrice = apiMinPriceOverride ?? Math.Round(productMsrp.Value * 0.4m, 2);
             apiMaxPrice = productMsrp.Value;
         }
         else if (apiMinPriceOverride.HasValue)
@@ -639,7 +639,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
         // Seller quality thresholds (can be overridden via environment variables)
         var minPct = decimal.TryParse(Environment.GetEnvironmentVariable("EBAY_MIN_FEEDBACK_PERCENT"), out var p) ? p : 95m;
-        var minScore = int.TryParse(Environment.GetEnvironmentVariable("EBAY_MIN_FEEDBACK_SCORE"), out var sscore) ? sscore : 500;
+        var minScore = int.TryParse(Environment.GetEnvironmentVariable("EBAY_MIN_FEEDBACK_SCORE"), out var sscore) ? sscore : 3;
         var requireTopRated = bool.TryParse(Environment.GetEnvironmentVariable("EBAY_REQUIRE_TOP_RATED"), out var rtr) ? rtr : false;
 
         // Pre-normalize query tokens for coverage checks

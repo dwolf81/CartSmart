@@ -241,9 +241,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 bool priceOk = false;
                 if (msrp.HasValue && l.Price.HasValue)
                 {
-                    // Accept listings priced within 30%..150% of MSRP to avoid low-cost accessories and overpriced bundles
+                    // Accept listings priced within 40%..150% of MSRP to avoid low-cost accessories and overpriced bundles
                     var p = l.Price!.Value;
-                    priceOk = p >= (decimal)msrp.Value * 0.3m && p <= (decimal)msrp.Value * 1.5m;
+                    priceOk = p >= (decimal)msrp.Value * 0.4m && p <= (decimal)msrp.Value * 1.5m;
                 }
                 if (titleMatch && priceOk)
                 {
