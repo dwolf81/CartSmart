@@ -79,7 +79,7 @@ function isStruckThrough(el) {
 function tryParsePrice(s) {
   if (!s) return null;
   const m = s.match(
-    /(?<![A-Za-z0-9])(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+(?:\.\d{1,2})?)/
+    /(?<![A-Za-z0-9])(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/
   );
   if (!m) return null;
   const num = m[1].replace(/,/g, "");

@@ -20,6 +20,8 @@ namespace CartSmart.API.Controllers
         private readonly IAuthService _authService;
         private static readonly TimeSpan StoreCacheDuration = TimeSpan.FromMinutes(15);
         private const string StoreCacheKey = "extension_scrape_stores";
+        private static readonly TimeSpan PriceReportThrottle = TimeSpan.FromMinutes(15);
+        private const string PriceReportThrottlePrefix = "ext_price_throttle:";
 
         public ExtensionController(ISupabaseService supabase, IMemoryCache cache, IAuthService authService)
         {
@@ -90,6 +92,22 @@ namespace CartSmart.API.Controllers
 
             var client = _supabase.GetServiceRoleClient();
 
+            // Normalise the submitted URL for comparison & throttle key
+            var normUrl = NormaliseUrl(report.url);
+            var throttleKey = PriceReportThrottlePrefix + normUrl;
+
+            // ── 0. Throttle: skip if this URL was reported within the last 15 min ──
+            if (_cache.TryGetValue(throttleKey, out DateTime lastReported))
+            {
+                var remaining = PriceReportThrottle - (DateTime.UtcNow - lastReported);
+                return Ok(new ExtensionPriceReportResponseDTO
+                {
+                    accepted = false,
+                    throttled = true,
+                    message = $"This URL was already updated {(int)remaining.TotalMinutes + 1} minute(s) ago. Try again later."
+                });
+            }
+
             // ── 1. Verify the store has scraping enabled ────────────────────────
             var storeResp = await client
                 .From<Store>()
@@ -108,8 +126,6 @@ namespace CartSmart.API.Controllers
             }
 
             // ── 2. Find deal_product rows whose URL matches ──────────────────
-            // Normalise the submitted URL for comparison
-            var normUrl = NormaliseUrl(report.url);
 
             // Fetch active (non-deleted) deal products for this store via deal
             var dealResp = await client
@@ -190,6 +206,9 @@ namespace CartSmart.API.Controllers
 
                 updated++;
             }
+
+            // Mark this URL as recently updated so other users don't re-submit
+            _cache.Set(throttleKey, DateTime.UtcNow, PriceReportThrottle);
 
             return Ok(new ExtensionPriceReportResponseDTO
             {

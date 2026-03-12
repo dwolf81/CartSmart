@@ -33,6 +33,7 @@ namespace CartSmart.API.Models.DTOs
     public class ExtensionPriceReportResponseDTO
     {
         public bool accepted { get; set; }
+        public bool throttled { get; set; }
         public int matchedDealProducts { get; set; }
         public int updatedDealProducts { get; set; }
         public string? message { get; set; }

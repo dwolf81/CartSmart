@@ -288,6 +288,7 @@ async function handlePriceExtracted(message, sender) {
     ...report,
     storeName,
     submitted: submitResult.ok,
+    throttled: submitResult.throttled || false,
     timestamp: Date.now(),
   });
   if (recentReports.length > MAX_RECENT) {
@@ -297,7 +298,9 @@ async function handlePriceExtracted(message, sender) {
 
   // Update badge
   if (tabId) {
-    if (submitResult.ok) {
+    if (submitResult.throttled) {
+      setBadge(tabId, "⏳", "#6B7280"); // gray = throttled, already updated recently
+    } else if (submitResult.ok) {
       setBadge(tabId, "✓", "#10B981"); // green
     } else {
       setBadge(tabId, "!", "#F59E0B"); // amber = price found but submit failed

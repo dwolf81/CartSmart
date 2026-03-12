@@ -230,6 +230,10 @@ async function submitPriceReport(report) {
     }
 
     const data = await res.json();
+    if (data.throttled) {
+      console.log("[CartSmart] Price report throttled:", data.message);
+      return { ok: false, throttled: true, reason: "throttled", data };
+    }
     return { ok: true, data };
   } catch (err) {
     console.error("[CartSmart] Error submitting price report:", err);
