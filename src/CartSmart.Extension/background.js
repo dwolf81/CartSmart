@@ -283,7 +283,9 @@ async function handlePriceExtracted(message, sender) {
 
   const submitResult = await submitPriceReport(report);
 
-  // Track recent reports
+  // Track recent reports — deduplicate by URL so the same page doesn't appear twice
+  const existingIdx = recentReports.findIndex(r => r.url === report.url);
+  if (existingIdx !== -1) recentReports.splice(existingIdx, 1);
   recentReports.unshift({
     ...report,
     storeName,

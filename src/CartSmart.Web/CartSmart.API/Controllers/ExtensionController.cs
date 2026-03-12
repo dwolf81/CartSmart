@@ -204,6 +204,39 @@ namespace CartSmart.API.Controllers
                 dp.ErrorCount = 0;
                 await client.From<DealProduct>().Update(dp);
 
+                // Recalculate deal discount_percent for primary direct deal products
+                if (dp.Primary)
+                {
+                    var dealResp2 = await client
+                        .From<Deal>()
+                        .Where(d => d.Id == dp.DealId)
+                        .Limit(1)
+                        .Get();
+                    var deal = dealResp2.Models.FirstOrDefault();
+                    if (deal != null && deal.DealTypeId == 1) // Direct deal
+                    {
+                        var productResp = await client
+                            .From<Product>()
+                            .Select("id, msrp")
+                            .Where(p => p.Id == dp.ProductId)
+                            .Limit(1)
+                            .Get();
+                        var product = productResp.Models.FirstOrDefault();
+                        if (product?.MSRP is > 0)
+                        {
+                            var msrp = (decimal)product.MSRP.Value;
+                            var newDiscount = (int)Math.Round((1m - report.price.Value / msrp) * 100m);
+                            if (newDiscount < 0) newDiscount = 0;
+                            if (newDiscount > 100) newDiscount = 100;
+                            if (deal.DiscountPercent != newDiscount)
+                            {
+                                deal.DiscountPercent = newDiscount;
+                                await client.From<Deal>().Update(deal);
+                            }
+                        }
+                    }
+                }
+
                 updated++;
             }
 
