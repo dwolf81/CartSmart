@@ -240,6 +240,39 @@ namespace CartSmart.API.Controllers
                 updated++;
             }
 
+            // Auto-close any pending manual price tasks for matched deal_products
+            // (even if price unchanged, the extension verified the listing is live)
+            {
+                var updatedDpIds = matched
+                    .Select(dp => (object)dp.Id)
+                    .ToArray();
+                try
+                {
+                    var pendingTasksResp = await client
+                        .From<ManualPriceTask>()
+                        .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.In, updatedDpIds)
+                        .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
+                        .Get();
+                    var pendingTasks = pendingTasksResp.Models ?? new List<ManualPriceTask>();
+                    foreach (var pt in pendingTasks)
+                    {
+                        var taskUpdate = new ManualPriceTaskUpdateRow
+                        {
+                            Id = pt.Id,
+                            Status = "completed",
+                            SubmittedAt = now,
+                            SubmittedPrice = report.price.Value,
+                            Notes = "Auto-completed: price updated via extension"
+                        };
+                        await client
+                            .From<ManualPriceTaskUpdateRow>()
+                            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, pt.Id.ToString())
+                            .Update(taskUpdate);
+                    }
+                }
+                catch { /* best-effort */ }
+            }
+
             // Mark this URL as recently updated so other users don't re-submit
             _cache.Set(throttleKey, DateTime.UtcNow, PriceReportThrottle);
 

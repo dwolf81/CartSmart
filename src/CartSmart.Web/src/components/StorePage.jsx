@@ -1048,7 +1048,7 @@ const StorePage = () => {
                                   {formatPrice(Number(bestDeal.price) / Number(bestDeal.item_count))}
                                   <span className="text-sm font-normal text-gray-500"> / ea</span>
                                 </div>
-                                <div className="text-xs text-gray-500">{formatPrice(bestDeal.price)} total ({bestDeal.item_count}-pack)</div>
+                                <div className="text-xs text-gray-500">{formatPrice(bestDeal.price)} total (Qty: {bestDeal.item_count})</div>
                               </>
                             ) : (
                               <div className="text-2xl font-bold text-green-600">{formatPrice(bestDeal.price)}</div>

@@ -724,7 +724,7 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
                                         {formatPrice(Number(deal.price) / pItemCount)}
                                         <span className="text-sm font-normal text-gray-500"> / ea</span>
                                       </span>
-                                      <span className="text-xs text-gray-500">{formatPrice(deal.price)} total ({pItemCount}-pack)</span>
+                                      <span className="text-xs text-gray-500">{formatPrice(deal.price)} total (Qty: {pItemCount})</span>
                                     </span>
                                   );
                                 }

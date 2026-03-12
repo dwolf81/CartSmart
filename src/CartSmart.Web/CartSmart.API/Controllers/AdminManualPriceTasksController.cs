@@ -85,6 +85,50 @@ public sealed class AdminManualPriceTasksController : ControllerBase
             dealProducts = (dpResp.Models ?? new List<DealProduct>()).ToDictionary(x => x.Id, x => x);
         }
 
+        // Auto-complete tasks whose deal_product was updated after the task was created
+        var staleTasks = new List<ManualPriceTask>();
+        var activeTasks = new List<ManualPriceTask>();
+        foreach (var t in tasks)
+        {
+            if (dealProducts.TryGetValue(t.DealProductId, out var dp)
+                && dp.LastCheckedAt.HasValue
+                && dp.LastCheckedAt.Value > t.CreatedAt)
+            {
+                staleTasks.Add(t);
+            }
+            else
+            {
+                activeTasks.Add(t);
+            }
+        }
+
+        // Mark stale tasks as completed in the background
+        if (staleTasks.Count > 0)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var st in staleTasks)
+            {
+                try
+                {
+                    var update = new ManualPriceTaskUpdateRow
+                    {
+                        Id = st.Id,
+                        Status = "completed",
+                        SubmittedAt = now,
+                        Notes = "Auto-completed: deal was updated after task creation"
+                    };
+                    await client
+                        .From<ManualPriceTaskUpdateRow>()
+                        .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, st.Id.ToString())
+                        .Update(update);
+                }
+                catch { /* best-effort */ }
+            }
+        }
+
+        tasks = activeTasks;
+        if (tasks.Count == 0) return Ok(Array.Empty<object>());
+
         var productIds = dealProducts.Values
             .Select(dp => dp.ProductId)
             .Where(id => id > 0)

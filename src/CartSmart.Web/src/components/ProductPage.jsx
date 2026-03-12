@@ -1970,9 +1970,20 @@ const ProductPage = () => {
                                 {deal.discount_percent}% Off
                               </span>
                             )}
-                            <span className="font-bold text-green-600 text-xl">
-                              {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)}
-                            </span>
+                            {perItemPrice != null ? (
+                              <div className="text-right">
+                                <span className="font-bold text-green-600 text-xl">
+                                  {formatPrice(perItemPrice)}/ea
+                                </span>
+                                <div className="text-xs text-gray-500">
+                                  {variantCount > 1 ? `From ${formatPrice(displayPrice)} total` : `${formatPrice(displayPrice)} total`}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="font-bold text-green-600 text-xl">
+                                {variantCount > 1 ? `From ${formatPrice(displayPrice)}` : formatPrice(displayPrice)}
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -2016,15 +2027,9 @@ const ProductPage = () => {
                                   {hasVariantPriceSpread ? ' (price varies by variant)' : ''}
                                 </div>
                               )}
-                              {(deal.condition_name || (variantCount <= 1 && deal.variant_details)) && (
+                              {(deal.condition_name || (variantCount <= 1 && deal.variant_details) || (dealCountEnabled && dealItemCount > 1)) && (
                                 <div className="mb-2 text-xs text-slate-500">
-                                  {[deal.condition_name, variantCount <= 1 && deal.variant_details ? prioritizeVariantDetailsText(deal.variant_details) : null].filter(Boolean).join(' • ')}
-                                </div>
-                              )}
-                              {perItemPrice != null && (
-                                <div className="mb-1">
-                                  <span className="text-gray-600 font-medium text-sm">Price per item:</span>{' '}
-                                  <span className="text-sm">{formatPrice(perItemPrice)}</span>
+                                  {[deal.condition_name, dealCountEnabled && dealItemCount > 1 ? `Qty: ${dealItemCount}` : null, variantCount <= 1 && deal.variant_details ? prioritizeVariantDetailsText(deal.variant_details) : null].filter(Boolean).join(' • ')}
                                 </div>
                               )}
                               {deal.msrp != null && (() => {
@@ -2254,9 +2259,9 @@ const ProductPage = () => {
                                   {hasVariantPriceSpread ? ' (price varies by variant)' : ''}
                                 </div>
                               )}
-                              {(deal.condition_name || (variantCount <= 1 && deal.variant_details)) && (
+                              {(deal.condition_name || (variantCount <= 1 && deal.variant_details) || (dealCountEnabled && dealItemCount > 1)) && (
                                 <div className="mb-2 text-xs text-slate-500">
-                                  {[deal.condition_name, variantCount <= 1 && deal.variant_details ? prioritizeVariantDetailsText(deal.variant_details) : null].filter(Boolean).join(' • ')}
+                                  {[deal.condition_name, dealCountEnabled && dealItemCount > 1 ? `Qty: ${dealItemCount}` : null, variantCount <= 1 && deal.variant_details ? prioritizeVariantDetailsText(deal.variant_details) : null].filter(Boolean).join(' • ')}
                                 </div>
                               )}
 
@@ -2294,12 +2299,6 @@ const ProductPage = () => {
                                   >
                                     {shouldObfuscate ? '' : deal.coupon_code}
                                   </code>
-                                </div>
-                              )}
-                              {perItemPrice != null && (
-                                <div className="mb-1">
-                                  <span className="text-gray-600 font-medium text-sm">Price per item:</span>{' '}
-                                  <span className="text-sm">{formatPrice(perItemPrice)}</span>
                                 </div>
                               )}
                               {deal.msrp != null && (() => {
