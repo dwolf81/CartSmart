@@ -489,6 +489,9 @@ const StorePage = () => {
                       {storeUrl}
                     </a>
                   )}
+                  {store?.description && (
+                    <p className="text-gray-600 text-sm mt-2">{store.description}</p>
+                  )}
                 </div>
               </div>
 

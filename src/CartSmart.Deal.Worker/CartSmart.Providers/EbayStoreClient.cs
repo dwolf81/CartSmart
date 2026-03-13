@@ -979,7 +979,6 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         {
             var synResp = await _supabase
                 .From<CartSmart.API.Models.ProductAttributeEnumSynonym>()
-                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
                 .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.In, enumAttributeIdObjects)
                 .Select("enum_value_id, synonym, is_active")
                 .Get(ct);

@@ -9,9 +9,6 @@ namespace CartSmart.API.Models
         [PrimaryKey("id")]
         public long Id { get; set; }
 
-        [Column("product_id")]
-        public long ProductId { get; set; }
-
         [Column("attribute_id")]
         public int AttributeId { get; set; }
 

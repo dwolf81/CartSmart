@@ -7,6 +7,7 @@ namespace CartSmart.API.Models.DTOs
         public string? url { get; set; }
         public string? slug { get; set; }
         public string? imageUrl { get; set; }
+        public string? description { get; set; }
     }
 
     public class StorePageResponseDTO

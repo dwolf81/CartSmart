@@ -6,9 +6,6 @@ namespace CartSmart.API.Models;
 [Table("product_attribute_enum_synonym")]
 public class ProductAttributeEnumSynonymInsertRow : BaseModel
 {
-    [Column("product_id")]
-    public long ProductId { get; set; }
-
     [Column("attribute_id")]
     public int AttributeId { get; set; }
 

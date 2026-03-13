@@ -642,7 +642,6 @@ namespace CartSmart.API.Controllers
                 {
                     var synResp = await client
                         .From<ProductAttributeEnumSynonym>()
-                        .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId)
                         .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.In, attributeIdObjects)
                         .Get();
 
@@ -849,10 +848,10 @@ namespace CartSmart.API.Controllers
             var evRow = enumResp.Models.FirstOrDefault();
             if (evRow == null) return NotFound(new { message = "Enum value not found" });
 
-            // Replace semantics: delete existing synonyms for this product+enum and insert the new set.
+            // Replace semantics: delete existing synonyms for this enum value and insert the new set.
             await client
                 .From<ProductAttributeEnumSynonym>()
-                .Where(r => r.ProductId == productId && r.EnumValueId == enumValueId)
+                .Where(r => r.EnumValueId == enumValueId)
                 .Delete();
 
             if (cleaned.Count > 0)
@@ -860,7 +859,6 @@ namespace CartSmart.API.Controllers
                 var rows = cleaned
                     .Select(s => new ProductAttributeEnumSynonymInsertRow
                     {
-                        ProductId = productId,
                         AttributeId = attributeId,
                         EnumValueId = enumValueId,
                         Synonym = s,

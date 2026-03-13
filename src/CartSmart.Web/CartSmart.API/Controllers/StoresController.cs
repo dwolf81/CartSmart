@@ -541,7 +541,7 @@ namespace CartSmart.API.Controllers
 
             var storeResp = await client
                 .From<Store>()
-                .Select("id, name, url, slug, approved, image_url")
+                .Select("id, name, url, slug, approved, image_url, description")
                 .Filter("slug", Supabase.Postgrest.Constants.Operator.Equals, slug)
                 .Filter("approved", Supabase.Postgrest.Constants.Operator.Equals, "true")
                 .Limit(1)
@@ -563,7 +563,8 @@ namespace CartSmart.API.Controllers
                     name = store.Name,
                     url = store.URL,
                     slug = store.Slug,
-                    imageUrl = store.ImageUrl
+                    imageUrl = store.ImageUrl,
+                    description = store.Description
                 },
                 storeDeals = storeDeals,
                 products = productDeals
