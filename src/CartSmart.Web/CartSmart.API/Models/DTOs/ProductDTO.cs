@@ -11,7 +11,7 @@ namespace CartSmart.API.Models.DTOs
         public string? Slug { get; set; }
         public float? MSRP { get; set; }
         public float? LowPrice { get; set; }
-        public int BrandId { get; set; }
+        public int? BrandId { get; set; }
         public int UserId { get; set; }
         public int? DealId { get; set; }
 

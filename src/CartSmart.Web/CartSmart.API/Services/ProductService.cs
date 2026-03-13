@@ -21,7 +21,7 @@ public class ProductService : IProductService
         public int Id { get; set; }
 
         [Column("brand_id")]
-        public int BrandId { get; set; }
+        public int? BrandId { get; set; }
 
         [Column("product_type_id")]
         public int ProductTypeId { get; set; }
@@ -151,7 +151,8 @@ public class ProductService : IProductService
 
         var brandIds = (productsResp.Models ?? new List<ProductIdBrandRow>())
             .Select(p => p.BrandId)
-            .Where(id => id > 0)
+            .Where(id => id.HasValue && id.Value > 0)
+            .Select(id => id!.Value)
             .Distinct()
             .ToList();
 
