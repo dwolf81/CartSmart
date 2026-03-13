@@ -390,7 +390,8 @@ public class DealService : IDealService
             RequiredQueryVars = null,
             BrandId = null,
             UpfrontCost = null,
-            UpfrontCostTermId = null
+            UpfrontCostTermId = null,
+            ScrapeModeId = 0 // None – no scraping until admin configures
         };
 
         var inserted = await _supabase.InsertAsync(newStore);

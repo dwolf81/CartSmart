@@ -254,15 +254,13 @@ namespace CartSmart.API.Controllers
 
             // Auto-close any pending manual price tasks for matched deal_products
             // (even if price unchanged, the extension verified the listing is live)
+            foreach (var dp in matched)
             {
-                var updatedDpIds = matched
-                    .Select(dp => (object)dp.Id)
-                    .ToArray();
                 try
                 {
                     var pendingTasksResp = await client
                         .From<ManualPriceTask>()
-                        .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.In, updatedDpIds)
+                        .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.Equals, dp.Id.ToString())
                         .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
                         .Get();
                     var pendingTasks = pendingTasksResp.Models ?? new List<ManualPriceTask>();
@@ -274,7 +272,8 @@ namespace CartSmart.API.Controllers
                             Status = "completed",
                             SubmittedAt = now,
                             SubmittedPrice = report.price.Value,
-                            Notes = "Auto-completed: price updated via extension"
+                            SubmittedInStock = true,
+                            Notes = "Auto-completed: price confirmed via browser extension"
                         };
                         await client
                             .From<ManualPriceTaskUpdateRow>()
