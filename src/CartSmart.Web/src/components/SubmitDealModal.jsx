@@ -435,9 +435,9 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         }))
         .filter(x => x.attributeId > 0 && x.enumValueIds.length > 0);
 
-      // Only persist variantAttributes if the user explicitly interacted with the selections.
-      // Otherwise the UI's auto-default (select all) would generate many deal_product rows.
-      const shouldSendVariantAttributes = dealAttributesTouchedRef.current === true;
+      // Always send variantAttributes when present – the backend now creates a single
+      // variant covering all selected options instead of a Cartesian-product explosion.
+      const shouldSendVariantAttributes = true;
 
       if (isStoreDeal) {
         // StoreId is required for creating store-wide deals.

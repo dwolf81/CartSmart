@@ -188,61 +188,45 @@ public class DealService : IDealService
         return ha.Equals(hb, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static List<Dictionary<int, int>> ExpandVariantCombinations(List<DealVariantAttributeSelectionDTO>? selections)
+    /// <summary>
+    /// Flatten the variant selections into a single sorted list of (attributeId, enumValueId) pairs.
+    /// This represents ONE variant that covers all the selected options — no Cartesian product.
+    /// Returns null if there are no valid selections.
+    /// </summary>
+    private static List<(int AttributeId, int EnumValueId)>? FlattenVariantSelections(
+        List<DealVariantAttributeSelectionDTO>? selections)
     {
         if (selections == null || selections.Count == 0)
-            return new();
-
-        var filtered = selections
-            .Where(s => s != null && s.AttributeId > 0)
-            .Select(s => new
-            {
-                s.AttributeId,
-                EnumValueIds = (s.EnumValueIds ?? new List<int>()).Where(v => v > 0).Distinct().ToList()
-            })
-            .Where(s => s.EnumValueIds.Count > 0)
-            .ToList();
-
-        if (filtered.Count == 0)
-            return new();
-
-        // Cartesian product across attributes (one enum value per attribute per variant)
-        var combos = new List<Dictionary<int, int>> { new() };
-        foreach (var sel in filtered)
-        {
-            var next = new List<Dictionary<int, int>>();
-            foreach (var combo in combos)
-            {
-                foreach (var enumValueId in sel.EnumValueIds)
-                {
-                    var clone = new Dictionary<int, int>(combo)
-                    {
-                        [sel.AttributeId] = enumValueId
-                    };
-                    next.Add(clone);
-                }
-            }
-            combos = next;
-        }
-
-        // Deduplicate identical combos
-        return combos
-            .GroupBy(c => string.Join("|", c.OrderBy(kvp => kvp.Key).Select(kvp => $"{kvp.Key}:{kvp.Value}")))
-            .Select(g => g.First())
-            .ToList();
-    }
-
-    private static string BuildVariantKey(Dictionary<int, int> attributeToEnumValueId)
-    {
-        return string.Join("|", attributeToEnumValueId.OrderBy(kvp => kvp.Key).Select(kvp => $"a{kvp.Key}=e{kvp.Value}"));
-    }
-
-    private async Task<long?> ResolveOrCreateVariantIdAsync(long productId, Dictionary<int, int> attributeToEnumValueId)
-    {
-        if (attributeToEnumValueId == null || attributeToEnumValueId.Count == 0)
             return null;
 
-        // Use service-role for derived-data writes/reads (variants/attributes), to avoid RLS issues.
+        var pairs = selections
+            .Where(s => s != null && s.AttributeId > 0)
+            .SelectMany(s => (s.EnumValueIds ?? new List<int>())
+                .Where(v => v > 0)
+                .Select(v => (AttributeId: s.AttributeId, EnumValueId: v)))
+            .Distinct()
+            .OrderBy(p => p.AttributeId)
+            .ThenBy(p => p.EnumValueId)
+            .ToList();
+
+        return pairs.Count > 0 ? pairs : null;
+    }
+
+    private static string BuildVariantKey(List<(int AttributeId, int EnumValueId)> pairs)
+    {
+        return string.Join("|", pairs.Select(p => $"a{p.AttributeId}=e{p.EnumValueId}"));
+    }
+
+    /// <summary>
+    /// Find an existing product_variant whose attribute rows match the given set exactly,
+    /// or create a new one. Each pair is one product_variant_attribute row.
+    /// </summary>
+    private async Task<long?> ResolveOrCreateVariantIdAsync(
+        long productId, List<(int AttributeId, int EnumValueId)> desiredPairs)
+    {
+        if (desiredPairs == null || desiredPairs.Count == 0)
+            return null;
+
         var client = _supabase.GetServiceRoleClient();
 
         var variantsResp = await client
@@ -262,23 +246,24 @@ public class DealService : IDealService
                 .Get();
 
             var attrs = attrsResp.Models ?? new List<ProductVariantAttribute>();
-            var desired = attributeToEnumValueId.OrderBy(k => k.Key).ToList();
 
             foreach (var variant in variants)
             {
-                var vAttrs = attrs
+                var vPairs = attrs
                     .Where(a => a.ProductVariantId == variant.Id && a.EnumValueId != null)
-                    .Select(a => new KeyValuePair<int, int>(a.AttributeId, a.EnumValueId!.Value))
-                    .OrderBy(kvp => kvp.Key)
+                    .Select(a => (AttributeId: a.AttributeId, EnumValueId: a.EnumValueId!.Value))
+                    .OrderBy(p => p.AttributeId)
+                    .ThenBy(p => p.EnumValueId)
                     .ToList();
 
-                if (vAttrs.Count != desired.Count)
+                if (vPairs.Count != desiredPairs.Count)
                     continue;
 
                 var match = true;
-                for (var i = 0; i < desired.Count; i++)
+                for (var i = 0; i < desiredPairs.Count; i++)
                 {
-                    if (vAttrs[i].Key != desired[i].Key || vAttrs[i].Value != desired[i].Value)
+                    if (vPairs[i].AttributeId != desiredPairs[i].AttributeId
+                        || vPairs[i].EnumValueId != desiredPairs[i].EnumValueId)
                     {
                         match = false;
                         break;
@@ -290,7 +275,7 @@ public class DealService : IDealService
             }
         }
 
-        var key = BuildVariantKey(attributeToEnumValueId);
+        var key = BuildVariantKey(desiredPairs);
         var now = DateTime.UtcNow;
 
         var newVariant = new ProductVariant
@@ -313,13 +298,13 @@ public class DealService : IDealService
             throw new Exception("Failed to create product_variant");
 
         var variantId = insertedVariant.Id;
-        foreach (var kvp in attributeToEnumValueId)
+        foreach (var pair in desiredPairs)
         {
             await client.From<ProductVariantAttribute>().Insert(new ProductVariantAttribute
             {
                 ProductVariantId = variantId,
-                AttributeId = kvp.Key,
-                EnumValueId = kvp.Value,
+                AttributeId = pair.AttributeId,
+                EnumValueId = pair.EnumValueId,
                 ValueNum = null,
                 ValueText = null,
                 ValueBool = null
@@ -1164,84 +1149,44 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         // created derived deal_product rows for direct deals on the same store.
         // Before inserting the user's deal_product, check if one already exists for this
         // deal + product + variant and update it instead of duplicating.
-        var combos = ExpandVariantCombinations(dto.VariantAttributes);
-        if (combos.Count == 0)
+        // Resolve variant: one deal = one variant (all selected options together)
+        var variantPairs = FlattenVariantSelections(dto.VariantAttributes);
+        long? variantId = variantPairs != null
+            ? await ResolveOrCreateVariantIdAsync(dto.ProductId, variantPairs)
+            : null;
+
+        var existingDp = await FindTriggerCreatedDealProductAsync(client, createdDeal.Id, dto.ProductId, variantId);
+        if (existingDp != null)
         {
-            var existingDp = await FindTriggerCreatedDealProductAsync(client, createdDeal.Id, dto.ProductId, null);
-            if (existingDp != null)
-            {
-                existingDp.Price = dto.Price ?? 0;
-                existingDp.Url = dto.Url;
-                existingDp.FreeShipping = dto.FreeShipping;
-                existingDp.ConditionId = dto.ConditionId ?? 1;
-                existingDp.Primary = true;
-                existingDp.DealStatusId = user?.Admin == true ? 2 : 1;
-                existingDp.ItemCount = dto.ItemCount ?? 1;
-                existingDp.Deleted = false;
-                await client.From<DealProduct>()
-                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, existingDp.Id.ToString())
-                    .Update(existingDp);
-            }
-            else
-            {
-                await _supabase.InsertAsync(new DealProduct
-                {
-                    DealId = createdDeal.Id,
-                    ProductId = dto.ProductId,
-                    ProductVariantId = null,
-                    Price = dto.Price ?? 0,
-                    Url = dto.Url,
-                    FreeShipping = dto.FreeShipping,
-                    ConditionId = dto.ConditionId ?? 1,
-                    CreatedAt = DateTime.UtcNow,
-                    Deleted = false,
-                    Primary = true,
-                    DealStatusId = user?.Admin == true ? 2 : 1,
-                    ItemCount = dto.ItemCount ?? 1
-                });
-            }
+            existingDp.Price = dto.Price ?? 0;
+            existingDp.Url = dto.Url;
+            existingDp.FreeShipping = dto.FreeShipping;
+            existingDp.ConditionId = dto.ConditionId ?? 1;
+            existingDp.Primary = true;
+            existingDp.DealStatusId = user?.Admin == true ? 2 : 1;
+            existingDp.ItemCount = dto.ItemCount ?? 1;
+            existingDp.Deleted = false;
+            await client.From<DealProduct>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, existingDp.Id.ToString())
+                .Update(existingDp);
         }
         else
         {
-            for (var i = 0; i < combos.Count; i++)
+            await _supabase.InsertAsync(new DealProduct
             {
-                var combo = combos[i];
-                var variantId = await ResolveOrCreateVariantIdAsync(dto.ProductId, combo);
-
-                var existingDp = await FindTriggerCreatedDealProductAsync(client, createdDeal.Id, dto.ProductId, variantId);
-                if (existingDp != null)
-                {
-                    existingDp.Price = dto.Price ?? 0;
-                    existingDp.Url = dto.Url;
-                    existingDp.FreeShipping = dto.FreeShipping;
-                    existingDp.ConditionId = dto.ConditionId ?? 1;
-                    existingDp.Primary = i == 0;
-                    existingDp.DealStatusId = user?.Admin == true ? 2 : 1;
-                    existingDp.ItemCount = dto.ItemCount ?? 1;
-                    existingDp.Deleted = false;
-                    await client.From<DealProduct>()
-                        .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, existingDp.Id.ToString())
-                        .Update(existingDp);
-                }
-                else
-                {
-                    await _supabase.InsertAsync(new DealProduct
-                    {
-                        DealId = createdDeal.Id,
-                        ProductId = dto.ProductId,
-                        ProductVariantId = variantId,
-                        Price = dto.Price ?? 0,
-                        Url = dto.Url,
-                        FreeShipping = dto.FreeShipping,
-                        ConditionId = dto.ConditionId ?? 1,
-                        CreatedAt = DateTime.UtcNow,
-                        Deleted = false,
-                        Primary = i == 0,
-                        DealStatusId = user?.Admin == true ? 2 : 1,
-                        ItemCount = dto.ItemCount ?? 1
-                    });
-                }
-            }
+                DealId = createdDeal.Id,
+                ProductId = dto.ProductId,
+                ProductVariantId = variantId,
+                Price = dto.Price ?? 0,
+                Url = dto.Url,
+                FreeShipping = dto.FreeShipping,
+                ConditionId = dto.ConditionId ?? 1,
+                CreatedAt = DateTime.UtcNow,
+                Deleted = false,
+                Primary = true,
+                DealStatusId = user?.Admin == true ? 2 : 1,
+                ItemCount = dto.ItemCount ?? 1
+            });
         }
 
         //If this is an admin user run "f_update_product_best_deal" after inserting the deal
@@ -1655,54 +1600,21 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         var dealUpdate = await _supabase.UpdateAsync(deal);
         if (dealUpdate == null) return null;
 
-        var combos = ExpandVariantCombinations(dto.VariantAttributes);
-        if (combos.Count == 0)
-        {
-            // Update the specific deal_product row being edited
-            if (dto.Price.HasValue) dealProduct.Price = dto.Price.Value;
-            dealProduct.Url = dto.Url;
-            dealProduct.FreeShipping = dto.FreeShipping;
-            dealProduct.ConditionId = dto.ConditionId ?? dealProduct.ConditionId;
-            dealProduct.DealStatusId = u?.Admin == true ? 2 : 5;
-            if (dto.ItemCount.HasValue) dealProduct.ItemCount = dto.ItemCount.Value;
-            await _supabase.UpdateAsync(dealProduct);
-        }
-        else
-        {
-            // Soft-delete all existing active deal_product rows for this deal/product, then insert new variant-resolved rows.
-            var dealProducts = await _supabase.GetAllAsync<DealProduct>();
-            var existing = dealProducts
-                .Where(x => x.DealId == deal.Id && x.ProductId == dto.ProductId && !x.Deleted)
-                .ToList();
+        // Resolve variant: one deal = one variant (all selected options together)
+        var variantPairs = FlattenVariantSelections(dto.VariantAttributes);
+        long? newVariantId = variantPairs != null
+            ? await ResolveOrCreateVariantIdAsync(dto.ProductId, variantPairs)
+            : null;
 
-            foreach (var row in existing)
-            {
-                row.Deleted = true;
-                await _supabase.UpdateAsync(row);
-            }
-
-            for (var i = 0; i < combos.Count; i++)
-            {
-                var combo = combos[i];
-                var variantId = await ResolveOrCreateVariantIdAsync(dto.ProductId, combo);
-
-                await _supabase.InsertAsync(new DealProduct
-                {
-                    DealId = deal.Id,
-                    ProductId = dto.ProductId,
-                    ProductVariantId = variantId,
-                    Price = dto.Price ?? 0,
-                    Url = dto.Url,
-                    FreeShipping = dto.FreeShipping,
-                    ConditionId = dto.ConditionId ?? 1,
-                    CreatedAt = DateTime.UtcNow,
-                    Deleted = false,
-                    Primary = i == 0,
-                    DealStatusId = u?.Admin == true ? 2 : 5,
-                    ItemCount = dto.ItemCount ?? 1
-                });
-            }
-        }
+        // Update the deal_product row, switching variant if selections changed
+        if (dto.Price.HasValue) dealProduct.Price = dto.Price.Value;
+        dealProduct.Url = dto.Url;
+        dealProduct.FreeShipping = dto.FreeShipping;
+        dealProduct.ConditionId = dto.ConditionId ?? dealProduct.ConditionId;
+        dealProduct.DealStatusId = u?.Admin == true ? 2 : 5;
+        if (dto.ItemCount.HasValue) dealProduct.ItemCount = dto.ItemCount.Value;
+        if (variantPairs != null) dealProduct.ProductVariantId = newVariantId;
+        await _supabase.UpdateAsync(dealProduct);
 
         //If this is an admin user run "f_update_product_best_deal" after inserting the deal
         if (u?.Admin == true)
