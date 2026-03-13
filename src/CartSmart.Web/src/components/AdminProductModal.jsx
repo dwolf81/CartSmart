@@ -393,6 +393,8 @@ export default function AdminProductModal({
         .map((s) => (s || '').trim())
         .filter((s) => !!s);
 
+      if (!adminBrandId) throw new Error('Brand is required');
+
       if (internalMode === 'add') {
         if (!productTypeId) throw new Error('Missing product type');
         const res = await authFetch(`${API_URL}/api/products/admin`, {
@@ -904,14 +906,15 @@ export default function AdminProductModal({
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Brand</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Brand *</label>
                   <select
                     value={adminBrandId}
                     onChange={(e) => setAdminBrandId(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-md text-sm"
+                    className={`w-full px-3 py-2 border rounded-md text-sm ${!adminBrandId ? 'border-red-300' : ''}`}
                     disabled={adminEditSaving}
+                    required
                   >
-                    <option value="">(No brand)</option>
+                    <option value="">Select a brand…</option>
                     {adminBrands.map((b) => (
                       <option key={b.id} value={String(b.id)}>
                         {b.name}

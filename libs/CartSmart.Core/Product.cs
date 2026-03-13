@@ -30,7 +30,7 @@ namespace CartSmart.API.Models;
         public float? LowPrice { get; set; }     
 
         [Column("brand_id")]
-        public int BrandId { get; set; }
+        public int? BrandId { get; set; }
 
         [Column("user_id")]
         public int UserId { get; set; }
