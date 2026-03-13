@@ -153,6 +153,8 @@ const ProductPage = () => {
 
   // track locally-flagged deals so UI updates immediately
   const [flaggedDeals, setFlaggedDeals] = useState({});
+  // track locally-hidden deals so UI updates immediately
+  const [hiddenDeals, setHiddenDeals] = useState({});
   const [flagReasonId, setFlagReasonId] = useState(null);
   const [flagComment, setFlagComment] = useState('');
   const [flagSubmitting, setFlagSubmitting] = useState(false);
@@ -206,6 +208,13 @@ const ProductPage = () => {
       const next = { ...prev };
       batch.forEach(d => {
         if (d.user_flagged && d.deal_product_id) next[d.deal_product_id] = true;
+      });
+      return next;
+    });
+    setHiddenDeals(prev => {
+      const next = { ...prev };
+      batch.forEach(d => {
+        if (d.user_hidden && d.deal_id) next[d.deal_id] = true;
       });
       return next;
     });
@@ -628,6 +637,54 @@ const ProductPage = () => {
     }
   };
 
+  const handleHideDeal = async (dealId) => {
+    if (!isAuthenticated) {
+      navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
+      return;
+    }
+    if (!dealId || hiddenDeals[dealId]) return;
+    try {
+      const resp = await fetch(`${API_URL}/api/deals/hide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ dealId })
+      });
+      if (resp.ok) {
+        setHiddenDeals(prev => ({ ...prev, [dealId]: true }));
+        // Clear expanded cache so next expand refetches fresh data
+        expandedStoreCacheRef.current.clear();
+        // Refetch deals so the server returns the next-best deal per store
+        try {
+          if (dealFilters.storeId) {
+            const expanded = await fetchDeals2({ storeId: dealFilters.storeId });
+            setExpandedStoreDealsById({ [dealFilters.storeId]: expanded });
+            setCollapsedStoreDeals(expanded.length ? [expanded[0]] : []);
+            seedFlaggedDealsFromBatch(expanded);
+          } else {
+            const collapsed = await fetchDeals2({ storeId: null });
+            setCollapsedStoreDeals(collapsed);
+            seedFlaggedDealsFromBatch(collapsed);
+            // Re-expand any stores that were already expanded
+            if (expandedStoreIds.length > 0) {
+              const nextById = {};
+              for (const sid of expandedStoreIds) {
+                const rows = await fetchDeals2({ storeId: sid });
+                nextById[sid] = rows;
+                seedFlaggedDealsFromBatch(rows);
+              }
+              setExpandedStoreDealsById(nextById);
+            }
+          }
+        } catch (e) {
+          console.error('Failed to refresh deals after hide', e);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to hide deal', e);
+    }
+  };
+
   // Add this function to handle opening the flag modal
   const openFlagModal = ({ dealId, dealProductId = null }) => {
     if (!isAuthenticated) {
@@ -967,6 +1024,10 @@ const ProductPage = () => {
   };
 
   const groupDealsForDisplay = (rows) => {
+    // NOTE: hidden-deal filtering is handled server-side by f_get_product_deals_2.
+    // Do NOT filter by hiddenDeals here — in collapsed mode the backend returns only
+    // one deal per store (rn=1). Removing it client-side would blank the whole store
+    // instead of surfacing the next-best deal (which only the server can provide).
     const list = Array.isArray(rows) ? rows : [];
     const groups = new Map();
 
@@ -2448,19 +2509,37 @@ const ProductPage = () => {
                                   </Link>
                                 </div>
 
-                                <button
-                                  onClick={() => openFlagModal({ dealId: deal.deal_id, dealProductId: deal.deal_product_id })}
-                                  disabled={isDealFlagged(deal)}
-                                  title={isDealFlagged(deal) ? 'Deal flagged' : 'Flag this deal'}
-                                  aria-label={isDealFlagged(deal) ? 'Deal flagged' : 'Flag this deal'}
-                                  className={
-                                    isDealFlagged(deal)
-                                      ? 'text-sm text-red-600 cursor-default select-none no-underline'
-                                      : BUTTON_STYLES.flagLink
-                                  }
-                                >
-                                  {isDealFlagged(deal) ? 'Deal Flagged' : 'Not working?'}
-                                </button>
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    onClick={() => handleHideDeal(deal.deal_id)}
+                                    disabled={!!hiddenDeals[deal.deal_id]}
+                                    title={hiddenDeals[deal.deal_id] ? 'Deal hidden' : 'Hide this deal'}
+                                    aria-label={hiddenDeals[deal.deal_id] ? 'Deal hidden' : 'Hide this deal'}
+                                    className={
+                                      hiddenDeals[deal.deal_id]
+                                        ? 'text-slate-400 cursor-default select-none'
+                                        : 'text-slate-400 hover:text-slate-600 transition-colors'
+                                    }
+                                  >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                                      <path fillRule="evenodd" d="M3.707 2.293a1 1 0 00-1.414 1.414l14 14a1 1 0 001.414-1.414l-1.473-1.473A10.014 10.014 0 0019.542 10C18.268 5.943 14.478 3 10 3a9.958 9.958 0 00-4.512 1.074l-1.78-1.781zm4.261 4.26l1.514 1.515a2.003 2.003 0 012.45 2.45l1.514 1.514a4 4 0 00-5.478-5.478z" clipRule="evenodd" />
+                                      <path d="M12.454 16.697L9.75 13.992a4 4 0 01-3.742-3.741L2.335 6.578A9.98 9.98 0 00.458 10c1.274 4.057 5.065 7 9.542 7 .847 0 1.669-.105 2.454-.303z" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onClick={() => openFlagModal({ dealId: deal.deal_id, dealProductId: deal.deal_product_id })}
+                                    disabled={isDealFlagged(deal)}
+                                    title={isDealFlagged(deal) ? 'Deal flagged' : 'Flag this deal'}
+                                    aria-label={isDealFlagged(deal) ? 'Deal flagged' : 'Flag this deal'}
+                                    className={
+                                      isDealFlagged(deal)
+                                        ? 'text-sm text-red-600 cursor-default select-none no-underline'
+                                        : BUTTON_STYLES.flagLink
+                                    }
+                                  >
+                                    {isDealFlagged(deal) ? 'Deal Flagged' : 'Not working?'}
+                                  </button>
+                                </div>
                               </div>
                             )}
                           </div>

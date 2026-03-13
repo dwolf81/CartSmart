@@ -318,6 +318,42 @@ namespace CartSmart.API.Controllers
             }
         }
 
+        [HttpPost("hide")]
+        [Authorize]
+        public async Task<IActionResult> HideDeal([FromBody] HideDealRequest request)
+        {
+            if (request.DealId <= 0)
+                return BadRequest(new { message = "dealId is required." });
+
+            try
+            {
+                await _dealService.HideDealAsync(request.DealId);
+                return Ok(new { message = "Deal hidden" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("unhide")]
+        [Authorize]
+        public async Task<IActionResult> UnhideDeal([FromBody] HideDealRequest request)
+        {
+            if (request.DealId <= 0)
+                return BadRequest(new { message = "dealId is required." });
+
+            try
+            {
+                await _dealService.UnhideDealAsync(request.DealId);
+                return Ok(new { message = "Deal unhidden" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
         // New endpoint: supports store-deal flags (deal_id only) and always records deal_id.
         [HttpPost("flag")]
         [Authorize]
@@ -462,5 +498,10 @@ namespace CartSmart.API.Controllers
         public long DealId { get; set; }
         public long? DealProductId { get; set; }
         public bool DeleteDeal { get; set; }
+    }
+
+    public class HideDealRequest
+    {
+        public long DealId { get; set; }
     }
 }

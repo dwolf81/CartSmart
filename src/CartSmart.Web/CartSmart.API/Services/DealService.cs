@@ -613,6 +613,15 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         var currentUserId = _authService.GetCurrentUserId();
         var client = _supabase.GetClient();
 
+        // Use the authenticated user's id so the SQL function can:
+        // 1) show the user's own pending deals
+        // 2) exclude deals the user has hidden
+        int? effectiveUserId = null;
+        if (currentUserId != null && int.TryParse(currentUserId, out var parsed) && parsed > 0)
+            effectiveUserId = parsed;
+        if (userId.HasValue && userId.Value > 0)
+            effectiveUserId = userId.Value;
+
         // Normalize filters:
         // - remove empty / invalid entries to avoid sending a 1-item "blank" array
         // - serialize as snake_case dictionaries so RPC jsonb matches SQL expectations
@@ -635,7 +644,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             .Rpc<List<DealDisplayDTO>>("f_get_product_deals_2", new
             {
                 p_product_id = productId,
-                p_user_id = userId,
+                p_user_id = effectiveUserId,
                 p_store_id = storeId,
                 p_deal_type_id = dealTypeId,
                 p_condition_id = conditionId,
@@ -664,6 +673,25 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
                 foreach (var d in deals)
                     d.user_flagged = d.deal_product_id.HasValue && flaggedSet.Contains(d.deal_product_id.Value);
+            }
+
+            // Annotate which deals the user has hidden (SQL already filters them out, but
+            // if the user's own deal is hidden the flag still matters for UI toggling)
+            var dealIds = deals.Select(d => d.deal_id).Distinct().ToArray();
+            if (dealIds.Length > 0)
+            {
+                var svc = _supabase.GetServiceRoleClient();
+                var hiddenResp = await svc
+                    .From<HiddenDeal>()
+                    .Filter("user_id", Supabase.Postgrest.Constants.Operator.Equals, me.ToString())
+                    .Select("deal_id")
+                    .Get();
+                var hiddenDealIds = (hiddenResp.Models ?? new List<HiddenDeal>())
+                    .Select(h => h.DealId)
+                    .ToHashSet();
+
+                foreach (var d in deals)
+                    d.user_hidden = hiddenDealIds.Contains(d.deal_id);
             }
         }
 
@@ -1839,6 +1867,50 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         
 
         return true;
+    }
+
+    public async Task HideDealAsync(long dealId)
+    {
+        var userId = _authService.GetCurrentUserId();
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new InvalidOperationException("Not authenticated");
+
+        var me = Convert.ToInt32(userId);
+        var client = _supabase.GetServiceRoleClient();
+
+        // Check for existing row to avoid duplicate key violation
+        var existing = await client
+            .From<HiddenDeal>()
+            .Filter("user_id", Supabase.Postgrest.Constants.Operator.Equals, me.ToString())
+            .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+            .Limit(1)
+            .Get();
+
+        if (existing.Models == null || existing.Models.Count == 0)
+        {
+            await client.From<HiddenDeal>().Insert(new HiddenDeal
+            {
+                UserId = me,
+                DealId = dealId,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+    }
+
+    public async Task UnhideDealAsync(long dealId)
+    {
+        var userId = _authService.GetCurrentUserId();
+        if (string.IsNullOrWhiteSpace(userId))
+            throw new InvalidOperationException("Not authenticated");
+
+        var me = Convert.ToInt32(userId);
+        var client = _supabase.GetServiceRoleClient();
+
+        await client
+            .From<HiddenDeal>()
+            .Filter("user_id", Supabase.Postgrest.Constants.Operator.Equals, me.ToString())
+            .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+            .Delete();
     }
 
     public async Task<bool> ReviewDealAsync(int dealId, int? dealProductId, int dealStatusId, int? dealIssueTypeId, string? comment)

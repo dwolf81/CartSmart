@@ -62,6 +62,7 @@ namespace CartSmart.API.Models.DTOs
         public DateTime created_at { get; set; }
         public DateTime? expiration_date { get; set; }
         public bool user_flagged { get; set; }  // default false if anonymous
+        public bool user_hidden { get; set; }  // default false if anonymous
         public string? review_comment { get; set; } // Review comment left by reviewer
         public int? review_deal_status_id { get; set; } // Review deal status left by reviewer        
         public string? store_url { get; set; } // store url

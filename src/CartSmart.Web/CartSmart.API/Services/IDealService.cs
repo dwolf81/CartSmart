@@ -35,6 +35,8 @@ namespace CartSmart.API.Services
         Task<bool> DeleteDealAsync(int id);
         Task<bool> AdminDeleteAsync(long dealId, long? dealProductId, bool deleteDeal);
         Task<bool> FlagDealAsync(long dealId, long? dealProductId, int? dealIssueTypeId, string? comments);
+        Task HideDealAsync(long dealId);
+        Task UnhideDealAsync(long dealId);
         Task<bool> ReviewDealAsync(int dealId, int? dealProductId, int dealStatusId, int? dealIssueTypeId, string? comment);
     }
 }
