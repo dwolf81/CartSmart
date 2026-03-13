@@ -556,6 +556,20 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             if (deal?.StoreId != null)
                 store = await repoImpl.GetStoreByIdAsync(deal.StoreId, ct);
 
+            // Fallback: if store couldn't be loaded by id (e.g. deserialization failure),
+            // resolve from the deal product URL so we still have scrape config.
+            if (store == null && !string.IsNullOrWhiteSpace(url))
+            {
+                _logger.LogWarning(
+                    "Store lookup by id returned null for deal_product {DealProductId} (deal.store_id={StoreId}). Attempting URL-based fallback.",
+                    dealProduct.Id, deal?.StoreId);
+                store = await repoImpl.GetStoreByUrlDomainAsync(url, ct);
+                if (store != null)
+                    _logger.LogInformation(
+                        "URL-based store fallback resolved store {StoreId} (scrape_mode_id={ScrapeModeId}) for deal_product {DealProductId}.",
+                        store.Id, store.ScrapeModeId, dealProduct.Id);
+            }
+
             // Expire deal if its expiration_date is past now
             var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
             if (deal != null && deal.ExpirationDate.HasValue && deal.ExpirationDate.Value < nowUtc && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusExpired)

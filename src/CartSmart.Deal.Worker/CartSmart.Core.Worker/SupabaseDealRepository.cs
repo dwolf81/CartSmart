@@ -523,6 +523,37 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         return resp.Models.FirstOrDefault();
     }
 
+    /// <summary>
+    /// Fallback: find a store whose URL domain matches the given deal-product URL.
+    /// Used when the id-based lookup returns null (e.g. deserialization failure).
+    /// </summary>
+    public async Task<Store?> GetStoreByUrlDomainAsync(string url, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+        string host;
+        try
+        {
+            var uri = new Uri(url);
+            host = uri.Host.Replace("www.", "", StringComparison.OrdinalIgnoreCase).ToLowerInvariant();
+        }
+        catch { return null; }
+        if (string.IsNullOrEmpty(host)) return null;
+
+        // Fetch all stores (small table, typically < 200 rows)
+        var resp = await _client.From<Store>().Get(ct);
+        return resp.Models.FirstOrDefault(s =>
+        {
+            if (string.IsNullOrWhiteSpace(s.URL)) return false;
+            try
+            {
+                var storeUrl = s.URL.Contains("://") ? s.URL : $"https://{s.URL}";
+                var storeHost = new Uri(storeUrl).Host.Replace("www.", "", StringComparison.OrdinalIgnoreCase).ToLowerInvariant();
+                return storeHost == host;
+            }
+            catch { return false; }
+        });
+    }
+
     public async Task<User?> GetUserByIdAsync(int userId, CancellationToken ct)
     {
         var resp = await _client.From<User>()
