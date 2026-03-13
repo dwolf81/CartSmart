@@ -291,6 +291,15 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         var url = (dealProduct.Url ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(url)) return null;
 
+        // Skip if the deal product was recently confirmed by another source (extension, API, admin).
+        // This prevents re-creating tasks that were just closed because the scraper still can't access the page.
+        if (dealProduct.LastCheckedAt.HasValue)
+        {
+            var hoursSinceCheck = (_timeProvider.GetUtcNow().UtcDateTime - dealProduct.LastCheckedAt.Value).TotalHours;
+            if (hoursSinceCheck < 48 && (dealProduct.ErrorCount ?? 0) == 0)
+                return null;
+        }
+
         // De-dupe: if a pending task already exists, reuse it.
         try
         {

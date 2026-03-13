@@ -666,6 +666,14 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
     </code>
                                 </div>
                               )}
+                              {!deal.coupon_code && deal.deal_type_id === 2 && (
+                                <div className="text-sm mb-2">
+                                  <span className="text-amber-700 font-medium">No coupon code required</span>
+                                  {deal.additional_details && (
+                                    <span className="text-gray-600"> — {deal.additional_details}</span>
+                                  )}
+                                </div>
+                              )}
  
                 {deal.external_offer_url && (
                   <div className="text-sm mb-2">
@@ -697,7 +705,7 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
                   ) : 'N/A'}
                 </div>    
 
-                              {deal.additional_details && (
+                              {deal.additional_details && (deal.coupon_code || deal.deal_type_id !== 2) && (
                                 <div className="text-sm  mb-2">
                                   <span className="font-medium">Additional Details:</span> {deal.additional_details}
                                 </div>
@@ -812,8 +820,16 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
     </code>
                                         </div>
                                       )}
+                                      {!step.coupon_code && step.deal_type_id === 2 && (
+                                        <div className="text-sm mb-1">
+                                          <span className="text-amber-700 font-medium">No coupon code required</span>
+                                          {step.additional_details && (
+                                            <span className="text-gray-600"> — {step.additional_details}</span>
+                                          )}
+                                        </div>
+                                      )}
               
-                                      {step.additional_details && (
+                                      {step.additional_details && (step.coupon_code || step.deal_type_id !== 2) && (
                                         <div className="text-sm mb-1">
                                           <span className="font-medium">Additional Details:</span> {step.additional_details}
                                         </div>

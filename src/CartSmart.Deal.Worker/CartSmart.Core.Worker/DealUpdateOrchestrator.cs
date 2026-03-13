@@ -410,6 +410,43 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         {
                             await repoImpl.AppendPriceHistoryForDealProductAsync(existing.Id, listing.Price.Value, listing.Currency, refreshNow, ct);
                             existing.Price = listing.Price.Value;
+
+                            // Update discount on the parent deal when price changes for a primary deal_product
+                            if (existing.Primary)
+                            {
+                                var existingDealForDiscount = await _repo.GetDealByIdAsync(existing.DealId, ct);
+                                if (existingDealForDiscount != null)
+                                {
+                                    var newDiscount = ComputeDiscountPercent(msrp, listing.Price.Value,
+                                        product?.CountEnabled == true, product?.DefaultCount ?? 1, existing.ItemCount);
+                                    if (existingDealForDiscount.DiscountPercent != newDiscount)
+                                    {
+                                        existingDealForDiscount.DiscountPercent = newDiscount;
+                                        await _repo.UpdateDealsAsync(new[] { existingDealForDiscount }, ct);
+                                    }
+                                }
+                            }
+                        }
+                        // Reactivate if the listing appeared again during ingest but was
+                        // previously marked Expired/Sold/OutOfStock (skip if deleted).
+                        if (!existing.Deleted
+                            && (existing.DealStatusId == SupabaseDealRepository.DealStatusExpired
+                                || existing.DealStatusId == SupabaseDealRepository.DealStatusSold
+                                || existing.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock))
+                        {
+                            existing.DealStatusId = SupabaseDealRepository.DealStatusActive;
+                            var existingDeal = await _repo.GetDealByIdAsync(existing.DealId, ct);
+                            if (existingDeal != null && !existingDeal.Deleted
+                                && (existingDeal.DealStatusId == SupabaseDealRepository.DealStatusExpired
+                                    || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusSold
+                                    || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock))
+                            {
+                                existingDeal.DealStatusId = SupabaseDealRepository.DealStatusActive;
+                                await _repo.UpdateDealsAsync(new[] { existingDeal }, ct);
+                            }
+                            _logger.LogInformation(
+                                "Reactivated deal_product {Id} (deal_id={DealId}) — listing available again during ingest.",
+                                existing.Id, existing.DealId);
                         }
                         existing.LastCheckedAt = refreshNow;
                         existing.NextCheckAt = refreshNow.AddHours(6);
@@ -446,7 +483,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     FreeShipping = listing.FreeShipping ?? false,
                     CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
                     NextCheckAt = _timeProvider.GetUtcNow().UtcDateTime.AddHours(6),
-                    ItemCount = itemCount
+                    ItemCount = itemCount,
+                    Primary = true
                 };
                 await repoImpl.CreateDealProductAsync(dp, ct);
                 await _repo.UpdateProductBestDealAsync(q.ProductId, ct);
@@ -705,6 +743,22 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 priceChanged = true;
                 oldPriceForPropagation = oldPrice;
                 await _repo.AppendPriceHistoryAsync(dealProduct.DealId, data.Price.Value, data.Currency, _timeProvider.GetUtcNow().UtcDateTime, ct);
+
+                // Update discount on the parent deal when price changes for a primary deal_product
+                if (dealProduct.Primary && deal != null)
+                {
+                    var refreshProduct = await repoImpl.GetProductByIdAsync(dealProduct.ProductId, ct);
+                    if (refreshProduct != null)
+                    {
+                        var newDiscount = ComputeDiscountPercent(refreshProduct.MSRP, data.Price.Value,
+                            refreshProduct.CountEnabled, refreshProduct.DefaultCount, dealProduct.ItemCount);
+                        if (deal.DiscountPercent != newDiscount)
+                        {
+                            deal.DiscountPercent = newDiscount;
+                            await _repo.UpdateDealsAsync(new[] { deal }, ct);
+                        }
+                    }
+                }
             }
             dealProduct.LastCheckedAt = _timeProvider.GetUtcNow().UtcDateTime;
             await repoImpl.UpdateDealProductAsync(dealProduct, ct);

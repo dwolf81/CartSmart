@@ -451,6 +451,14 @@ const DEAL_TYPE_META = {
                     </code>
                   </div>
                 )}
+                {!deal.coupon_code && deal.deal_type_id === 2 && (
+                  <div className="text-sm mb-2">
+                    <span className="text-amber-700 font-medium">No coupon code required</span>
+                    {deal.additional_details && (
+                      <span className="text-gray-600"> — {deal.additional_details}</span>
+                    )}
+                  </div>
+                )}
                 <div className="text-sm mb-2">
                   <span className="font-medium">{isStoreDeal ? 'Store URL:' : 'Product URL:'}</span>{' '}
                   {productOrStoreUrl ? (
@@ -479,7 +487,7 @@ const DEAL_TYPE_META = {
                     </a>
                   </div>
                 )}                
-                {deal.additional_details && (
+                {deal.additional_details && (deal.coupon_code || deal.deal_type_id !== 2) && (
                   <div className="text-sm  mb-2">
                     <span className="font-medium">Additional Details:</span> {deal.additional_details}
                   </div>
@@ -595,7 +603,15 @@ const DEAL_TYPE_META = {
             </code>
           </div>
         )}
-        {step.additional_details && (
+        {!step.coupon_code && step.deal_type_id === 2 && (
+          <div className="text-sm mb-1">
+            <span className="text-amber-700 font-medium">No coupon code required</span>
+            {step.additional_details && (
+              <span className="text-gray-600"> — {step.additional_details}</span>
+            )}
+          </div>
+        )}
+        {step.additional_details && (step.coupon_code || step.deal_type_id !== 2) && (
           <div className="text-sm mb-1">
             <span className="font-medium">Additional Details:</span> {step.additional_details}
           </div>

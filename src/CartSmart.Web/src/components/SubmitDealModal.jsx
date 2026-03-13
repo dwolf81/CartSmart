@@ -24,6 +24,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
     externalOfferUrl: '',
     additionalDetails: '',
     couponCode: '',
+    noCouponCodeRequired: false,
     condition: 'new',
     discountPercent: '',
     expirationDate: '',
@@ -217,6 +218,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         externalOfferUrl: deal.external_offer_url || deal.externalOfferUrl || '',
         additionalDetails: deal.additional_details || '',
         couponCode: deal.coupon_code || deal.couponCode || '',
+        noCouponCodeRequired: (deal.deal_type_id || deal.dealTypeId) === 2 && !(deal.coupon_code || deal.couponCode),
         condition: 'new',
         discountPercent: deal.discount_percent != null
           ? Math.round(deal.discount_percent)
@@ -237,6 +239,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
       externalOfferUrl: deal.external_offer_url || deal.externalOfferUrl || '',
       additionalDetails: deal.additional_details || '',
       couponCode: deal.coupon_code || deal.couponCode || '',
+      noCouponCodeRequired: (deal.deal_type_id || deal.dealTypeId) === 2 && !(deal.coupon_code || deal.couponCode),
       condition: mapCondition(deal.condition_id || deal.conditionId),
       discountPercent: deal.discount_percent != null
         ? Math.round(deal.discount_percent)
@@ -448,7 +451,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
           storeId: effectiveStoreId ?? 0,
           dealTypeId,
           additionalDetails: formData.additionalDetails || '',
-          couponCode: formData.dealType === 'coupon' ? formData.couponCode : null,
+          couponCode: formData.dealType === 'coupon' && !formData.noCouponCodeRequired ? formData.couponCode : null,
           discountPercent: formData.discountPercent === '' ? null : parseInt(formData.discountPercent, 10),
           expirationDate: formData.expirationDate || null,
           externalOfferUrl: formData.dealType === 'external' ? formData.externalOfferUrl : null,
@@ -520,7 +523,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         url: formData.url,
         externalOfferUrl: formData.dealType === 'external' ? formData.externalOfferUrl : undefined,
         additionalDetails: formData.additionalDetails || '',
-        couponCode: formData.dealType === 'coupon' ? formData.couponCode : null,
+        couponCode: formData.dealType === 'coupon' && !formData.noCouponCodeRequired ? formData.couponCode : null,
         conditionId,
         discountPercent: formData.discountPercent === '' ? null : parseFloat(formData.discountPercent),
         expirationDate: formData.expirationDate || null,
@@ -609,7 +612,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
       label: 'Coupon Deal',
       icon: <FaTicketAlt className="inline mr-1 text-emerald-600" title="Coupon Deal" />,
       color: 'text-emerald-700',
-      desc: 'Use a coupon code for a discount.'
+      desc: 'Use a coupon for a discount.'
     },
     external: {
       label: 'External Offer',
@@ -624,7 +627,8 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
   const isUsedOrRefurb = formData.condition === 'used' || formData.condition === 'refurbished';
 
   // REQUIRED ONLY for eBay listings OR used/refurbished items
-  const isAdditionalDetailsRequired = isEbay || isUsedOrRefurb;
+  const isCouponNoCode = formData.dealType === 'coupon' && formData.noCouponCodeRequired;
+  const isAdditionalDetailsRequired = isEbay || isUsedOrRefurb || isCouponNoCode;
 
   const isAdditionalDetailsInvalid =
     isAdditionalDetailsRequired &&
@@ -692,17 +696,39 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
             {/* Coupon Code (conditional) */}
             {formData.dealType === 'coupon' && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Coupon Code
-                </label>
-                <input
-                  type="text"
-                  name="couponCode"
-                  value={formData.couponCode}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  required
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Coupon Code
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={formData.noCouponCodeRequired}
+                      onChange={(e) => setFormData(p => ({
+                        ...p,
+                        noCouponCodeRequired: e.target.checked,
+                        couponCode: e.target.checked ? '' : p.couponCode,
+                      }))}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    No code required
+                  </label>
+                </div>
+                {!formData.noCouponCodeRequired && (
+                  <input
+                    type="text"
+                    name="couponCode"
+                    value={formData.couponCode}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    required
+                  />
+                )}
+                {formData.noCouponCodeRequired && (
+                  <p className="text-xs text-amber-600 mt-1">
+                    Describe how to get the discount in Additional Details below (e.g. first-time order, newsletter signup, loyalty points).
+                  </p>
+                )}
               </div>
             )}
             {/* External Offer URL only for external offer */}
@@ -888,15 +914,19 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
                   isAdditionalDetailsInvalid ? 'border-red-400' : 'border-gray-300'
                 }`}
                 placeholder={
-                  isEbay
-                    ? 'eBay listing: include condition, specs, defects, seller notes...'
-                    : 'Add context (optional details, limitations, variant, store notes)...'
+                  isCouponNoCode
+                    ? 'Explain how to get the discount (e.g. first-time order, newsletter signup, loyalty points)...'
+                    : isEbay
+                      ? 'eBay listing: include condition, specs, defects, seller notes...'
+                      : 'Add context (optional details, limitations, variant, store notes)...'
                 }
                 required={isAdditionalDetailsRequired}
               />
               {isAdditionalDetailsRequired && (
                 <p className={`mt-1 text-xs ${isAdditionalDetailsInvalid ? 'text-red-600' : 'text-gray-500'}`}>
-                  Required only for eBay listings or used/refurbished items.
+                  {isCouponNoCode
+                    ? 'Required when no coupon code is provided.'
+                    : 'Required only for eBay listings or used/refurbished items.'}
                 </p>
               )}
               {isEbay && (

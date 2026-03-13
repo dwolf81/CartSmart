@@ -100,6 +100,35 @@ public class DealService : IDealService
         }
     }
 
+    /// <summary>
+    /// Check if the store-wide deal insert trigger already created a deal_product for this
+    /// deal + product + variant. Returns the existing row so the caller can update it
+    /// instead of inserting a duplicate.
+    /// </summary>
+    private async Task<DealProduct?> FindTriggerCreatedDealProductAsync(
+        Supabase.Client client, int dealId, int productId, long? productVariantId)
+    {
+        try
+        {
+            var query = client.From<DealProduct>()
+                .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Limit(1);
+
+            if (productVariantId.HasValue)
+                query = query.Filter("product_variant_id", Supabase.Postgrest.Constants.Operator.Equals, productVariantId.Value.ToString());
+            else
+                query = query.Filter("product_variant_id", Supabase.Postgrest.Constants.Operator.Is, "null");
+
+            var resp = await query.Get();
+            return resp.Models?.FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private async Task TryApplyStackedDealProductsForStoreAsync(bool isAdmin, int? dealTypeId, int dealId)
     {
         if (!isAdmin) return;
@@ -1130,24 +1159,46 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
         var createdDeal = await _supabase.InsertAsync(deal);
 
+        // The deal insert trigger (for store_wide coupon/external deals) may have already
+        // created derived deal_product rows for direct deals on the same store.
+        // Before inserting the user's deal_product, check if one already exists for this
+        // deal + product + variant and update it instead of duplicating.
         var combos = ExpandVariantCombinations(dto.VariantAttributes);
         if (combos.Count == 0)
         {
-            await _supabase.InsertAsync(new DealProduct
+            var existingDp = await FindTriggerCreatedDealProductAsync(client, createdDeal.Id, dto.ProductId, null);
+            if (existingDp != null)
             {
-                DealId = createdDeal.Id,
-                ProductId = dto.ProductId,
-                ProductVariantId = null,
-                Price = dto.Price ?? 0,
-                Url = dto.Url,
-                FreeShipping = dto.FreeShipping,
-                ConditionId = dto.ConditionId ?? 1,
-                CreatedAt = DateTime.UtcNow,
-                Deleted = false,
-                Primary = true,
-                DealStatusId = user?.Admin == true ? 2 : 1,
-                ItemCount = dto.ItemCount ?? 1
-            });
+                existingDp.Price = dto.Price ?? 0;
+                existingDp.Url = dto.Url;
+                existingDp.FreeShipping = dto.FreeShipping;
+                existingDp.ConditionId = dto.ConditionId ?? 1;
+                existingDp.Primary = true;
+                existingDp.DealStatusId = user?.Admin == true ? 2 : 1;
+                existingDp.ItemCount = dto.ItemCount ?? 1;
+                existingDp.Deleted = false;
+                await client.From<DealProduct>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, existingDp.Id.ToString())
+                    .Update(existingDp);
+            }
+            else
+            {
+                await _supabase.InsertAsync(new DealProduct
+                {
+                    DealId = createdDeal.Id,
+                    ProductId = dto.ProductId,
+                    ProductVariantId = null,
+                    Price = dto.Price ?? 0,
+                    Url = dto.Url,
+                    FreeShipping = dto.FreeShipping,
+                    ConditionId = dto.ConditionId ?? 1,
+                    CreatedAt = DateTime.UtcNow,
+                    Deleted = false,
+                    Primary = true,
+                    DealStatusId = user?.Admin == true ? 2 : 1,
+                    ItemCount = dto.ItemCount ?? 1
+                });
+            }
         }
         else
         {
@@ -1156,21 +1207,39 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                 var combo = combos[i];
                 var variantId = await ResolveOrCreateVariantIdAsync(dto.ProductId, combo);
 
-                await _supabase.InsertAsync(new DealProduct
+                var existingDp = await FindTriggerCreatedDealProductAsync(client, createdDeal.Id, dto.ProductId, variantId);
+                if (existingDp != null)
                 {
-                    DealId = createdDeal.Id,
-                    ProductId = dto.ProductId,
-                    ProductVariantId = variantId,
-                    Price = dto.Price ?? 0,
-                    Url = dto.Url,
-                    FreeShipping = dto.FreeShipping,
-                    ConditionId = dto.ConditionId ?? 1,
-                    CreatedAt = DateTime.UtcNow,
-                    Deleted = false,
-                    Primary = i == 0,
-                    DealStatusId = user?.Admin == true ? 2 : 1,
-                    ItemCount = dto.ItemCount ?? 1
-                });
+                    existingDp.Price = dto.Price ?? 0;
+                    existingDp.Url = dto.Url;
+                    existingDp.FreeShipping = dto.FreeShipping;
+                    existingDp.ConditionId = dto.ConditionId ?? 1;
+                    existingDp.Primary = i == 0;
+                    existingDp.DealStatusId = user?.Admin == true ? 2 : 1;
+                    existingDp.ItemCount = dto.ItemCount ?? 1;
+                    existingDp.Deleted = false;
+                    await client.From<DealProduct>()
+                        .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, existingDp.Id.ToString())
+                        .Update(existingDp);
+                }
+                else
+                {
+                    await _supabase.InsertAsync(new DealProduct
+                    {
+                        DealId = createdDeal.Id,
+                        ProductId = dto.ProductId,
+                        ProductVariantId = variantId,
+                        Price = dto.Price ?? 0,
+                        Url = dto.Url,
+                        FreeShipping = dto.FreeShipping,
+                        ConditionId = dto.ConditionId ?? 1,
+                        CreatedAt = DateTime.UtcNow,
+                        Deleted = false,
+                        Primary = i == 0,
+                        DealStatusId = user?.Admin == true ? 2 : 1,
+                        ItemCount = dto.ItemCount ?? 1
+                    });
+                }
             }
         }
 

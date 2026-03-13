@@ -184,6 +184,7 @@ namespace CartSmart.API.Controllers
                     // Still update last_checked_at
                     dp.LastCheckedAt = now;
                     dp.ErrorCount = 0;
+                    dp.NextCheckAt = now.AddHours(24);
                     await client.From<DealProduct>().Update(dp);
                     continue;
                 }
@@ -202,6 +203,7 @@ namespace CartSmart.API.Controllers
                 dp.Price = report.price.Value;
                 dp.LastCheckedAt = now;
                 dp.ErrorCount = 0;
+                dp.NextCheckAt = now.AddHours(24);
                 await client.From<DealProduct>().Update(dp);
 
                 // Recalculate deal discount_percent for primary direct deal products
@@ -217,15 +219,25 @@ namespace CartSmart.API.Controllers
                     {
                         var productResp = await client
                             .From<Product>()
-                            .Select("id, msrp")
+                            .Select("id, msrp, count_enabled, default_count")
                             .Where(p => p.Id == dp.ProductId)
                             .Limit(1)
                             .Get();
                         var product = productResp.Models.FirstOrDefault();
                         if (product?.MSRP is > 0)
                         {
-                            var msrp = (decimal)product.MSRP.Value;
-                            var newDiscount = (int)Math.Round((1m - report.price.Value / msrp) * 100m);
+                            double effectiveMsrp = (double)product.MSRP.Value;
+                            double effectivePrice = (double)report.price.Value;
+
+                            if (product.CountEnabled && product.DefaultCount > 0 && dp.ItemCount > 0)
+                            {
+                                effectiveMsrp /= product.DefaultCount;
+                                effectivePrice /= dp.ItemCount;
+                            }
+
+                            var newDiscount = effectiveMsrp > 0
+                                ? (int)Math.Round((1.0 - effectivePrice / effectiveMsrp) * 100.0)
+                                : 0;
                             if (newDiscount < 0) newDiscount = 0;
                             if (newDiscount > 100) newDiscount = 100;
                             if (deal.DiscountPercent != newDiscount)

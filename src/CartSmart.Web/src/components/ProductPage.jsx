@@ -2099,6 +2099,11 @@ const ProductPage = () => {
                                               {step.coupon_code}
                                             </code>
                                           )}
+                                          {!isMobile && !step.coupon_code && step.deal_type_id === 2 && (
+                                            <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                                              No code needed
+                                            </span>
+                                          )}
                                           <svg
                                             className={`w-4 h-4 ml-auto text-slate-600 transition-transform ${open ? 'rotate-180' : ''}`}
                                             viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2"
@@ -2147,7 +2152,15 @@ const ProductPage = () => {
                                                 </code>
                                               </div>
                                             )}
-                                            {step.additional_details && (
+                                            {!step.coupon_code && step.deal_type_id === 2 && (
+                                              <div className="mt-1 text-sm">
+                                                <span className="text-amber-700 font-medium">No coupon code required</span>
+                                                {step.additional_details && (
+                                                  <span className="text-gray-600"> — {step.additional_details}</span>
+                                                )}
+                                              </div>
+                                            )}
+                                            {step.additional_details && (step.coupon_code || step.deal_type_id !== 2) && (
                                               <div className="mt-2 text-sm text-gray-600">
                                                 <span className="text-gray-600 font-medium">Additional details:</span> {step.additional_details}
                                               </div>
@@ -2301,6 +2314,14 @@ const ProductPage = () => {
                                   </code>
                                 </div>
                               )}
+                              {!deal.coupon_code && deal.deal_type_id === 2 && (
+                                <div className="mb-1 text-sm">
+                                  <span className="text-amber-700 font-medium">No coupon code required</span>
+                                  {deal.additional_details && (
+                                    <span className="text-gray-600"> — {deal.additional_details}</span>
+                                  )}
+                                </div>
+                              )}
                               {deal.msrp != null && (() => {
                                 const perItemMsrp = dealCountEnabled && Number(deal.default_count) > 0
                                   ? deal.msrp / Number(deal.default_count)
@@ -2327,7 +2348,7 @@ const ProductPage = () => {
                                   <span className="text-sm text-green-600">Free</span>
                                 </div>
                               )}
-                              {deal.additional_details && (
+                              {deal.additional_details && (deal.coupon_code || deal.deal_type_id !== 2) && (
                                 <div className="mb-1 text-sm">
                                   <span className="text-gray-600 font-medium">Additional details:</span>{' '}
                                   {deal.additional_details}

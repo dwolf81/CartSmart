@@ -272,6 +272,48 @@ public sealed class AdminManualPriceTasksController : ControllerBase
                 ChangedAt = now
             };
             await client.From<DealProductPriceHistory>().Insert(hist);
+
+            // Update discount on the parent deal when price changes for a primary deal_product
+            if (dp.Primary)
+            {
+                var dealResp = await client.From<Deal>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dp.DealId.ToString())
+                    .Limit(1)
+                    .Get();
+                var deal = dealResp.Models?.FirstOrDefault();
+
+                var productResp = await client.From<Product>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dp.ProductId.ToString())
+                    .Limit(1)
+                    .Get();
+                var product = productResp.Models?.FirstOrDefault();
+
+                if (deal != null && product?.MSRP != null && product.MSRP > 0)
+                {
+                    double effectiveMsrp = (double)product.MSRP.Value;
+                    double effectivePrice = (double)dp.Price;
+
+                    if (product.CountEnabled && product.DefaultCount > 0 && dp.ItemCount > 0)
+                    {
+                        effectiveMsrp /= product.DefaultCount;
+                        effectivePrice /= dp.ItemCount;
+                    }
+
+                    var newDiscount = effectiveMsrp > 0
+                        ? (int)Math.Round((1.0 - effectivePrice / effectiveMsrp) * 100.0)
+                        : (int?)null;
+                    if (newDiscount < 0) newDiscount = 0;
+                    if (newDiscount > 100) newDiscount = 100;
+
+                    if (deal.DiscountPercent != newDiscount)
+                    {
+                        deal.DiscountPercent = newDiscount;
+                        await client.From<Deal>()
+                            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, deal.Id.ToString())
+                            .Update(deal);
+                    }
+                }
+            }
         }
 
         if (statusChanged || priceChanged)

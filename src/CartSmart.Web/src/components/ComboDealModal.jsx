@@ -508,6 +508,11 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
                               {d.coupon_code}
                             </code>
                           )}
+                          {!isMobile && !d.coupon_code && d.deal_type_id === 2 && (
+                            <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                              No code needed
+                            </span>
+                          )}
                           <div className="ml-auto flex items-center gap-2">
                             <div className="flex flex-col -my-2">
                               <button
@@ -556,7 +561,15 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
                               <code className="bg-white border px-2 py-0.5 rounded">{d.coupon_code}</code>
                             </div>
                           )}
-                          {d.additional_details && (
+                          {!d.coupon_code && d.deal_type_id === 2 && (
+                            <div>
+                              <span className="text-amber-700 font-medium">No coupon code required</span>
+                              {d.additional_details && (
+                                <span className="text-gray-600"> — {d.additional_details}</span>
+                              )}
+                            </div>
+                          )}
+                          {d.additional_details && (d.coupon_code || d.deal_type_id !== 2) && (
                             <div>
                               <span className="text-gray-600 font-medium">Additional Details:</span> {d.additional_details}
                             </div>
@@ -616,6 +629,11 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
                               {d.coupon_code}
                             </code>
                           )}
+                          {!isMobile && !d.coupon_code && d.deal_type_id === 2 && (
+                            <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                              No code needed
+                            </span>
+                          )}
                           {(() => {
                             const sid = getStoreId(d);
                             return sid !== null ? (
@@ -655,7 +673,15 @@ const ComboDealModal = ({ isOpen, onClose, productId, msrpPrice, onComboCreated,
                               <code className="bg-white border px-2 py-0.5 rounded">{d.coupon_code}</code>
                             </div>
                           )}
-                          {d.additional_details && (
+                          {!d.coupon_code && d.deal_type_id === 2 && (
+                            <div>
+                              <span className="text-amber-700 font-medium">No coupon code required</span>
+                              {d.additional_details && (
+                                <span className="text-gray-600"> — {d.additional_details}</span>
+                              )}
+                            </div>
+                          )}
+                          {d.additional_details && (d.coupon_code || d.deal_type_id !== 2) && (
                             <div>
                               <span className="text-gray-600 font-medium">Additional Details:</span> {d.additional_details}
                             </div>
