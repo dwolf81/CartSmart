@@ -2156,9 +2156,21 @@ const ProductPage = () => {
                                             </span>
                                           )}
                                           {!isMobile && step.coupon_code && (
-                                            <code className="bg-white border px-2 py-0.5 rounded text-sm">
-                                              {step.coupon_code}
-                                            </code>
+                                            isAuthenticated ? (
+                                              <code className="bg-gray-100 border border-gray-300 px-2 py-0.5 rounded text-sm">
+                                                {step.coupon_code}
+                                              </code>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                onClick={() => navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`)}
+                                                className="inline-flex items-center gap-1 bg-gray-100 border border-dashed border-gray-300 px-2 py-0.5 rounded text-xs hover:bg-gray-200 transition-colors"
+                                                title="Log in to see coupon code"
+                                              >
+                                                <span className="blur-[3px] select-none text-gray-400" aria-hidden="true">SAVE20</span>
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="w-3 h-3 text-gray-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" /></svg>
+                                              </button>
+                                            )
                                           )}
                                           {!isMobile && !step.coupon_code && step.deal_type_id === 2 && (
                                             <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
@@ -2197,20 +2209,32 @@ const ProductPage = () => {
                                             {step.coupon_code && (
                                               <div className="mt-1">
                                                 <span className="text-gray-600 font-medium">Coupon Code:</span>{' '}
-                                                <code
-                                                  onClick={(event) => {
-                                                    navigator.clipboard.writeText(deal.coupon_code);
-                                                    const el = document.createElement('span');
-                                                    el.textContent = 'Copied!';
-                                                    el.className = 'text-green-600 text-xs ml-2';
-                                                    event.target.parentNode.appendChild(el);
-                                                    setTimeout(() => el.remove(), 1500);
-                                                  }}
-                                                  className="bg-gray-100 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
-                                                  title="Click to copy"
-                                                >
-                                                  {isAuthenticated ? step.coupon_code : ''}
-                                                </code>
+                                                {isAuthenticated ? (
+                                                  <code
+                                                    onClick={(event) => {
+                                                      navigator.clipboard.writeText(step.coupon_code);
+                                                      const el = document.createElement('span');
+                                                      el.textContent = 'Copied!';
+                                                      el.className = 'text-green-600 text-xs ml-2';
+                                                      event.target.parentNode.appendChild(el);
+                                                      setTimeout(() => el.remove(), 1500);
+                                                    }}
+                                                    className="bg-gray-100 border border-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
+                                                    title="Click to copy"
+                                                  >
+                                                    {step.coupon_code}
+                                                  </code>
+                                                ) : (
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`)}
+                                                    className="inline-flex items-center gap-1.5 bg-gray-100 border border-dashed border-gray-300 px-2 py-1 rounded hover:bg-gray-200 transition-colors text-sm"
+                                                    title="Log in to see coupon code"
+                                                  >
+                                                    <span className="blur-[3px] select-none text-gray-400" aria-hidden="true">SAVE20</span>
+                                                    <span className="text-blue-600 text-xs font-medium">Log in</span>
+                                                  </button>
+                                                )}
                                               </div>
                                             )}
                                             {!step.coupon_code && step.deal_type_id === 2 && (
@@ -2359,20 +2383,32 @@ const ProductPage = () => {
                               {deal.coupon_code && (
                                 <div className="mb-1 text-sm">
                                   <span className="text-gray-600 font-medium">Coupon Code:</span>{' '}
-                                  <code
-                                    onClick={(event) => {
-                                      navigator.clipboard.writeText(deal.coupon_code);
-                                      const el = document.createElement('span');
-                                      el.textContent = 'Copied!';
-                                      el.className = 'text-green-600 text-xs ml-2';
-                                      event.target.parentNode.appendChild(el);
-                                      setTimeout(() => el.remove(), 1500);
-                                    }}
-                                    className="bg-gray-100 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
-                                    title="Click to copy"
-                                  >
-                                    {shouldObfuscate ? '' : deal.coupon_code}
-                                  </code>
+                                  {isAuthenticated ? (
+                                    <code
+                                      onClick={(event) => {
+                                        navigator.clipboard.writeText(deal.coupon_code);
+                                        const el = document.createElement('span');
+                                        el.textContent = 'Copied!';
+                                        el.className = 'text-green-600 text-xs ml-2';
+                                        event.target.parentNode.appendChild(el);
+                                        setTimeout(() => el.remove(), 1500);
+                                      }}
+                                      className="bg-gray-100 border border-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
+                                      title="Click to copy"
+                                    >
+                                      {shouldObfuscate ? '' : deal.coupon_code}
+                                    </code>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`)}
+                                      className="inline-flex items-center gap-1.5 bg-gray-100 border border-dashed border-gray-300 px-2 py-1 rounded hover:bg-gray-200 transition-colors text-sm"
+                                      title="Log in to see coupon code"
+                                    >
+                                      <span className="blur-[3px] select-none text-gray-400" aria-hidden="true">SAVE20</span>
+                                      <span className="text-blue-600 text-xs font-medium">Log in</span>
+                                    </button>
+                                  )}
                                 </div>
                               )}
                               {!deal.coupon_code && deal.deal_type_id === 2 && (

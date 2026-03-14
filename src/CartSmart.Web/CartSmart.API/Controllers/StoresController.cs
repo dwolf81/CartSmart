@@ -531,8 +531,8 @@ namespace CartSmart.API.Controllers
 
         [HttpGet("{slug}")]
         [AllowAnonymous]
-        [ResponseCache(Duration = 900, Location = ResponseCacheLocation.Any, NoStore = false, VaryByQueryKeys = new[] { "productTypeId", "_" })]
-        public async Task<ActionResult<StorePageResponseDTO>> GetBySlug(string slug, [FromQuery] long? productTypeId = null)
+        [ResponseCache(Duration = 900, Location = ResponseCacheLocation.Any, NoStore = false, VaryByQueryKeys = new[] { "_" })]
+        public async Task<ActionResult<StorePageResponseDTO>> GetBySlug(string slug)
         {
             if (string.IsNullOrWhiteSpace(slug))
                 return BadRequest(new { message = "slug is required" });
@@ -551,10 +551,6 @@ namespace CartSmart.API.Controllers
             if (store == null)
                 return NotFound(new { message = "Store not found" });
 
-            var storeDeals = await _storeDealsService.GetStoreDealsAsync(store.Id); 
-
-            var productDeals = await _storeDealsService.GetStoreProductDealsAsync(store.Id, productTypeId);
-
             var response = new StorePageResponseDTO
             {
                 store = new StoreSummaryDTO
@@ -565,12 +561,42 @@ namespace CartSmart.API.Controllers
                     slug = store.Slug,
                     imageUrl = store.ImageUrl,
                     description = store.Description
-                },
-                storeDeals = storeDeals,
-                products = productDeals
+                }
             };
 
             return Ok(response);
+        }
+
+        [HttpGet("{slug}/deals")]
+        [AllowAnonymous]
+        [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
+        public async Task<ActionResult<StoreDealsResponseDTO>> GetDealsBySlug(string slug, [FromQuery] long? productTypeId = null)
+        {
+            if (string.IsNullOrWhiteSpace(slug))
+                return BadRequest(new { message = "slug is required" });
+
+            var client = _supabase.GetServiceRoleClient();
+
+            var storeResp = await client
+                .From<Store>()
+                .Select("id")
+                .Filter("slug", Supabase.Postgrest.Constants.Operator.Equals, slug)
+                .Filter("approved", Supabase.Postgrest.Constants.Operator.Equals, "true")
+                .Limit(1)
+                .Get();
+
+            var store = storeResp.Models.FirstOrDefault();
+            if (store == null)
+                return NotFound(new { message = "Store not found" });
+
+            var storeDeals = await _storeDealsService.GetStoreDealsAsync(store.Id);
+            var productDeals = await _storeDealsService.GetStoreProductDealsAsync(store.Id, productTypeId);
+
+            return Ok(new StoreDealsResponseDTO
+            {
+                storeDeals = storeDeals,
+                products = productDeals
+            });
         }
     }
 }

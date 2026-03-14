@@ -17,6 +17,12 @@ namespace CartSmart.API.Models.DTOs
         public List<CategoryProductCardDTO> products { get; set; } = new();
     }
 
+    public class StoreDealsResponseDTO
+    {
+        public List<DealDisplayDTO> storeDeals { get; set; } = new();
+        public List<CategoryProductCardDTO> products { get; set; } = new();
+    }
+
     public class StoreDealCardDTO
     {
         public long deal_id { get; set; }
