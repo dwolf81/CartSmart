@@ -241,6 +241,31 @@ async function submitPriceReport(report) {
   }
 }
 
+/**
+ * Report a scrape failure (no price extracted) so the admin can spot stale configs.
+ */
+async function submitScrapeFailure(report) {
+  const apiBase = await getApiBase();
+  const token = await getApiToken();
+  if (!token) return { ok: false, reason: "not_logged_in" };
+
+  try {
+    const res = await fetch(`${apiBase}/api/extension/scrape-failure`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(report),
+    });
+    if (!res.ok) return { ok: false, reason: "api_error", status: res.status };
+    return { ok: true };
+  } catch (err) {
+    console.error("[CartSmart] Error submitting scrape failure:", err);
+    return { ok: false, reason: "network_error" };
+  }
+}
+
 // ─── URL matching ─────────────────────────────────────────────────────────
 
 /**

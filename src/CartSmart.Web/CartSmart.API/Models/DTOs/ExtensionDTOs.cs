@@ -38,4 +38,15 @@ namespace CartSmart.API.Models.DTOs
         public int updatedDealProducts { get; set; }
         public string? message { get; set; }
     }
+
+    /// <summary>
+    /// Report submitted by the Chrome extension when price extraction fails.
+    /// </summary>
+    public class ExtensionScrapeFailureDTO
+    {
+        public string? url { get; set; }
+        public int storeId { get; set; }
+        public string? errorMessage { get; set; }
+        public int candidateCount { get; set; }
+    }
 }

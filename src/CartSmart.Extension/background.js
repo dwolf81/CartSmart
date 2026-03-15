@@ -342,6 +342,16 @@ async function handlePriceExtracted(message, sender) {
   if (!result || result.price === null) {
     console.log("[CartSmart] No price extracted for store", storeName);
     if (tabId) setBadge(tabId, "–", "#9CA3AF"); // gray = no price
+
+    // Report the failure so admins know the scrape config may be stale
+    if (result?.url && storeId) {
+      submitScrapeFailure({
+        url: result.url,
+        storeId,
+        errorMessage: `No price found (${result.candidates?.length || 0} candidate(s))`,
+        candidateCount: result.candidates?.length || 0,
+      }).catch(() => {});
+    }
     return;
   }
 

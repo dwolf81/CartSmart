@@ -320,6 +320,57 @@ namespace CartSmart.API.Controllers
             });
         }
 
+        /// <summary>
+        /// POST /api/extension/scrape-failure
+        /// Logs when the extension visited a tracked store page but failed to extract a price.
+        /// This helps identify stale scrape configs.
+        /// </summary>
+        [HttpPost("scrape-failure")]
+        [Authorize]
+        public async Task<IActionResult> ReportScrapeFailure(
+            [FromBody] ExtensionScrapeFailureDTO report)
+        {
+            if (report == null || string.IsNullOrWhiteSpace(report.url))
+            {
+                return BadRequest(new { message = "url is required." });
+            }
+
+            var client = _supabase.GetServiceRoleClient();
+
+            // Throttle: don't log the same URL more than once per 15 minutes
+            var throttleKey = "scrape_fail:" + (report.url ?? "").ToLowerInvariant().TrimEnd('/');
+            if (_cache.TryGetValue(throttleKey, out _))
+            {
+                return Ok(new { accepted = false, throttled = true, message = "Already logged recently." });
+            }
+
+            try
+            {
+                var log = new ScrapeLogInsert
+                {
+                    StoreId = report.storeId,
+                    DealProductId = null,
+                    Url = report.url,
+                    Method = "extension",
+                    Success = false,
+                    Price = null,
+                    Currency = null,
+                    ErrorMessage = report.errorMessage?.Length > 500
+                        ? report.errorMessage[..500]
+                        : report.errorMessage
+                };
+                await client.From<ScrapeLogInsert>().Insert(log);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ScrapeLog] Failure insert failed: {ex.Message}");
+            }
+
+            _cache.Set(throttleKey, true, TimeSpan.FromMinutes(15));
+
+            return Ok(new { accepted = true, message = "Failure logged." });
+        }
+
         // ─── Helpers ──────────────────────────────────────────────────────
 
         private static JToken? TryParseScrapeConfig(string? raw)
