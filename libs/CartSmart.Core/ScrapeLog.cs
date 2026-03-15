@@ -34,6 +34,6 @@ namespace CartSmart.API.Models
         public string? ErrorMessage { get; set; }
 
         [Column("created_at")]
-        public DateTime? CreatedAt { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }
 }

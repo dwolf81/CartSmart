@@ -126,7 +126,7 @@ namespace CartSmart.API.Models.DTOs
         public decimal? price { get; set; }
         public string? currency { get; set; }
         public string? errorMessage { get; set; }
-        public DateTime? createdAt { get; set; }
+        public DateTime createdAt { get; set; }
     }
 
     public class UpdateScrapeMethodsRequestDTO
