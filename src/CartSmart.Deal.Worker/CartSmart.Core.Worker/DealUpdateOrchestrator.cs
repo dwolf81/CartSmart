@@ -807,6 +807,14 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             dealProduct.LastCheckedAt = _timeProvider.GetUtcNow().UtcDateTime;
             await repoImpl.UpdateDealProductAsync(dealProduct, ct);
 
+            // Auto-complete any pending manual price tasks since we got a successful refresh
+            await repoImpl.CompletePendingManualPriceTasksAsync(
+                dealProduct.Id,
+                data.Price,
+                data.Currency,
+                "worker scrape",
+                ct);
+
             //Not needed anymore
             /*if (statusChanged || priceChanged)
             {

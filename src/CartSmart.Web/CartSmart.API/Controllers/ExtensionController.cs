@@ -148,18 +148,30 @@ namespace CartSmart.API.Controllers
                 });
             }
 
-            // Fetch deal products for those deals
-            var dpResp = await client
-                .From<DealProduct>()
-                .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
-                .Get();
+            // Fetch deal products for this store's deals
+            var allDealProducts = new List<DealProduct>();
+            foreach (var dealId in dealIds)
+            {
+                var dpResp = await client
+                    .From<DealProduct>()
+                    .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+                    .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                    .Get();
+                allDealProducts.AddRange(dpResp.Models ?? new List<DealProduct>());
+            }
 
-            var allDealProducts = dpResp.Models ?? new List<DealProduct>();
+            Console.WriteLine($"[Extension] SubmitPriceReport: storeId={report.storeId}, normUrl={normUrl}, dealIds={dealIds.Count}, dealProducts={allDealProducts.Count}");
+            foreach (var dp in allDealProducts)
+            {
+                Console.WriteLine($"[Extension]   dp.Id={dp.Id}, dp.Url={dp.Url}, norm={NormaliseUrl(dp.Url)}, match={UrlsMatch(dp.Url, normUrl)}");
+            }
 
-            // Match by deal_id being in our store's deals AND URL matching
+            // Match by URL
             var matched = allDealProducts
-                .Where(dp => dealIds.Contains(dp.DealId) && UrlsMatch(dp.Url, normUrl))
+                .Where(dp => UrlsMatch(dp.Url, normUrl))
                 .ToList();
+
+            Console.WriteLine($"[Extension] Matched {matched.Count} deal product(s) for URL {normUrl}");
 
             if (matched.Count == 0)
             {

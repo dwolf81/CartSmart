@@ -359,6 +359,48 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         }
     }
 
+    /// <summary>
+    /// Auto-complete any pending manual price tasks for a deal product when
+    /// the price has been successfully refreshed by the scraper or extension.
+    /// </summary>
+    public async Task CompletePendingManualPriceTasksAsync(int dealProductId, decimal? price, string? currency, string source, CancellationToken ct)
+    {
+        try
+        {
+            var pendingResp = await _client
+                .From<ManualPriceTask>()
+                .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.Equals, dealProductId.ToString())
+                .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
+                .Get(ct);
+
+            var pendingTasks = pendingResp.Models ?? new List<ManualPriceTask>();
+            if (pendingTasks.Count == 0) return;
+
+            var now = DateTime.UtcNow;
+            foreach (var task in pendingTasks)
+            {
+                var update = new ManualPriceTaskUpdateRow
+                {
+                    Id = task.Id,
+                    Status = "completed",
+                    SubmittedAt = now,
+                    SubmittedPrice = price,
+                    SubmittedCurrency = currency,
+                    SubmittedInStock = true,
+                    Notes = $"Auto-completed: price confirmed via {source}"
+                };
+                await _client
+                    .From<ManualPriceTaskUpdateRow>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, task.Id.ToString())
+                    .Update(update);
+            }
+        }
+        catch
+        {
+            // Best-effort — don't break the main pipeline
+        }
+    }
+
     public async Task<IReadOnlyList<ManualPriceTask>> GetPendingManualPriceTasksAsync(int limit, CancellationToken ct)
     {
         var l = limit <= 0 ? 50 : Math.Min(limit, 200);
