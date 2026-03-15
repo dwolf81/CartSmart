@@ -334,8 +334,8 @@ namespace CartSmart.API.Controllers
 
         /// <summary>
         /// POST /api/extension/scrape-failure
-        /// Logs when the extension visited a tracked store page but failed to extract a price.
-        /// This helps identify stale scrape configs.
+        /// Logs when the extension visited a tracked product page but failed to extract a price.
+        /// Only logs if the URL matches a tracked deal_product — ignores non-product pages.
         /// </summary>
         [HttpPost("scrape-failure")]
         [Authorize]
@@ -348,9 +348,42 @@ namespace CartSmart.API.Controllers
             }
 
             var client = _supabase.GetServiceRoleClient();
+            var normUrl = NormaliseUrl(report.url);
+
+            // ── Check if this URL matches any tracked deal_product ──
+            var dealResp = await client
+                .From<Deal>()
+                .Select("id")
+                .Filter("store_id", Supabase.Postgrest.Constants.Operator.Equals, report.storeId.ToString())
+                .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                .Get();
+
+            var dealIds = (dealResp.Models ?? new List<Deal>()).Select(d => d.Id).ToList();
+            if (dealIds.Count == 0)
+            {
+                return Ok(new { accepted = false, message = "No tracked deals for this store." });
+            }
+
+            var allDealProducts = new List<DealProduct>();
+            foreach (var dealId in dealIds)
+            {
+                var dpResp = await client
+                    .From<DealProduct>()
+                    .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+                    .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                    .Get();
+                allDealProducts.AddRange(dpResp.Models ?? new List<DealProduct>());
+            }
+
+            var matched = allDealProducts.Where(dp => UrlsMatch(dp.Url, normUrl)).ToList();
+            if (matched.Count == 0)
+            {
+                // Not a tracked product page — don't log
+                return Ok(new { accepted = false, message = "URL does not match any tracked deal product." });
+            }
 
             // Throttle: don't log the same URL more than once per 15 minutes
-            var throttleKey = "scrape_fail:" + (report.url ?? "").ToLowerInvariant().TrimEnd('/');
+            var throttleKey = "scrape_fail:" + normUrl;
             if (_cache.TryGetValue(throttleKey, out _))
             {
                 return Ok(new { accepted = false, throttled = true, message = "Already logged recently." });
@@ -358,10 +391,11 @@ namespace CartSmart.API.Controllers
 
             try
             {
+                var dpId = matched.FirstOrDefault()?.Id;
                 var log = new ScrapeLogInsert
                 {
                     StoreId = report.storeId,
-                    DealProductId = null,
+                    DealProductId = dpId,
                     Url = report.url,
                     Method = "extension",
                     Success = false,
@@ -446,11 +480,28 @@ namespace CartSmart.API.Controllers
 
         /// <summary>
         /// Compare two URLs after normalisation.
+        /// First tries exact normalised match, then falls back to path-only match
+        /// (ignoring query strings) to handle URLs with variant parameters.
         /// </summary>
         private static bool UrlsMatch(string? a, string? b)
         {
             if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
-            return string.Equals(NormaliseUrl(a), NormaliseUrl(b), StringComparison.OrdinalIgnoreCase);
+            var normA = NormaliseUrl(a);
+            var normB = NormaliseUrl(b);
+            if (string.Equals(normA, normB, StringComparison.OrdinalIgnoreCase)) return true;
+
+            // Fallback: compare scheme + host + path only (strip query strings)
+            try
+            {
+                var uriA = new Uri(normA);
+                var uriB = new Uri(normB);
+                return string.Equals(uriA.Host, uriB.Host, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(uriA.AbsolutePath.TrimEnd('/'), uriB.AbsolutePath.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }
