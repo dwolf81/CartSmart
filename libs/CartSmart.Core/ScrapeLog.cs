@@ -6,7 +6,7 @@ namespace CartSmart.API.Models
     [Table("scrape_log")]
     public class ScrapeLog : BaseModel
     {
-        [PrimaryKey("id")]
+        [PrimaryKey("id", false)]
         public long Id { get; set; }
 
         [Column("store_id")]
@@ -34,6 +34,6 @@ namespace CartSmart.API.Models
         public string? ErrorMessage { get; set; }
 
         [Column("created_at")]
-        public DateTime CreatedAt { get; set; }
+        public DateTime? CreatedAt { get; set; }
     }
 }
