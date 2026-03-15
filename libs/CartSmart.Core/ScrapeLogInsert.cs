@@ -11,6 +11,9 @@ namespace CartSmart.API.Models
     [Table("scrape_log")]
     public class ScrapeLogInsert : BaseModel
     {
+        [PrimaryKey("id", false)]
+        public long Id { get; set; }
+
         [Column("store_id")]
         public int StoreId { get; set; }
 

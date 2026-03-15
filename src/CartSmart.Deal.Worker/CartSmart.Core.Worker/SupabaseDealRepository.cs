@@ -993,9 +993,10 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             };
             await _client.From<ScrapeLogInsert>().Insert(log, cancellationToken: ct);
         }
-        catch
+        catch (Exception ex)
         {
-            // Best-effort logging — don't break the scrape pipeline
+            // Log the error so we can diagnose insert failures
+            Console.WriteLine($"[ScrapeLog] Worker insert failed for store {storeId}, method {method}: {ex.Message}");
         }
     }
 }
