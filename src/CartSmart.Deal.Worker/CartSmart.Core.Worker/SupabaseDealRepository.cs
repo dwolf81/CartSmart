@@ -974,4 +974,28 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
 
         return updated;
     }
+
+    // ── Scrape log ────────────────────────────────────────────────────────
+    public async Task InsertScrapeLogAsync(int storeId, long? dealProductId, string url, string method, bool success, decimal? price, string? currency, string? errorMessage, CancellationToken ct)
+    {
+        try
+        {
+            var log = new ScrapeLog
+            {
+                StoreId = storeId,
+                DealProductId = dealProductId,
+                Url = url,
+                Method = method,
+                Success = success,
+                Price = price,
+                Currency = currency,
+                ErrorMessage = errorMessage?.Length > 500 ? errorMessage[..500] : errorMessage
+            };
+            await _client.From<ScrapeLog>().Insert(log, cancellationToken: ct);
+        }
+        catch
+        {
+            // Best-effort logging — don't break the scrape pipeline
+        }
+    }
 }

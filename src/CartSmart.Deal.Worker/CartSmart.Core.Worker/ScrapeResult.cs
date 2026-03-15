@@ -9,4 +9,6 @@ public sealed class ScrapeResult
     public bool? Sold { get; init; }
     public bool BlockedByBotProtection { get; init; }
     public Dictionary<string,string>? RawSignals { get; init; }
+    /// <summary>Which method succeeded: "http", "playwright", or null if no price found.</summary>
+    public string? SucceededMethod { get; init; }
 }

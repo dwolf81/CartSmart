@@ -8,6 +8,8 @@ using SixLabors.ImageSharp.Formats.Webp;
 using System.Text.RegularExpressions;
 using System.Net.Http;
 using System.Text.Json.Serialization;
+using AngleSharp;
+using AngleSharp.Dom;
 
 namespace CartSmart.API.Controllers
 {
@@ -179,7 +181,9 @@ namespace CartSmart.API.Controllers
                     slug = store.Slug,
                     approved = store.Approved,
                     imageUrl = store.ImageUrl,
-                    description = store.Description
+                    description = store.Description,
+                    scrapeHttpEnabled = store.ScrapeHttpEnabled,
+                    scrapePlaywrightEnabled = store.ScrapePlaywrightEnabled
                 }
             });
         }
@@ -231,7 +235,9 @@ namespace CartSmart.API.Controllers
                 Slug = slug,
                 Approved = request.approved ?? true,
                 Description = string.IsNullOrWhiteSpace(request.description) ? null : request.description,
-                ImageUrl = null
+                ImageUrl = null,
+                ScrapeHttpEnabled = request.scrapeHttpEnabled ?? true,
+                ScrapePlaywrightEnabled = request.scrapePlaywrightEnabled ?? true
             };
 
             var insertResp = await client.From<StoreAdminInsertRow>().Insert(insertRow);
@@ -315,7 +321,9 @@ namespace CartSmart.API.Controllers
                 RequiredQueryVars = string.IsNullOrWhiteSpace(request.requiredQueryVars) ? null : request.requiredQueryVars,
                 Slug = slugToUse,
                 Approved = request.approved ?? existing.Approved,
-                Description = string.IsNullOrWhiteSpace(request.description) ? null : request.description
+                Description = string.IsNullOrWhiteSpace(request.description) ? null : request.description,
+                ScrapeHttpEnabled = request.scrapeHttpEnabled ?? existing.ScrapeHttpEnabled,
+                ScrapePlaywrightEnabled = request.scrapePlaywrightEnabled ?? existing.ScrapePlaywrightEnabled
             };
 
             await client.From<StoreAdminUpdateRow>().Update(updateRow);
@@ -598,5 +606,595 @@ namespace CartSmart.API.Controllers
                 products = productDeals
             });
         }
+
+        // ────────────────────────────────────────────────────────────
+        // POST /api/stores/admin/test-scrape
+        // ────────────────────────────────────────────────────────────
+
+        [HttpPost("admin/test-scrape")]
+        [Authorize]
+        public async Task<ActionResult<TestScrapeResponseDTO>> TestScrape([FromBody] TestScrapeRequestDTO request)
+        {
+            var adminCheck = await EnsureAdminAsync();
+            if (adminCheck != null) return Unauthorized();
+
+            var url = (request?.url ?? string.Empty).Trim();
+            var configJson = (request?.scrapeConfig ?? string.Empty).Trim();
+            var method = (request?.method ?? "http").Trim().ToLowerInvariant();
+
+            if (string.IsNullOrWhiteSpace(url))
+                return BadRequest(new TestScrapeResponseDTO { success = false, error = "URL is required." });
+
+            if (method != "http" && method != "playwright")
+                return BadRequest(new TestScrapeResponseDTO { success = false, error = "method must be \"http\" or \"playwright\"." });
+
+            // Parse price selectors from the scrape config JSON
+            string[] selectors;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(configJson);
+                if (!doc.RootElement.TryGetProperty("price_selectors", out var selArr)
+                    || selArr.ValueKind != System.Text.Json.JsonValueKind.Array)
+                {
+                    return BadRequest(new TestScrapeResponseDTO { success = false, error = "scrapeConfig must contain a \"price_selectors\" array." });
+                }
+
+                selectors = selArr.EnumerateArray()
+                    .Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String)
+                    .Select(e => e.GetString()!)
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Distinct()
+                    .ToArray();
+
+                if (selectors.Length == 0)
+                    return BadRequest(new TestScrapeResponseDTO { success = false, error = "price_selectors array is empty." });
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return BadRequest(new TestScrapeResponseDTO { success = false, error = "Invalid JSON in scrapeConfig." });
+            }
+
+            try
+            {
+                string html;
+
+                if (method == "playwright")
+                {
+                    html = await FetchHtmlWithPlaywrightAsync(url);
+                }
+                else
+                {
+                    html = await FetchHtmlWithHttpClientAsync(url);
+                }
+
+                // Parse with AngleSharp and extract prices
+                return Ok(await ParseHtmlAndExtractPrices(html, selectors));
+            }
+            catch (TaskCanceledException)
+            {
+                return Ok(new TestScrapeResponseDTO { success = false, error = "Request timed out (15s limit)." });
+            }
+            catch (HttpRequestException ex)
+            {
+                return Ok(new TestScrapeResponseDTO { success = false, error = $"HTTP error: {ex.Message}" });
+            }
+            catch (Microsoft.Playwright.PlaywrightException ex)
+            {
+                return Ok(new TestScrapeResponseDTO { success = false, error = $"Playwright error: {ex.Message}" });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new TestScrapeResponseDTO { success = false, error = $"Unexpected error: {ex.Message}" });
+            }
+        }
+
+        private static async Task<string> FetchHtmlWithHttpClientAsync(string url)
+        {
+            using var httpClient = new HttpClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(15);
+            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            httpClient.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            return await httpClient.GetStringAsync(url);
+        }
+
+        private static async Task<string> FetchHtmlWithPlaywrightAsync(string url)
+        {
+            using var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new Microsoft.Playwright.BrowserTypeLaunchOptions
+            {
+                Headless = true,
+                Args = new[] { "--disable-blink-features=AutomationControlled" }
+            });
+            await using var context = await browser.NewContextAsync(new Microsoft.Playwright.BrowserNewContextOptions
+            {
+                UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                IgnoreHTTPSErrors = true
+            });
+            await context.AddInitScriptAsync("Object.defineProperty(navigator, 'webdriver', { get: () => undefined })");
+            var page = await context.NewPageAsync();
+            page.SetDefaultTimeout(20000);
+
+            await page.GotoAsync(url, new Microsoft.Playwright.PageGotoOptions
+            {
+                WaitUntil = Microsoft.Playwright.WaitUntilState.Load,
+                Timeout = 20000
+            });
+
+            // Wait for DOM to settle
+            try
+            {
+                await page.WaitForLoadStateAsync(Microsoft.Playwright.LoadState.DOMContentLoaded,
+                    new Microsoft.Playwright.PageWaitForLoadStateOptions { Timeout = 10000 });
+            }
+            catch { /* ignore */ }
+
+            // Best-effort wait for price elements
+            try
+            {
+                await page.WaitForSelectorAsync(
+                    "[data-testid*='price'], span[class*='price'], div[class*='price']",
+                    new Microsoft.Playwright.PageWaitForSelectorOptions { Timeout = 8000 });
+            }
+            catch { /* ignore */ }
+
+            return await page.ContentAsync();
+        }
+
+        private async Task<TestScrapeResponseDTO> ParseHtmlAndExtractPrices(string html, string[] selectors)
+        {
+            var config = AngleSharp.Configuration.Default;
+            var browsingContext = BrowsingContext.New(config);
+            var document = await browsingContext.OpenAsync(req => req.Content(html));
+
+            // Check for bot protection
+            bool blockedByBot = ScrapeTestLooksBotBlocked(document);
+            if (blockedByBot)
+            {
+                return new TestScrapeResponseDTO
+                {
+                    success = false,
+                    error = "Page appears to be blocked by bot protection (JavaScript challenge page).",
+                    blockedByBotProtection = true,
+                    htmlLength = html.Length
+                };
+            }
+
+            // Extract price candidates using the provided selectors
+            var candidates = new List<TestScrapePriceCandidateDTO>();
+            IElement? regionRoot = null;
+
+            bool RegionContains(IElement el)
+            {
+                if (regionRoot == null) return false;
+                var cur = el;
+                while (cur != null)
+                {
+                    if (cur == regionRoot) return true;
+                    cur = cur.ParentElement;
+                }
+                return false;
+            }
+
+            IElement SelectRegionRoot(IElement el)
+            {
+                var cur = el;
+                while (cur.ParentElement != null && cur.ParentElement.TagName != "BODY")
+                {
+                    var clsId = ((cur.ClassName ?? "") + " " + (cur.Id ?? "")).ToLowerInvariant();
+                    if (clsId.Contains("product") || clsId.Contains("price") || clsId.Contains("buy")
+                        || clsId.Contains("main") || clsId.Contains("summary") || clsId.Contains("detail"))
+                        return cur;
+                    cur = cur.ParentElement;
+                }
+                return el.ParentElement ?? el;
+            }
+
+            foreach (var sel in selectors)
+            {
+                var els = document.QuerySelectorAll(sel);
+                foreach (var el in els)
+                {
+                    if (regionRoot != null && !RegionContains(el))
+                        continue;
+
+                    var raw = el.GetAttribute("aria-label") ?? el.GetAttribute("content") ?? el.TextContent;
+                    if (string.IsNullOrWhiteSpace(raw)) continue;
+
+                    var promo = ScrapeTestLooksPromotional(raw);
+                    var struck = ScrapeTestIsStruckThrough(el);
+                    var cleaned = ScrapeTestCleanPriceText(raw);
+
+                    if (ScrapeTestTryParsePrice(cleaned, out var price))
+                    {
+                        var currency = ScrapeTestDetectCurrency(raw ?? el.TextContent ?? string.Empty);
+                        candidates.Add(new TestScrapePriceCandidateDTO
+                        {
+                            amount = price,
+                            currency = currency,
+                            struck = struck,
+                            promo = promo,
+                            selector = sel
+                        });
+
+                        if (regionRoot == null)
+                            regionRoot = SelectRegionRoot(el);
+                    }
+                }
+
+                if (regionRoot != null && candidates.Count >= 6) break;
+            }
+
+            if (candidates.Count == 0)
+            {
+                return new TestScrapeResponseDTO
+                {
+                    success = false,
+                    error = "No prices found with the provided selectors.",
+                    candidates = candidates,
+                    htmlLength = html.Length
+                };
+            }
+
+            // Select the best price (same logic as GenericHtmlScraper)
+            decimal? bestPrice = null;
+            string? bestCurrency = null;
+
+            var preferred = candidates
+                .Where(c => !c.struck && !c.promo)
+                .OrderBy(c => c.amount)
+                .FirstOrDefault();
+
+            if (preferred != null && preferred.amount != 0)
+            {
+                bestPrice = preferred.amount;
+                bestCurrency = preferred.currency;
+            }
+            else
+            {
+                var alt = candidates.Where(c => !c.struck).OrderBy(c => c.amount).FirstOrDefault();
+                if (alt != null && alt.amount != 0)
+                {
+                    bestPrice = alt.amount;
+                    bestCurrency = alt.currency;
+                }
+                else
+                {
+                    var any = candidates.OrderBy(c => c.amount).First();
+                    bestPrice = any.amount;
+                    bestCurrency = any.currency;
+                }
+            }
+
+            // Stock detection
+            var bodyText = document.Body?.TextContent?.ToLowerInvariant() ?? string.Empty;
+            bool? inStock = null;
+            if (bodyText.Contains("in stock") || bodyText.Contains("available")) inStock = true;
+            if (bodyText.Contains("out of stock") || bodyText.Contains("unavailable")) inStock = false;
+
+            return new TestScrapeResponseDTO
+            {
+                success = true,
+                price = bestPrice,
+                currency = bestCurrency ?? "USD",
+                inStock = inStock,
+                candidates = candidates,
+                htmlLength = html.Length
+            };
+        }
+
+        // ────────────────────────────────────────────────────────────
+        // POST /api/stores/admin/test-scrape-screenshot
+        // ────────────────────────────────────────────────────────────
+
+        [HttpPost("admin/test-scrape-screenshot")]
+        [Authorize]
+        public async Task<IActionResult> TestScrapeScreenshot([FromBody] TestScrapeScreenshotRequestDTO request)
+        {
+            var adminCheck = await EnsureAdminAsync();
+            if (adminCheck != null) return Unauthorized();
+
+            var url = (request?.url ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(url))
+                return BadRequest(new { error = "URL is required." });
+
+            try
+            {
+                using var playwright = await Microsoft.Playwright.Playwright.CreateAsync();
+                await using var browser = await playwright.Chromium.LaunchAsync(new Microsoft.Playwright.BrowserTypeLaunchOptions
+                {
+                    Headless = true,
+                    Args = new[] { "--disable-blink-features=AutomationControlled" }
+                });
+                await using var context = await browser.NewContextAsync(new Microsoft.Playwright.BrowserNewContextOptions
+                {
+                    UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    IgnoreHTTPSErrors = true,
+                    ViewportSize = new Microsoft.Playwright.ViewportSize { Width = 1280, Height = 800 }
+                });
+                await context.AddInitScriptAsync("Object.defineProperty(navigator, 'webdriver', { get: () => undefined })");
+                var page = await context.NewPageAsync();
+                page.SetDefaultTimeout(20000);
+
+                await page.GotoAsync(url, new Microsoft.Playwright.PageGotoOptions
+                {
+                    WaitUntil = Microsoft.Playwright.WaitUntilState.Load,
+                    Timeout = 20000
+                });
+
+                try { await page.WaitForLoadStateAsync(Microsoft.Playwright.LoadState.NetworkIdle, new Microsoft.Playwright.PageWaitForLoadStateOptions { Timeout = 8000 }); } catch { }
+
+                var screenshotBytes = await page.ScreenshotAsync(new Microsoft.Playwright.PageScreenshotOptions
+                {
+                    FullPage = false,
+                    Type = Microsoft.Playwright.ScreenshotType.Jpeg,
+                    Quality = 70
+                });
+
+                var base64 = Convert.ToBase64String(screenshotBytes);
+                return Ok(new { success = true, image = $"data:image/jpeg;base64,{base64}" });
+            }
+            catch (Microsoft.Playwright.PlaywrightException ex)
+            {
+                return Ok(new { success = false, error = $"Playwright error: {ex.Message}" });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { success = false, error = $"Unexpected error: {ex.Message}" });
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────
+        // Scrape Report Endpoints
+        // ────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// GET /api/stores/admin/scrape-report
+        /// Returns per-store scrape success/fail summary grouped by method.
+        /// Query params: days (default 7)
+        /// </summary>
+        [HttpGet("admin/scrape-report")]
+        [Authorize]
+        public async Task<IActionResult> GetScrapeReport([FromQuery] int days = 7)
+        {
+            var adminCheck = await EnsureAdminAsync();
+            if (adminCheck != null) return Unauthorized();
+
+            var client = _supabase.GetServiceRoleClient();
+            var cutoff = DateTime.UtcNow.AddDays(-days);
+
+            // Fetch all scrape logs within the time window
+            var logResp = await client
+                .From<ScrapeLog>()
+                .Filter("created_at", Supabase.Postgrest.Constants.Operator.GreaterThanOrEqual, cutoff.ToString("o"))
+                .Order("created_at", Supabase.Postgrest.Constants.Ordering.Descending)
+                .Get();
+
+            var logs = logResp.Models ?? new List<ScrapeLog>();
+
+            // Fetch stores that have scraping enabled
+            var storeResp = await client
+                .From<Store>()
+                .Filter("scrape_mode_id", Supabase.Postgrest.Constants.Operator.GreaterThan, "0")
+                .Get();
+
+            var stores = storeResp.Models ?? new List<Store>();
+
+            // Group logs by store
+            var logsByStore = logs.GroupBy(l => l.StoreId).ToDictionary(g => g.Key, g => g.ToList());
+
+            var summaries = new List<ScrapeReportStoreSummaryDTO>();
+
+            foreach (var store in stores)
+            {
+                logsByStore.TryGetValue(store.Id, out var storeLogs);
+                storeLogs ??= new List<ScrapeLog>();
+
+                var summary = new ScrapeReportStoreSummaryDTO
+                {
+                    storeId = store.Id,
+                    storeName = store.Name ?? "Unknown",
+                    storeUrl = store.URL,
+                    scrapeModeId = store.ScrapeModeId ?? 0,
+                    scrapeHttpEnabled = store.ScrapeHttpEnabled,
+                    scrapePlaywrightEnabled = store.ScrapePlaywrightEnabled,
+                    http = new ScrapeMethodSummaryDTO
+                    {
+                        successCount = storeLogs.Count(l => l.Method == "http" && l.Success),
+                        failCount = storeLogs.Count(l => l.Method == "http" && !l.Success)
+                    },
+                    playwright = new ScrapeMethodSummaryDTO
+                    {
+                        successCount = storeLogs.Count(l => l.Method == "playwright" && l.Success),
+                        failCount = storeLogs.Count(l => l.Method == "playwright" && !l.Success)
+                    },
+                    extension = new ScrapeMethodSummaryDTO
+                    {
+                        successCount = storeLogs.Count(l => l.Method == "extension" && l.Success),
+                        failCount = storeLogs.Count(l => l.Method == "extension" && !l.Success)
+                    },
+                    lastLogAt = storeLogs.FirstOrDefault()?.CreatedAt
+                };
+
+                summaries.Add(summary);
+            }
+
+            // Sort: stores with logs first (by most recent), then stores without logs
+            summaries = summaries
+                .OrderByDescending(s => s.lastLogAt.HasValue)
+                .ThenByDescending(s => s.lastLogAt)
+                .ToList();
+
+            return Ok(summaries);
+        }
+
+        /// <summary>
+        /// GET /api/stores/admin/scrape-report/{storeId}
+        /// Returns detailed scrape logs for a specific store.
+        /// Query params: days (default 7), limit (default 200)
+        /// </summary>
+        [HttpGet("admin/scrape-report/{storeId:int}")]
+        [Authorize]
+        public async Task<IActionResult> GetScrapeReportDetail(int storeId, [FromQuery] int days = 7, [FromQuery] int limit = 200)
+        {
+            var adminCheck = await EnsureAdminAsync();
+            if (adminCheck != null) return Unauthorized();
+
+            var client = _supabase.GetServiceRoleClient();
+            var cutoff = DateTime.UtcNow.AddDays(-days);
+
+            var logResp = await client
+                .From<ScrapeLog>()
+                .Filter("store_id", Supabase.Postgrest.Constants.Operator.Equals, storeId.ToString())
+                .Filter("created_at", Supabase.Postgrest.Constants.Operator.GreaterThanOrEqual, cutoff.ToString("o"))
+                .Order("created_at", Supabase.Postgrest.Constants.Ordering.Descending)
+                .Limit(limit)
+                .Get();
+
+            var logs = logResp.Models ?? new List<ScrapeLog>();
+
+            return Ok(logs.Select(l => new ScrapeReportDetailDTO
+            {
+                id = l.Id,
+                dealProductId = l.DealProductId,
+                url = l.Url,
+                method = l.Method,
+                success = l.Success,
+                price = l.Price,
+                currency = l.Currency,
+                errorMessage = l.ErrorMessage,
+                createdAt = l.CreatedAt
+            }).ToList());
+        }
+
+        /// <summary>
+        /// PATCH /api/stores/admin/{storeId}/scrape-methods
+        /// Toggles scrape_http_enabled and/or scrape_playwright_enabled for a store.
+        /// </summary>
+        [HttpPatch("admin/{storeId:int}/scrape-methods")]
+        [Authorize]
+        public async Task<IActionResult> UpdateScrapeMethods(int storeId, [FromBody] UpdateScrapeMethodsRequestDTO request)
+        {
+            var adminCheck = await EnsureAdminAsync();
+            if (adminCheck != null) return Unauthorized();
+
+            var client = _supabase.GetServiceRoleClient();
+            var storeResp = await client
+                .From<Store>()
+                .Where(s => s.Id == storeId)
+                .Limit(1)
+                .Get();
+            var store = storeResp.Models.FirstOrDefault();
+            if (store == null) return NotFound(new { message = "Store not found" });
+
+            var updateRow = new StoreAdminUpdateRow
+            {
+                Id = storeId,
+                Name = store.Name,
+                URL = store.URL,
+                AffiliateCode = store.AffiliateCode,
+                AffiliateCodeVar = store.AffiliateCodeVar,
+                BrandId = store.BrandId,
+                UpfrontCost = store.UpfrontCost,
+                UpfrontCostTermId = store.UpfrontCostTermId,
+                ApiEnabled = store.ApiEnabled,
+                ScrapeModeId = store.ScrapeModeId,
+                ScrapeConfig = store.ScrapeConfig,
+                RequiredQueryVars = store.RequiredQueryVars,
+                Slug = store.Slug,
+                Approved = store.Approved,
+                Description = store.Description,
+                ScrapeHttpEnabled = request.scrapeHttpEnabled ?? store.ScrapeHttpEnabled,
+                ScrapePlaywrightEnabled = request.scrapePlaywrightEnabled ?? store.ScrapePlaywrightEnabled
+            };
+
+            await client.From<StoreAdminUpdateRow>().Update(updateRow);
+
+            return Ok(new
+            {
+                storeId,
+                scrapeHttpEnabled = updateRow.ScrapeHttpEnabled,
+                scrapePlaywrightEnabled = updateRow.ScrapePlaywrightEnabled
+            });
+        }
+
+        #region Test-scrape helpers (mirrors GenericHtmlScraper logic)
+
+        private static bool ScrapeTestLooksBotBlocked(IDocument doc)
+        {
+            var title = doc.Title?.ToLowerInvariant() ?? string.Empty;
+            if (title.Contains("security checkpoint")) return true;
+
+            var bodyText = doc.Body?.TextContent?.ToLowerInvariant() ?? string.Empty;
+            if (bodyText.Contains("verifying your browser")) return true;
+            if (bodyText.Contains("enable javascript to continue")) return true;
+            if (bodyText.Contains("vercel security checkpoint")) return true;
+
+            var html = doc.DocumentElement?.OuterHtml?.ToLowerInvariant() ?? string.Empty;
+            if (html.Contains("security-checkpoint")) return true;
+
+            return false;
+        }
+
+        private static string ScrapeTestCleanPriceText(string s)
+        {
+            var trimmed = Regex.Replace(s.Trim(), "\\s+", " ");
+            var halfLen = trimmed.Length / 2;
+            if (halfLen > 0 && trimmed.Substring(0, halfLen)
+                .Equals(trimmed.Substring(halfLen), StringComparison.OrdinalIgnoreCase))
+                trimmed = trimmed.Substring(0, halfLen);
+            return trimmed;
+        }
+
+        private static bool ScrapeTestLooksPromotional(string s)
+        {
+            var t = s.ToLowerInvariant();
+            return t.Contains("save") || t.Contains("discount") || t.Contains("off");
+        }
+
+        private static bool ScrapeTestIsStruckThrough(IElement el)
+        {
+            var style = el.GetAttribute("style")?.ToLowerInvariant() ?? string.Empty;
+            if (style.Contains("line-through")) return true;
+            var cls = el.ClassName?.ToLowerInvariant() ?? string.Empty;
+            if (!string.IsNullOrEmpty(cls) && (
+                cls.Contains("strike") || cls.Contains("strikethrough") ||
+                cls.Contains("line-through") || cls.Contains("text-decor_line-through") ||
+                cls.Contains("was-price") || cls.Contains("old-price") || cls.Contains("list-price")))
+                return true;
+            var parent = el.ParentElement;
+            if (parent != null)
+            {
+                var pStyle = parent.GetAttribute("style")?.ToLowerInvariant() ?? string.Empty;
+                var pCls = parent.ClassName?.ToLowerInvariant() ?? string.Empty;
+                if (pStyle.Contains("line-through")) return true;
+                if (!string.IsNullOrEmpty(pCls) && (
+                    pCls.Contains("strike") || pCls.Contains("strikethrough") ||
+                    pCls.Contains("was-price") || pCls.Contains("old-price") || pCls.Contains("list-price")))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool ScrapeTestTryParsePrice(string? s, out decimal price)
+        {
+            price = 0m;
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            var m = Regex.Match(s, "(?<![A-Za-z0-9])([0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]{2})|[0-9]+(?:\\.[0-9]{1,2})?)");
+            if (!m.Success) return false;
+            var num = m.Groups[1].Value.Replace(",", "");
+            return decimal.TryParse(num, out price);
+        }
+
+        private static string? ScrapeTestDetectCurrency(string s)
+        {
+            s = s.ToUpperInvariant();
+            if (s.Contains("USD") || s.Contains("US $") || s.Contains("$")) return "USD";
+            if (s.Contains("EUR") || s.Contains("€")) return "EUR";
+            if (s.Contains("GBP") || s.Contains("£")) return "GBP";
+            return null;
+        }
+
+        #endregion
     }
 }

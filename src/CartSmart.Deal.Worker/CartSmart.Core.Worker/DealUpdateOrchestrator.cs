@@ -638,7 +638,22 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 if (!forceApi && data == null && ScrapeMode.AllowsServiceScrape(store?.ScrapeModeId) && overrideSelectors != null && overrideSelectors.Length > 0)
                 {
                     // fallback to scraping (only if enabled)
-                    var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, ct);
+                    var httpOn = store?.ScrapeHttpEnabled ?? true;
+                    var pwOn = store?.ScrapePlaywrightEnabled ?? true;
+                    var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, httpOn, pwOn, ct);
+
+                    // Log to scrape_log
+                    if (store != null)
+                    {
+                        if (scrapeOutcome.SucceededMethod != null)
+                            await repoImpl.InsertScrapeLogAsync(store.Id, dealProduct.Id, url, scrapeOutcome.SucceededMethod, true, scrapeOutcome.Data?.Price, scrapeOutcome.Data?.Currency, null, ct);
+                        else
+                        {
+                            if (httpOn) await repoImpl.InsertScrapeLogAsync(store.Id, dealProduct.Id, url, "http", false, null, null, scrapeOutcome.BlockedByBotProtection ? "bot_protection" : "no_price_found", ct);
+                            if (pwOn) await repoImpl.InsertScrapeLogAsync(store.Id, dealProduct.Id, url, "playwright", false, null, null, scrapeOutcome.BlockedByBotProtection ? "bot_protection" : "no_price_found", ct);
+                        }
+                    }
+
                     if (scrapeOutcome.BlockedByBotProtection)
                     {
                         var taskId = await repoImpl.CreateOrGetPendingManualPriceTaskAsync(dealProduct, "bot_protection", ct);
@@ -655,7 +670,22 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             }
             else if (ScrapeMode.AllowsServiceScrape(store?.ScrapeModeId) && overrideSelectors != null && overrideSelectors.Length > 0)
             {
-                var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, ct);
+                var httpOn = store?.ScrapeHttpEnabled ?? true;
+                var pwOn = store?.ScrapePlaywrightEnabled ?? true;
+                var scrapeOutcome = await FallbackScrapeAsync(url, overrideSelectors, httpOn, pwOn, ct);
+
+                // Log to scrape_log
+                if (store != null)
+                {
+                    if (scrapeOutcome.SucceededMethod != null)
+                        await repoImpl.InsertScrapeLogAsync(store.Id, dealProduct.Id, url, scrapeOutcome.SucceededMethod, true, scrapeOutcome.Data?.Price, scrapeOutcome.Data?.Currency, null, ct);
+                    else
+                    {
+                        if (httpOn) await repoImpl.InsertScrapeLogAsync(store.Id, dealProduct.Id, url, "http", false, null, null, scrapeOutcome.BlockedByBotProtection ? "bot_protection" : "no_price_found", ct);
+                        if (pwOn) await repoImpl.InsertScrapeLogAsync(store.Id, dealProduct.Id, url, "playwright", false, null, null, scrapeOutcome.BlockedByBotProtection ? "bot_protection" : "no_price_found", ct);
+                    }
+                }
+
                 if (scrapeOutcome.BlockedByBotProtection)
                 {
                     var taskId = await repoImpl.CreateOrGetPendingManualPriceTaskAsync(dealProduct, "bot_protection", ct);
@@ -852,14 +882,14 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
     private enum RefreshTier { A, B, C, D }
 
-    private sealed record ScrapeOutcome(StoreProductData? Data, bool BlockedByBotProtection);
+    private sealed record ScrapeOutcome(StoreProductData? Data, bool BlockedByBotProtection, string? SucceededMethod = null);
 
-    private async Task<ScrapeOutcome> FallbackScrapeAsync(string url, string[]? overrideSelectors, CancellationToken ct)
+    private async Task<ScrapeOutcome> FallbackScrapeAsync(string url, string[]? overrideSelectors, bool httpEnabled, bool playwrightEnabled, CancellationToken ct)
     {
         try
         {
             var uri = new Uri(url);
-            var scrape = await _scraper.ScrapeAsync(uri, overrideSelectors, ct);
+            var scrape = await _scraper.ScrapeAsync(uri, overrideSelectors, httpEnabled, playwrightEnabled, ct);
             if (scrape == null) return new ScrapeOutcome(null, false);
 
             if (scrape.BlockedByBotProtection)
@@ -874,7 +904,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     Discontinued: false,
                     RetrievedUtc: _timeProvider.GetUtcNow().UtcDateTime
                 ),
-                false);
+                false,
+                scrape.SucceededMethod);
         }
         catch (Exception ex)
         {

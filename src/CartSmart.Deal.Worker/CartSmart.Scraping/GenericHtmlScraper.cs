@@ -52,6 +52,11 @@ public class GenericHtmlScraper : IHtmlScraper
 
     public async Task<ScrapeResult?> ScrapeAsync(Uri uri, string[]? overridePriceSelectors, CancellationToken ct)
     {
+        return await ScrapeAsync(uri, overridePriceSelectors, true, true, ct);
+    }
+
+    public async Task<ScrapeResult?> ScrapeAsync(Uri uri, string[]? overridePriceSelectors, bool httpEnabled, bool playwrightEnabled, CancellationToken ct)
+    {
         try
         {
             // If no explicit selectors provided (store profile required), skip scraping
@@ -64,24 +69,35 @@ public class GenericHtmlScraper : IHtmlScraper
             var activeSelectors = overridePriceSelectors;
             var candidates = new List<(decimal amount, string? currency, bool struck, bool promo)>();
             bool blockedByBot = false;
+            string? succeededMethod = null;
+            AngleSharp.Dom.IDocument? lastDoc = null;
 
             // ── Step 1: Raw HTML fetch (AngleSharp static parse) ──
-            _logger.LogInformation("Step 1: Fetching raw HTML for {Url}", uri);
-            var doc = await _context.OpenAsync(uri.ToString(), ct);
-
-            if (LooksLikeBotProtectionPage(doc))
+            if (httpEnabled)
             {
-                _logger.LogWarning("Raw HTML blocked by bot protection for {Url}; will try Playwright fallback", uri);
-                blockedByBot = true;
+                _logger.LogInformation("Step 1: Fetching raw HTML for {Url}", uri);
+                var doc = await _context.OpenAsync(uri.ToString(), ct);
+                lastDoc = doc;
+
+                if (LooksLikeBotProtectionPage(doc))
+                {
+                    _logger.LogWarning("Raw HTML blocked by bot protection for {Url}; will try Playwright fallback", uri);
+                    blockedByBot = true;
+                }
+                else
+                {
+                    candidates = ExtractPriceCandidates(doc, activeSelectors);
+                    _logger.LogInformation("Step 1 result: {Count} price candidate(s) from raw HTML for {Url}", candidates.Count, uri);
+                    if (candidates.Count > 0) succeededMethod = "http";
+                }
             }
             else
             {
-                candidates = ExtractPriceCandidates(doc, activeSelectors);
-                _logger.LogInformation("Step 1 result: {Count} price candidate(s) from raw HTML for {Url}", candidates.Count, uri);
+                _logger.LogInformation("Step 1 skipped (HTTP disabled) for {Url}", uri);
             }
 
             // ── Step 2: Playwright JS-rendered fallback ──
-            if (candidates.Count == 0 && _jsRenderer != null)
+            if (candidates.Count == 0 && playwrightEnabled && _jsRenderer != null)
             {
                 _logger.LogInformation("Step 2: Running Playwright JS-rendered fallback for {Url}", uri);
                 var effectiveTimeout = _jsTimeoutMs < 8000 ? 15000 : _jsTimeoutMs;
@@ -92,6 +108,7 @@ public class GenericHtmlScraper : IHtmlScraper
                 if (!string.IsNullOrEmpty(rendered))
                 {
                     var doc2 = await _context.OpenAsync(req => req.Content(rendered));
+                    lastDoc = doc2;
 
                     if (LooksLikeBotProtectionPage(doc2))
                     {
@@ -102,12 +119,17 @@ public class GenericHtmlScraper : IHtmlScraper
                     {
                         candidates = ExtractPriceCandidates(doc2, activeSelectors);
                         _logger.LogInformation("Step 2 result: {Count} price candidate(s) from Playwright for {Url}", candidates.Count, uri);
+                        if (candidates.Count > 0) succeededMethod = "playwright";
                     }
                 }
                 else
                 {
                     _logger.LogWarning("Playwright returned empty content for {Url}", uri);
                 }
+            }
+            else if (candidates.Count == 0 && !playwrightEnabled)
+            {
+                _logger.LogInformation("Step 2 skipped (Playwright disabled) for {Url}", uri);
             }
             else if (candidates.Count == 0)
             {
@@ -127,6 +149,7 @@ public class GenericHtmlScraper : IHtmlScraper
                     InStock = null,
                     Sold = null,
                     BlockedByBotProtection = blockedByBot,
+                    SucceededMethod = null,
                     RawSignals = new Dictionary<string, string>
                     {
                         ["blocked"] = blockedByBot ? "bot_protection" : "no_price_found"
@@ -170,7 +193,7 @@ public class GenericHtmlScraper : IHtmlScraper
                 }
             }
 
-            var text = doc.Body?.TextContent?.ToLowerInvariant() ?? string.Empty;
+            var text = lastDoc?.Body?.TextContent?.ToLowerInvariant() ?? string.Empty;
             bool? inStock = null;
             if (StockKeywords.Any(k => text.Contains(k))) inStock = true;
             if (OosKeywords.Any(k => text.Contains(k))) inStock = false;
@@ -182,6 +205,7 @@ public class GenericHtmlScraper : IHtmlScraper
                 Currency = currency ?? "USD",
                 InStock = inStock,
                 Sold = text.Contains("sold") ? true : null,
+                SucceededMethod = succeededMethod,
                 RawSignals = new Dictionary<string, string>
                 {
                     ["priceFound"] = price?.ToString() ?? "",

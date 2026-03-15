@@ -32,6 +32,7 @@ import { CookieConsentProvider } from './context/CookieConsentContext';
 import { TermsConsentProvider } from './context/TermsConsentContext';
 import CookieBanner from './components/CookieBanner';
 import AdminManualPriceTasksPage from './components/AdminManualPriceTasksPage';
+import AdminScrapeReportPage from './components/AdminScrapeReportPage';
 
 function App() {
   const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
@@ -137,6 +138,17 @@ function App() {
                     <>
                       <Header />
                       <AdminManualPriceTasksPage />
+                    </>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/admin/scrape-report"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <>
+                      <Header />
+                      <AdminScrapeReportPage />
                     </>
                   </ProtectedRoute>
                 }

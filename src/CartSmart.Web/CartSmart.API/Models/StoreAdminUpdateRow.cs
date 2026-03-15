@@ -50,4 +50,10 @@ public class StoreAdminUpdateRow : BaseModel
 
     [Column("description")]
     public string? Description { get; set; }
+
+    [Column("scrape_http_enabled")]
+    public bool ScrapeHttpEnabled { get; set; } = true;
+
+    [Column("scrape_playwright_enabled")]
+    public bool ScrapePlaywrightEnabled { get; set; } = true;
 }

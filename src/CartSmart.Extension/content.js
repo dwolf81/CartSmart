@@ -302,5 +302,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   sendResponse({ ack: true });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Admin test-scrape relay  (web page ↔ extension via CustomEvent)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Mark our presence so the web app can detect the extension
+document.documentElement.dataset.cartsmartExtension = "1";
+
+// The web app dispatches "cartsmart-test-scrape" with { url, selectors, requestId }.
+// We relay to background, which opens the page in a real tab, runs the
+// content-script extraction, and returns the result.
+window.addEventListener("cartsmart-test-scrape", (evt) => {
+  const { url, selectors, requestId } = evt.detail || {};
+  chrome.runtime.sendMessage(
+    { type: "TEST_SCRAPE_CONFIG", url, selectors, requestId },
+    (response) => {
+      window.dispatchEvent(
+        new CustomEvent("cartsmart-test-scrape-result", {
+          detail: response || { requestId, error: "No response from extension" },
+        })
+      );
+    }
+  );
+});
+
 // Let the background script know we're ready
 console.log("[CartSmart] Content script loaded on", window.location.href);

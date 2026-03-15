@@ -34,6 +34,59 @@ const slugify = (value) => {
     .replace(/^-|-$/g, '');
 };
 
+/* ─── Reusable result panel for test-scrape methods ─── */
+function TestResultPanel({ result }) {
+  if (!result) return null;
+  const ok = result.success;
+  return (
+    <div className={`text-xs rounded-md p-2 border ${
+      ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+         : 'bg-red-50 border-red-200 text-red-800'
+    }`}>
+      {ok ? (
+        <>
+          <div className="font-semibold text-sm mb-1">
+            Price: {result.currency === 'USD' ? '$' : result.currency === 'EUR' ? '\u20AC' : result.currency === 'GBP' ? '\u00A3' : ''}
+            {result.price?.toFixed(2)}
+            {result.currency && <span className="text-xs font-normal ml-1">{result.currency}</span>}
+          </div>
+          {result.inStock != null && (
+            <div>{result.inStock ? '\u2705 In Stock' : '\u274C Out of Stock'}</div>
+          )}
+          {result.htmlLength != null && (
+            <div className="text-gray-500">HTML size: {(result.htmlLength / 1024).toFixed(1)} KB</div>
+          )}
+          {result.candidates?.length > 0 && (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-emerald-700 hover:text-emerald-900">
+                {result.candidates.length} candidate{result.candidates.length !== 1 ? 's' : ''} found
+              </summary>
+              <ul className="mt-1 space-y-0.5 text-emerald-800">
+                {result.candidates.map((c, i) => (
+                  <li key={i} className="font-mono">
+                    {c.currency === 'USD' ? '$' : ''}{c.amount?.toFixed(2)}
+                    {c.struck && <span className="ml-1 text-orange-600">(struck)</span>}
+                    {c.promo && <span className="ml-1 text-orange-600">(promo)</span>}
+                    <span className="ml-1 text-gray-500">via {c.selector}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      ) : (
+        <div>
+          {result.blockedByBotProtection && <span className="font-semibold">{'\uD83D\uDEE1\uFE0F'} Bot Protection: </span>}
+          {result.error || 'Unknown error'}
+          {result.htmlLength != null && (
+            <span className="ml-2 text-gray-500">(HTML: {(result.htmlLength / 1024).toFixed(1)} KB)</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AdminStoreModal({
   isOpen,
   onClose,
@@ -54,6 +107,17 @@ export default function AdminStoreModal({
   const [error, setError] = useState('');
 
   const [brands, setBrands] = useState([]);
+  const [addNewBrand, setAddNewBrand] = useState(false);
+  const [newBrandName, setNewBrandName] = useState('');
+  const [newBrandUrl, setNewBrandUrl] = useState('');
+
+  const [testScrapeUrl, setTestScrapeUrl] = useState('');
+  const [testHttpLoading, setTestHttpLoading] = useState(false);
+  const [testHttpResult, setTestHttpResult] = useState(null);
+  const [testPlaywrightLoading, setTestPlaywrightLoading] = useState(false);
+  const [testPlaywrightResult, setTestPlaywrightResult] = useState(null);
+  const [testBrowserLoading, setTestBrowserLoading] = useState(false);
+  const [testBrowserResult, setTestBrowserResult] = useState(null);
 
   const [slugEdited, setSlugEdited] = useState(false);
 
@@ -72,7 +136,9 @@ export default function AdminStoreModal({
     apiEnabled: false,
     scrapeModeId: '0',
     scrapeConfig: '',
-    requiredQueryVars: ''
+    requiredQueryVars: '',
+    scrapeHttpEnabled: true,
+    scrapePlaywrightEnabled: true
   });
 
   const [storeImageUrl, setStoreImageUrl] = useState('');
@@ -100,6 +166,10 @@ export default function AdminStoreModal({
     setStoreImageUrl('');
     setStoreImageUrlInput('');
     setSlugEdited(false);
+    setTestScrapeUrl('');
+    setTestHttpResult(null);
+    setTestPlaywrightResult(null);
+    setTestBrowserResult(null);
 
     setDraft({
       name: '',
@@ -116,7 +186,9 @@ export default function AdminStoreModal({
       apiEnabled: false,
       scrapeModeId: '0',
       scrapeConfig: '',
-      requiredQueryVars: ''
+      requiredQueryVars: '',
+      scrapeHttpEnabled: true,
+      scrapePlaywrightEnabled: true
     });
   };
 
@@ -137,7 +209,9 @@ export default function AdminStoreModal({
       apiEnabled: !!s?.apiEnabled,
       scrapeModeId: s?.scrapeModeId != null ? String(s.scrapeModeId) : '0',
       scrapeConfig: s?.scrapeConfig ?? '',
-      requiredQueryVars: s?.requiredQueryVars ?? ''
+      requiredQueryVars: s?.requiredQueryVars ?? '',
+      scrapeHttpEnabled: s?.scrapeHttpEnabled !== false,
+      scrapePlaywrightEnabled: s?.scrapePlaywrightEnabled !== false
     });
 
     setStoreImageUrl(s?.imageUrl ?? '');
@@ -240,6 +314,27 @@ export default function AdminStoreModal({
 
     setSaving(true);
     try {
+      // If "Add as new Brand" is checked, create the brand first
+      let resolvedBrandId = draft.brandId ? Number(draft.brandId) : null;
+      if (addNewBrand && newBrandName.trim()) {
+        const brandRes = await authFetch(`${API_URL}/api/brands`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newBrandName.trim(), url: newBrandUrl.trim() || null })
+        });
+        if (!brandRes.ok) throw new Error('Failed to create brand');
+        const created = await brandRes.json();
+        resolvedBrandId = created.id;
+        setBrands((prev) => {
+          if (prev.some((b) => b.id === created.id)) return prev;
+          return [...prev, { id: created.id, name: created.name }].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        });
+        setDraft((p) => ({ ...p, brandId: String(created.id) }));
+        setAddNewBrand(false);
+        setNewBrandName('');
+        setNewBrandUrl('');
+      }
+
       const body = {
         name,
         url: (draft.url || '').trim() || null,
@@ -249,13 +344,15 @@ export default function AdminStoreModal({
 
         affiliateCode: (draft.affiliateCode || '').trim() || null,
         affiliateCodeVar: (draft.affiliateCodeVar || '').trim() || null,
-        brandId: draft.brandId ? Number(draft.brandId) : null,
+        brandId: resolvedBrandId,
         upfrontCost: draft.upfrontCost === '' ? null : Number(draft.upfrontCost),
         upfrontCostTermId: draft.upfrontCostTermId ? Number(draft.upfrontCostTermId) : null,
         apiEnabled: !!draft.apiEnabled,
         scrapeModeId: draft.scrapeModeId ? Number(draft.scrapeModeId) : 0,
         scrapeConfig: (draft.scrapeConfig || '').trim() || null,
-        requiredQueryVars: (draft.requiredQueryVars || '').trim() || null
+        requiredQueryVars: (draft.requiredQueryVars || '').trim() || null,
+        scrapeHttpEnabled: !!draft.scrapeHttpEnabled,
+        scrapePlaywrightEnabled: !!draft.scrapePlaywrightEnabled
       };
 
       if (internalMode === 'add') {
@@ -515,19 +612,55 @@ export default function AdminStoreModal({
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Brand</label>
-                  <select
-                    value={draft.brandId}
-                    onChange={(e) => setDraft((p) => ({ ...p, brandId: e.target.value }))}
-                    className="w-full px-3 py-2 border rounded-md text-sm"
-                    disabled={saving}
-                  >
-                    <option value="">(No brand)</option>
-                    {brands.map((b) => (
-                      <option key={b.id} value={String(b.id)}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
+                  {!addNewBrand && (
+                    <select
+                      value={draft.brandId}
+                      onChange={(e) => setDraft((p) => ({ ...p, brandId: e.target.value }))}
+                      className="w-full px-3 py-2 border rounded-md text-sm"
+                      disabled={saving}
+                    >
+                      <option value="">(No brand)</option>
+                      {brands.map((b) => (
+                        <option key={b.id} value={String(b.id)}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {addNewBrand && (
+                    <div className="space-y-2">
+                      <input
+                        value={newBrandName}
+                        onChange={(e) => setNewBrandName(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-md text-sm"
+                        placeholder="Brand name"
+                        disabled={saving}
+                      />
+                      <input
+                        value={newBrandUrl}
+                        onChange={(e) => setNewBrandUrl(e.target.value)}
+                        className="w-full px-3 py-2 border rounded-md text-sm"
+                        placeholder="Brand URL (optional)"
+                        disabled={saving}
+                      />
+                    </div>
+                  )}
+                  <label className="mt-1.5 flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={addNewBrand}
+                      onChange={(e) => {
+                        setAddNewBrand(e.target.checked);
+                        if (!e.target.checked) {
+                          setNewBrandName('');
+                          setNewBrandUrl('');
+                        }
+                      }}
+                      className="h-3.5 w-3.5"
+                      disabled={saving}
+                    />
+                    Add as new Brand
+                  </label>
                 </div>
 
                 <div>
@@ -589,7 +722,19 @@ export default function AdminStoreModal({
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Scrape Config (optional JSON)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-sm font-medium text-gray-700">Scrape Config (optional JSON)</label>
+                    {!draft.scrapeConfig && (
+                      <button
+                        type="button"
+                        onClick={() => setDraft((p) => ({ ...p, scrapeConfig: '{"price_selectors":["#price",".offer-price"]}' }))}
+                        className="text-xs text-blue-600 hover:text-blue-800 underline"
+                        disabled={saving}
+                      >
+                        Use Template
+                      </button>
+                    )}
+                  </div>
                   <textarea
                     rows={3}
                     value={draft.scrapeConfig}
@@ -598,6 +743,174 @@ export default function AdminStoreModal({
                     placeholder='{"price_selectors":["#price",".offer-price"]}'
                     disabled={saving}
                   />
+
+                  {/* Test Scrape Config — multi-method diagnostic */}
+                  {draft.scrapeConfig && draft.scrapeModeId !== '0' && (
+                    <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md space-y-3">
+                      <div className="text-xs font-medium text-gray-700">Test Scrape Config</div>
+
+                      {/* Shared URL input */}
+                      <input
+                        value={testScrapeUrl}
+                        onChange={(e) => { setTestScrapeUrl(e.target.value); setTestBrowserResult(null); }}
+                        className="w-full px-2 py-1.5 border rounded-md text-xs font-mono"
+                        placeholder="https://store.com/product-page"
+                        disabled={saving}
+                      />
+
+                      {/* ── Test 1: Simple GET (only for "All" mode) ── */}
+                      {draft.scrapeModeId === '1' && (
+                        <div className="border border-slate-200 rounded-md p-2.5 bg-white">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="text-xs font-semibold text-gray-700">1. Simple GET <span className="font-normal text-gray-500">(HttpClient)</span></div>
+                            <button
+                              type="button"
+                              disabled={saving || testHttpLoading || !testScrapeUrl.trim() || !draft.scrapeConfig.trim()}
+                              onClick={async () => {
+                                setTestHttpLoading(true);
+                                setTestHttpResult(null);
+                                try {
+                                  const res = await authFetch(`${API_URL}/api/stores/admin/test-scrape`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ url: testScrapeUrl.trim(), scrapeConfig: draft.scrapeConfig.trim(), method: 'http' })
+                                  });
+                                  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+                                  const data = await res.json();
+                                  setTestHttpResult(data);
+                                } catch (e) {
+                                  setTestHttpResult({ success: false, error: e.message || 'Request failed' });
+                                } finally {
+                                  setTestHttpLoading(false);
+                                }
+                              }}
+                              className="px-2.5 py-1 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {testHttpLoading ? 'Testing\u2026' : 'Run'}
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-gray-500 mb-1.5">Tests a raw HTTP fetch — no JavaScript execution. Many sites require JS so this may fail.</p>
+                          {testHttpResult && <TestResultPanel result={testHttpResult} />}
+                        </div>
+                      )}
+
+                      {/* ── Test 2: Playwright (only for "All" mode) ── */}
+                      {draft.scrapeModeId === '1' && (
+                        <div className="border border-slate-200 rounded-md p-2.5 bg-white">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="text-xs font-semibold text-gray-700">2. Playwright <span className="font-normal text-gray-500">(Headless Browser)</span></div>
+                            <button
+                              type="button"
+                              disabled={saving || testPlaywrightLoading || !testScrapeUrl.trim() || !draft.scrapeConfig.trim()}
+                              onClick={async () => {
+                                setTestPlaywrightLoading(true);
+                                setTestPlaywrightResult(null);
+                                try {
+                                  const res = await authFetch(`${API_URL}/api/stores/admin/test-scrape`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ url: testScrapeUrl.trim(), scrapeConfig: draft.scrapeConfig.trim(), method: 'playwright' })
+                                  });
+                                  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+                                  const data = await res.json();
+                                  setTestPlaywrightResult(data);
+                                } catch (e) {
+                                  setTestPlaywrightResult({ success: false, error: e.message || 'Request failed' });
+                                } finally {
+                                  setTestPlaywrightLoading(false);
+                                }
+                              }}
+                              className="px-2.5 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {testPlaywrightLoading ? 'Testing\u2026' : 'Run'}
+                            </button>
+                          </div>
+                          <p className="text-[10px] text-gray-500 mb-1.5">Tests with a headless Chromium browser — executes JavaScript. Simulates what the scraping service does.</p>
+                          {testPlaywrightResult && <TestResultPanel result={testPlaywrightResult} />}
+                        </div>
+                      )}
+
+                      {/* ── Test 3: Browser Extension (for "All" or "Browser Extension Only") ── */}
+                      <div className="border border-slate-200 rounded-md p-2.5 bg-white">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="text-xs font-semibold text-gray-700">
+                            {draft.scrapeModeId === '1' ? '3. ' : ''}Browser Extension <span className="font-normal text-gray-500">(Real Browser)</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={!testScrapeUrl.trim() || !draft.scrapeConfig.trim() || testBrowserLoading}
+                              onClick={() => {
+                                const hasExtension = document.documentElement.dataset.cartsmartExtension === '1';
+                                if (!hasExtension) {
+                                  setTestBrowserResult({ success: false, error: 'CartSmart browser extension not detected. Install the extension and reload the page.' });
+                                  return;
+                                }
+
+                                let selectors;
+                                try {
+                                  const cfg = JSON.parse(draft.scrapeConfig.trim());
+                                  selectors = cfg.price_selectors;
+                                  if (!selectors || !selectors.length) throw new Error('No price_selectors found');
+                                } catch (e) {
+                                  setTestBrowserResult({ success: false, error: 'Invalid scrape config: ' + e.message });
+                                  return;
+                                }
+
+                                setTestBrowserLoading(true);
+                                setTestBrowserResult(null);
+                                const requestId = Date.now().toString();
+
+                                const timeout = setTimeout(() => {
+                                  window.removeEventListener('cartsmart-test-scrape-result', onResult);
+                                  setTestBrowserResult({ success: false, error: 'Timed out — the extension did not respond in time.' });
+                                  setTestBrowserLoading(false);
+                                }, 35000);
+
+                                function onResult(evt) {
+                                  const d = evt.detail;
+                                  if (d?.requestId !== requestId) return;
+                                  window.removeEventListener('cartsmart-test-scrape-result', onResult);
+                                  clearTimeout(timeout);
+
+                                  if (d.success && d.price !== null && d.price !== undefined) {
+                                    setTestBrowserResult({
+                                      success: true,
+                                      price: d.price,
+                                      currency: d.currency || 'USD',
+                                      inStock: d.inStock,
+                                      candidates: (d.candidates || []).map(c => ({
+                                        amount: c.amount,
+                                        currency: c.currency,
+                                        struck: c.struck,
+                                        promo: c.promo,
+                                      })),
+                                    });
+                                  } else {
+                                    setTestBrowserResult({ success: false, error: d.error || 'No price found on page.' });
+                                  }
+                                  setTestBrowserLoading(false);
+                                }
+
+                                window.addEventListener('cartsmart-test-scrape-result', onResult);
+                                window.dispatchEvent(new CustomEvent('cartsmart-test-scrape', {
+                                  detail: { url: testScrapeUrl.trim(), selectors, requestId }
+                                }));
+                              }}
+                              className="px-2.5 py-1 text-xs bg-sky-600 text-white rounded hover:bg-sky-700 disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {testBrowserLoading ? 'Testing\u2026' : 'Run'}
+                            </button>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-gray-500 mb-1.5">
+                          Opens the URL in a real browser tab via the CartSmart extension and runs the CSS selectors against the live DOM.
+                          {draft.scrapeModeId === '2' && ' Since scrape mode is "Browser Extension Only", this is the primary test.'}
+                        </p>
+                        {testBrowserResult && <TestResultPanel result={testBrowserResult} />}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="md:col-span-2">

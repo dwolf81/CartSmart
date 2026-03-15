@@ -47,6 +47,8 @@ public interface IVariantResolvingStoreClient
 public interface IHtmlScraper
 {
     Task<ScrapeResult?> ScrapeAsync(Uri uri, string[]? overridePriceSelectors, CancellationToken ct);
+    Task<ScrapeResult?> ScrapeAsync(Uri uri, string[]? overridePriceSelectors, bool httpEnabled, bool playwrightEnabled, CancellationToken ct)
+        => ScrapeAsync(uri, overridePriceSelectors, ct);
 }
 
 public interface IDealUpdateOrchestrator

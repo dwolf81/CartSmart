@@ -21,6 +21,7 @@ const REFRESH_INTERVAL_MIN = 60; // re-sync store configs every hour
 let storeConfigs = [];
 let recentReports = []; // last N reports for popup display
 const MAX_RECENT = 50;
+const testTabs = new Set(); // tabs opened for admin test-scrape (skip normal flow)
 
 /**
  * MV3 service workers are terminated after ~30s of inactivity.
@@ -108,6 +109,7 @@ const DEFAULT_PRICE_SELECTORS = [
 ];
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (testTabs.has(tabId)) return; // skip tabs opened for admin test-scrape
   if (changeInfo.status !== "complete" || !tab.url) return;
 
   await ensureStoresLoaded();
@@ -157,9 +159,86 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "PRICE_EXTRACTED") {
-    handlePriceExtracted(message, sender);
+    // Skip normal API submission for test-scrape tabs (handled by TEST_SCRAPE_CONFIG)
+    if (!testTabs.has(sender.tab?.id)) {
+      handlePriceExtracted(message, sender);
+    }
     sendResponse({ ok: true });
     return;
+  }
+
+  // ── Admin test-scrape: open URL in a real tab, extract price, return ───
+  if (message.type === "TEST_SCRAPE_CONFIG") {
+    const { url, selectors, requestId } = message;
+    const TIMEOUT_MS = 25000;
+    let tabId = null;
+    let resolved = false;
+    let timeoutId = null;
+
+    function cleanup() {
+      if (timeoutId) clearTimeout(timeoutId);
+      chrome.runtime.onMessage.removeListener(onResult);
+      if (tabId) {
+        testTabs.delete(tabId);
+        chrome.tabs.remove(tabId).catch(() => {});
+      }
+    }
+
+    function finish(result) {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      sendResponse({ success: true, requestId, ...result });
+    }
+
+    function fail(msg) {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      sendResponse({ success: false, requestId, error: msg });
+    }
+
+    function onResult(msg, snd) {
+      if (msg.type === "PRICE_EXTRACTED" && snd.tab?.id === tabId) {
+        const r = msg.result || {};
+        finish({
+          price: r.price,
+          currency: r.currency || "USD",
+          inStock: r.inStock,
+          candidates: r.candidates || [],
+          url: r.url,
+        });
+      }
+    }
+
+    chrome.runtime.onMessage.addListener(onResult);
+    timeoutId = setTimeout(() => fail("Timed out waiting for extraction"), TIMEOUT_MS);
+
+    chrome.tabs.create({ url, active: false }, (tab) => {
+      if (chrome.runtime.lastError) {
+        fail(chrome.runtime.lastError.message);
+        return;
+      }
+      tabId = tab.id;
+      testTabs.add(tabId);
+
+      chrome.tabs.onUpdated.addListener(function onUpdated(updatedId, info) {
+        if (updatedId !== tabId || info.status !== "complete") return;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+
+        // Small delay for dynamic content to render
+        setTimeout(() => {
+          sendToContentScript(tabId, {
+            type: "EXTRACT_PRICE",
+            storeId: 0,
+            storeName: "_test_",
+            selectors: selectors || DEFAULT_PRICE_SELECTORS,
+          }).catch((err) => fail("Content script error: " + err.message));
+        }, 2000);
+      });
+    });
+
+    return true; // keep async channel open
   }
 
   if (message.type === "GET_STATUS") {

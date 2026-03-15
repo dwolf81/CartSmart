@@ -287,6 +287,24 @@ namespace CartSmart.API.Controllers
             // Mark this URL as recently updated so other users don't re-submit
             _cache.Set(throttleKey, DateTime.UtcNow, PriceReportThrottle);
 
+            // ── Log to scrape_log (extension method) ──
+            try
+            {
+                var dpId = matched.FirstOrDefault()?.Id;
+                var log = new ScrapeLog
+                {
+                    StoreId = report.storeId,
+                    DealProductId = dpId,
+                    Url = report.url,
+                    Method = "extension",
+                    Success = true,
+                    Price = report.price,
+                    Currency = report.currency
+                };
+                await client.From<ScrapeLog>().Insert(log);
+            }
+            catch { /* best-effort logging */ }
+
             return Ok(new ExtensionPriceReportResponseDTO
             {
                 accepted = true,

@@ -237,6 +237,19 @@ const Header = () => {
                                                     )}
                                                 </Menu.Item>
                                             )}
+
+                                            {Boolean(user?.admin) && (
+                                                <Menu.Item>
+                                                    {({ active }) => (
+                                                        <Link
+                                                            to="/admin/scrape-report"
+                                                            className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                        >
+                                                            Scrape Report
+                                                        </Link>
+                                                    )}
+                                                </Menu.Item>
+                                            )}
                                             <Menu.Item>
                                                 {({ active }) => (
                                                     <button
@@ -407,6 +420,15 @@ const Header = () => {
                                             className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
                                         >
                                             Manual Price Tasks
+                                        </Link>
+                                    )}
+                                    {Boolean(user?.admin) && (
+                                        <Link
+                                            to="/admin/scrape-report"
+                                            onClick={() => setMobileOpen(false)}
+                                            className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                        >
+                                            Scrape Report
                                         </Link>
                                     )}
                                     <button
