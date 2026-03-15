@@ -724,7 +724,7 @@ const StorePage = () => {
                                 {isAuthenticated ? (
                                   <code
                                     onClick={() => navigator.clipboard.writeText(deal.coupon_code)}
-                                    className="bg-gray-100 border border-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
+                                    className="bg-gray-100 border border-dashed border-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
                                     title="Click to copy"
                                   >
                                     {deal.coupon_code}
@@ -794,7 +794,7 @@ const StorePage = () => {
 
                                         {step.coupon_code && (
                                           isAuthenticated ? (
-                                            <code className="hidden sm:inline bg-gray-100 border border-gray-300 px-2 py-0.5 rounded text-sm">
+                                            <code className="hidden sm:inline bg-gray-100 border border-dashed border-gray-300 px-2 py-0.5 rounded text-sm">
                                               {step.coupon_code}
                                             </code>
                                           ) : (
@@ -849,7 +849,7 @@ const StorePage = () => {
                                               {isAuthenticated ? (
                                                 <code
                                                   onClick={() => navigator.clipboard.writeText(step.coupon_code)}
-                                                  className="bg-gray-100 border border-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
+                                                  className="bg-gray-100 border border-dashed border-gray-300 px-2 py-1 rounded cursor-pointer hover:bg-gray-200 transition-colors text-sm"
                                                   title="Click to copy"
                                                 >
                                                   {step.coupon_code}
