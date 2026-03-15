@@ -291,7 +291,7 @@ namespace CartSmart.API.Controllers
             try
             {
                 var dpId = matched.FirstOrDefault()?.Id;
-                var log = new ScrapeLog
+                var log = new ScrapeLogInsert
                 {
                     StoreId = report.storeId,
                     DealProductId = dpId,
@@ -301,9 +301,13 @@ namespace CartSmart.API.Controllers
                     Price = report.price,
                     Currency = report.currency
                 };
-                await client.From<ScrapeLog>().Insert(log);
+                await client.From<ScrapeLogInsert>().Insert(log);
             }
-            catch { /* best-effort logging */ }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ScrapeLog] Insert failed: {ex.Message}");
+                /* best-effort logging */
+            }
 
             return Ok(new ExtensionPriceReportResponseDTO
             {

@@ -980,7 +980,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     {
         try
         {
-            var log = new ScrapeLog
+            var log = new ScrapeLogInsert
             {
                 StoreId = storeId,
                 DealProductId = dealProductId,
@@ -991,7 +991,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
                 Currency = currency,
                 ErrorMessage = errorMessage?.Length > 500 ? errorMessage[..500] : errorMessage
             };
-            await _client.From<ScrapeLog>().Insert(log, cancellationToken: ct);
+            await _client.From<ScrapeLogInsert>().Insert(log, cancellationToken: ct);
         }
         catch
         {
