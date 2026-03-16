@@ -294,9 +294,14 @@ public sealed class AdminManualPriceTasksController : ControllerBase
                     if (deal.DiscountPercent != newDiscount)
                     {
                         deal.DiscountPercent = newDiscount;
-                        await client.From<Deal>()
+                        var discountRow = new DealDiscountUpdateRow
+                        {
+                            Id = deal.Id,
+                            DiscountPercent = newDiscount
+                        };
+                        await client.From<DealDiscountUpdateRow>()
                             .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, deal.Id.ToString())
-                            .Update(deal);
+                            .Update(discountRow);
                     }
                 }
             }

@@ -10,6 +10,7 @@ public interface IDealRepository
     Task<IReadOnlyList<Deal>> GetActiveDealsForRefreshAsync(int batchSize, TimeSpan minInterval, CancellationToken ct);
     Task<Deal?> GetDealByIdAsync(int dealId, CancellationToken ct);
     Task UpdateDealsAsync(IEnumerable<Deal> deals, CancellationToken ct);
+    Task UpdateDealDiscountOnlyAsync(int dealId, int? discountPercent, CancellationToken ct);
     Task AppendPriceHistoryAsync(int dealId, decimal newPrice, string? currency, DateTime changedUtc, CancellationToken ct);
     Task<IReadOnlyList<Deal>> GetExpiredActiveDealsAsync(CancellationToken ct);
     Task ExpireDealAndProductsAsync(Deal deal, CancellationToken ct);

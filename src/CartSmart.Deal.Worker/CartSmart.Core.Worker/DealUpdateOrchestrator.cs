@@ -422,7 +422,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                                     if (existingDealForDiscount.DiscountPercent != newDiscount)
                                     {
                                         existingDealForDiscount.DiscountPercent = newDiscount;
-                                        await _repo.UpdateDealsAsync(new[] { existingDealForDiscount }, ct);
+                                        await _repo.UpdateDealDiscountOnlyAsync(existingDealForDiscount.Id, newDiscount, ct);
                                     }
                                 }
                             }
@@ -800,7 +800,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         if (deal.DiscountPercent != newDiscount)
                         {
                             deal.DiscountPercent = newDiscount;
-                            await _repo.UpdateDealsAsync(new[] { deal }, ct);
+                            await _repo.UpdateDealDiscountOnlyAsync(deal.Id, newDiscount, ct);
                         }
                     }
                 }

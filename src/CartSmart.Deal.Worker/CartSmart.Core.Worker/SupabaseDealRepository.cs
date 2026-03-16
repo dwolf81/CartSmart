@@ -230,6 +230,25 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         }
     }
 
+    /// <summary>
+    /// Update ONLY the discount_percent column on a deal.
+    /// Uses a minimal update model to avoid setting deal_status_id/deleted in the
+    /// UPDATE SET clause, which would fire column-level triggers that upsert
+    /// storewide/stacked deal_product rows and create duplicates.
+    /// </summary>
+    public async Task UpdateDealDiscountOnlyAsync(int dealId, int? discountPercent, CancellationToken ct)
+    {
+        var row = new DealDiscountUpdateRow
+        {
+            Id = dealId,
+            DiscountPercent = discountPercent
+        };
+        await _client
+            .From<DealDiscountUpdateRow>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+            .Update(row);
+    }
+
     public async Task AppendPriceHistoryAsync(int dealId, decimal newPrice, string? currency, DateTime changedUtc, CancellationToken ct)
     {
         // Append history for all active deal_products on this deal (or first found if multiple)

@@ -255,7 +255,14 @@ namespace CartSmart.API.Controllers
                             if (deal.DiscountPercent != newDiscount)
                             {
                                 deal.DiscountPercent = newDiscount;
-                                await client.From<Deal>().Update(deal);
+                                var discountRow = new DealDiscountUpdateRow
+                                {
+                                    Id = deal.Id,
+                                    DiscountPercent = newDiscount
+                                };
+                                await client.From<DealDiscountUpdateRow>()
+                                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, deal.Id.ToString())
+                                    .Update(discountRow);
                             }
                         }
                     }
