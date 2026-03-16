@@ -24,8 +24,8 @@ export default function AdminManualPriceTasksPage() {
   const [pageError, setPageError] = useState('');
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [draftById, setDraftById] = useState({});
-  const [statusById, setStatusById] = useState({}); // { inStock: bool|null, sold: bool|null }
   const [savingById, setSavingById] = useState({});
+  const [bulkSaving, setBulkSaving] = useState(false);
   const [filter, setFilter] = useState('');
 
   const firstInputRef = useRef(null);
@@ -44,14 +44,11 @@ export default function AdminManualPriceTasksPage() {
 
       // seed draft prices from current price for speed
       const nextDraft = {};
-      const nextStatus = {};
       for (const row of data || []) {
         const currentPrice = row?.current?.price;
         if (currentPrice != null) nextDraft[row.id] = formatMoney(currentPrice);
-        nextStatus[row.id] = { inStock: null, sold: null }; // default: do not change status unless explicitly set
       }
       setDraftById(nextDraft);
-      setStatusById(nextStatus);
 
       if (focus) {
         setTimeout(() => {
@@ -90,13 +87,10 @@ export default function AdminManualPriceTasksPage() {
 
       const rawDraft = draftById[taskId];
       const price = forcePrice != null ? forcePrice : (rawDraft != null && rawDraft !== '' ? Number(rawDraft) : null);
-      const flags = statusById[taskId] || { inStock: null, sold: null };
 
       const payload = {
         price: price != null && !Number.isNaN(price) ? price : null,
         currency: 'USD',
-        inStock: flags.inStock,
-        sold: flags.sold,
       };
 
       const res = await authFetch(`${API_URL}/api/admin/manual-price/tasks/${taskId}/submit`, {
@@ -113,11 +107,6 @@ export default function AdminManualPriceTasksPage() {
       // remove row for speed
       setTasks(prev => prev.filter(t => t.id !== taskId));
       setDraftById(prev => {
-        const next = { ...prev };
-        delete next[taskId];
-        return next;
-      });
-      setStatusById(prev => {
         const next = { ...prev };
         delete next[taskId];
         return next;
@@ -147,6 +136,37 @@ export default function AdminManualPriceTasksPage() {
           <p className="text-sm text-gray-600">Open the URL, then confirm or update the price.</p>
         </div>
         <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={async () => {
+              if (filtered.length === 0) return;
+              setBulkSaving(true);
+              setPageError('');
+              let completed = 0;
+              for (const t of filtered) {
+                try {
+                  const rawDraft = draftById[t.id];
+                  const price = rawDraft != null && rawDraft !== '' ? Number(rawDraft) : null;
+                  const payload = {
+                    price: price != null && !Number.isNaN(price) ? price : null,
+                    currency: 'USD',
+                  };
+                  const res = await authFetch(`${API_URL}/api/admin/manual-price/tasks/${t.id}/submit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                  });
+                  if (res.ok) completed++;
+                } catch { /* continue */ }
+              }
+              setBulkSaving(false);
+              loadTasks({ focus: true });
+            }}
+            className="px-3 py-2 rounded-md bg-[#4CAF50] text-white hover:bg-[#3d8b40] disabled:opacity-60"
+            disabled={bulkSaving || loadingTasks || filtered.length === 0}
+          >
+            {bulkSaving ? 'Confirming…' : `Confirm All (${filtered.length})`}
+          </button>
           <button
             type="button"
             onClick={() => loadTasks({ focus: true })}
@@ -180,14 +200,13 @@ export default function AdminManualPriceTasksPage() {
             <tr>
               <th className="px-4 py-3">Deal</th>
               <th className="px-4 py-3">Price</th>
-              <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3 text-right">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {filtered.length === 0 ? (
               <tr>
-                <td className="px-4 py-6 text-center text-gray-600" colSpan={4}>
+                <td className="px-4 py-6 text-center text-gray-600" colSpan={3}>
                   {loadingTasks ? 'Loading…' : 'No pending tasks.'}
                 </td>
               </tr>
@@ -195,7 +214,6 @@ export default function AdminManualPriceTasksPage() {
               filtered.map((t, idx) => {
                 const currentPrice = t?.current?.price;
                 const draft = draftById[t.id] ?? '';
-                const flags = statusById[t.id] || { inStock: null, sold: null };
                 const saving = Boolean(savingById[t.id]);
 
                 return (
@@ -250,35 +268,6 @@ export default function AdminManualPriceTasksPage() {
                         <div className="text-xs text-gray-500">
                           {currentPrice != null ? `Current: $${formatMoney(currentPrice)}` : 'Current: —'}
                         </div>
-                      </div>
-                    </td>
-
-                    <td className="px-4 py-3">
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          className={`px-2 py-1 rounded-md border text-xs ${flags.sold ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                          onClick={() => setStatusById(s => ({ ...s, [t.id]: { inStock: null, sold: true } }))}
-                          disabled={saving}
-                        >
-                          Sold
-                        </button>
-                        <button
-                          type="button"
-                          className={`px-2 py-1 rounded-md border text-xs ${flags.inStock === false ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                          onClick={() => setStatusById(s => ({ ...s, [t.id]: { inStock: false, sold: false } }))}
-                          disabled={saving}
-                        >
-                          OOS
-                        </button>
-                        <button
-                          type="button"
-                          className={`px-2 py-1 rounded-md border text-xs ${flags.inStock === true && !flags.sold ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                          onClick={() => setStatusById(s => ({ ...s, [t.id]: { inStock: true, sold: false } }))}
-                          disabled={saving}
-                        >
-                          In Stock
-                        </button>
                       </div>
                     </td>
 

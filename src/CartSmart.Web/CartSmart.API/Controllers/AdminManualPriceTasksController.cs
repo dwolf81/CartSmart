@@ -216,7 +216,7 @@ public sealed class AdminManualPriceTasksController : ControllerBase
         var task = taskResp.Models?.FirstOrDefault();
         if (task == null) return NotFound(new { message = "Task not found" });
         if (!string.Equals(task.Status, "pending", StringComparison.OrdinalIgnoreCase))
-            return NotFound(new { message = "Task not pending" });
+            return Ok(new { ok = true, alreadyCompleted = true });
 
         var dpResp = await client
             .From<DealProduct>()
@@ -227,24 +227,10 @@ public sealed class AdminManualPriceTasksController : ControllerBase
         if (dp == null) return NotFound(new { message = "Deal product not found" });
 
         var now = DateTime.UtcNow;
-        var statusChanged = false;
         var priceChanged = false;
 
-        if (request.Sold == true && dp.DealStatusId != DealStatusSold)
-        {
-            dp.DealStatusId = DealStatusSold;
-            statusChanged = true;
-        }
-        else if (request.InStock == false && dp.DealStatusId != DealStatusOutOfStock)
-        {
-            dp.DealStatusId = DealStatusOutOfStock;
-            statusChanged = true;
-        }
-        else if (request.InStock == true && dp.DealStatusId != DealStatusActive)
-        {
-            dp.DealStatusId = DealStatusActive;
-            statusChanged = true;
-        }
+        // TODO: Re-enable status updates once stock detection is more reliable.
+        // For now, manual price tasks only update price — status changes are ignored.
 
         if (request.Price.HasValue && request.Price.Value > 0 && dp.Price != request.Price.Value)
         {
@@ -316,7 +302,7 @@ public sealed class AdminManualPriceTasksController : ControllerBase
             }
         }
 
-        if (statusChanged || priceChanged)
+        if (priceChanged)
         {
             try
             {
