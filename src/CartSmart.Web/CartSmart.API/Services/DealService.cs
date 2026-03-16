@@ -1194,6 +1194,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
             existingDp.DealStatusId = user?.Admin == true ? 2 : 1;
             existingDp.ItemCount = dto.ItemCount ?? 1;
             existingDp.Deleted = false;
+            existingDp.NextCheckAt = DateTime.UtcNow.AddHours(6);
             await client.From<DealProduct>()
                 .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, existingDp.Id.ToString())
                 .Update(existingDp);
@@ -1213,7 +1214,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                 Deleted = false,
                 Primary = true,
                 DealStatusId = user?.Admin == true ? 2 : 1,
-                ItemCount = dto.ItemCount ?? 1
+                ItemCount = dto.ItemCount ?? 1,
+                NextCheckAt = DateTime.UtcNow.AddHours(6)
             });
         }
 
@@ -1642,6 +1644,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         dealProduct.DealStatusId = u?.Admin == true ? 2 : 5;
         if (dto.ItemCount.HasValue) dealProduct.ItemCount = dto.ItemCount.Value;
         if (variantPairs != null) dealProduct.ProductVariantId = newVariantId;
+        dealProduct.NextCheckAt = DateTime.UtcNow.AddHours(6);
         await _supabase.UpdateAsync(dealProduct);
 
         //If this is an admin user run "f_update_product_best_deal" after inserting the deal
