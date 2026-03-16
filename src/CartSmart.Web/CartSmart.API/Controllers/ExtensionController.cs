@@ -442,10 +442,14 @@ namespace CartSmart.API.Controllers
             try
             {
                 var uri = new Uri(url);
+                var host = uri.Host.ToLowerInvariant();
+                if (host.StartsWith("www."))
+                    host = host[4..];
+
                 var builder = new UriBuilder(uri)
                 {
                     Scheme = uri.Scheme.ToLowerInvariant(),
-                    Host = uri.Host.ToLowerInvariant(),
+                    Host = host,
                     Fragment = string.Empty
                 };
 

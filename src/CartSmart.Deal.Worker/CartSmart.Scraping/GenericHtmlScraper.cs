@@ -193,23 +193,24 @@ public class GenericHtmlScraper : IHtmlScraper
                 }
             }
 
-            var text = lastDoc?.Body?.TextContent?.ToLowerInvariant() ?? string.Empty;
-            bool? inStock = null;
-            if (StockKeywords.Any(k => text.Contains(k))) inStock = true;
-            if (OosKeywords.Any(k => text.Contains(k))) inStock = false;
+            // TODO: Re-enable stock/sold detection once it's more reliable.
+            // For now, scraping only extracts price — status is manual-only.
+            // var text = lastDoc?.Body?.TextContent?.ToLowerInvariant() ?? string.Empty;
+            // bool? inStock = null;
+            // if (StockKeywords.Any(k => text.Contains(k))) inStock = true;
+            // if (OosKeywords.Any(k => text.Contains(k))) inStock = false;
 
             return new ScrapeResult
             {
                 Html = null,
                 ExtractedPrice = price,
                 Currency = currency ?? "USD",
-                InStock = inStock,
-                Sold = text.Contains("sold") ? true : null,
+                InStock = null,
+                Sold = null,
                 SucceededMethod = succeededMethod,
                 RawSignals = new Dictionary<string, string>
                 {
-                    ["priceFound"] = price?.ToString() ?? "",
-                    ["length"] = text.Length.ToString()
+                    ["priceFound"] = price?.ToString() ?? ""
                 }
             };
         }

@@ -766,19 +766,20 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             bool priceChanged = false;
             decimal? oldPriceForPropagation = null;
 
-            // Determine new status based on data flags.
-            if (data.Sold == true && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusSold)
-            {
-                dealProduct.DealStatusId = SupabaseDealRepository.DealStatusSold; statusChanged = true;
-            }
-            else if (data.InStock == false && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusOutOfStock)
-            {
-                dealProduct.DealStatusId = SupabaseDealRepository.DealStatusOutOfStock; statusChanged = true;
-            }
-            else if (data.Discontinued == true && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusExpired)
-            {
-                dealProduct.DealStatusId = SupabaseDealRepository.DealStatusExpired; statusChanged = true; return DealProcessOutcome.Expired;
-            }
+            // TODO: Re-enable status updates from scrape data once stock detection is more reliable.
+            // For now, scraping only updates price — status changes are manual-only.
+            // if (data.Sold == true && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusSold)
+            // {
+            //     dealProduct.DealStatusId = SupabaseDealRepository.DealStatusSold; statusChanged = true;
+            // }
+            // else if (data.InStock == false && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusOutOfStock)
+            // {
+            //     dealProduct.DealStatusId = SupabaseDealRepository.DealStatusOutOfStock; statusChanged = true;
+            // }
+            // else if (data.Discontinued == true && dealProduct.DealStatusId != SupabaseDealRepository.DealStatusExpired)
+            // {
+            //     dealProduct.DealStatusId = SupabaseDealRepository.DealStatusExpired; statusChanged = true; return DealProcessOutcome.Expired;
+            // }
 
             if (data.Price.HasValue && data.Price.Value > 0 && dealProduct.Price != data.Price.Value)
             {
