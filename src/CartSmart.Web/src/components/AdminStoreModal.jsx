@@ -108,8 +108,6 @@ export default function AdminStoreModal({
 
   const [brands, setBrands] = useState([]);
   const [addNewBrand, setAddNewBrand] = useState(false);
-  const [newBrandName, setNewBrandName] = useState('');
-  const [newBrandUrl, setNewBrandUrl] = useState('');
 
   const [testScrapeUrl, setTestScrapeUrl] = useState('');
   const [testHttpLoading, setTestHttpLoading] = useState(false);
@@ -316,11 +314,11 @@ export default function AdminStoreModal({
     try {
       // If "Add as new Brand" is checked, create the brand first
       let resolvedBrandId = draft.brandId ? Number(draft.brandId) : null;
-      if (addNewBrand && newBrandName.trim()) {
+      if (addNewBrand && name.trim()) {
         const brandRes = await authFetch(`${API_URL}/api/brands`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: newBrandName.trim(), url: newBrandUrl.trim() || null })
+          body: JSON.stringify({ name: name.trim(), url: (draft.url || '').trim() || null })
         });
         if (!brandRes.ok) throw new Error('Failed to create brand');
         const created = await brandRes.json();
@@ -331,8 +329,6 @@ export default function AdminStoreModal({
         });
         setDraft((p) => ({ ...p, brandId: String(created.id) }));
         setAddNewBrand(false);
-        setNewBrandName('');
-        setNewBrandUrl('');
       }
 
       const body = {
@@ -628,34 +624,13 @@ export default function AdminStoreModal({
                     </select>
                   )}
                   {addNewBrand && (
-                    <div className="space-y-2">
-                      <input
-                        value={newBrandName}
-                        onChange={(e) => setNewBrandName(e.target.value)}
-                        className="w-full px-3 py-2 border rounded-md text-sm"
-                        placeholder="Brand name"
-                        disabled={saving}
-                      />
-                      <input
-                        value={newBrandUrl}
-                        onChange={(e) => setNewBrandUrl(e.target.value)}
-                        className="w-full px-3 py-2 border rounded-md text-sm"
-                        placeholder="Brand URL (optional)"
-                        disabled={saving}
-                      />
-                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Brand will be created using the store name &amp; URL above.</p>
                   )}
                   <label className="mt-1.5 flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={addNewBrand}
-                      onChange={(e) => {
-                        setAddNewBrand(e.target.checked);
-                        if (!e.target.checked) {
-                          setNewBrandName('');
-                          setNewBrandUrl('');
-                        }
-                      }}
+                      onChange={(e) => setAddNewBrand(e.target.checked)}
                       className="h-3.5 w-3.5"
                       disabled={saving}
                     />

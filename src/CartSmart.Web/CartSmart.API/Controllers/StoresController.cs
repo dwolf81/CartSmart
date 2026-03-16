@@ -426,7 +426,9 @@ namespace CartSmart.API.Controllers
                 Slug = store.Slug,
                 ImageUrl = publicUrl
             };
-            await client.From<StoreAdminImageUpdateRow>().Update(updateRow);
+            await client.From<StoreAdminImageUpdateRow>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, store.Id.ToString())
+                .Update(updateRow);
 
             return Ok(new { imageUrl = publicUrl });
         }
@@ -485,56 +487,66 @@ namespace CartSmart.API.Controllers
 
             var (ext, originalContentType) = GuessImageType(contentType, uri.ToString());
 
-            // Store under stores/{storeId}/
-            var name = $"{Guid.NewGuid():N}";
-            var basePath = $"stores/{storeId}/{name}";
-            var originalPath = $"{basePath}{ext}";
-            var webpPath = $"{basePath}.webp";
-
-            // Upload original
-            using (var originalStream = new MemoryStream(fileBytes))
+            try
             {
-                await _supabase.UploadFileWithServiceRoleAsync(
-                    "stores",
-                    originalPath,
-                    originalStream,
-                    new Supabase.Storage.FileOptions
-                    {
-                        CacheControl = "3600",
-                        Upsert = true,
-                        ContentType = originalContentType
-                    }
-                );
+                // Store under stores/{storeId}/
+                var name = $"{Guid.NewGuid():N}";
+                var basePath = $"stores/{storeId}/{name}";
+                var originalPath = $"{basePath}{ext}";
+                var webpPath = $"{basePath}.webp";
+
+                // Upload original
+                using (var originalStream = new MemoryStream(fileBytes))
+                {
+                    await _supabase.UploadFileWithServiceRoleAsync(
+                        "stores",
+                        originalPath,
+                        originalStream,
+                        new Supabase.Storage.FileOptions
+                        {
+                            CacheControl = "3600",
+                            Upsert = true,
+                            ContentType = originalContentType
+                        }
+                    );
+                }
+
+                // Upload WebP (site-facing)
+                var webpBytes = await ConvertImageToWebP(fileBytes);
+                using (var webpStream = new MemoryStream(webpBytes))
+                {
+                    await _supabase.UploadFileWithServiceRoleAsync(
+                        "stores",
+                        webpPath,
+                        webpStream,
+                        new Supabase.Storage.FileOptions
+                        {
+                            CacheControl = "3600",
+                            Upsert = true,
+                            ContentType = "image/webp"
+                        }
+                    );
+                }
+
+                var publicUrl = _supabase.GetPublicUrl("stores", webpPath);
+
+                var updateRow = new StoreAdminImageUpdateRow
+                {
+                    Id = store.Id,
+                    Slug = store.Slug,
+                    ImageUrl = publicUrl
+                };
+                await client.From<StoreAdminImageUpdateRow>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, store.Id.ToString())
+                    .Update(updateRow);
+
+                return Ok(new { imageUrl = publicUrl });
             }
-
-            // Upload WebP (site-facing)
-            var webpBytes = await ConvertImageToWebP(fileBytes);
-            using (var webpStream = new MemoryStream(webpBytes))
+            catch (Exception ex)
             {
-                await _supabase.UploadFileWithServiceRoleAsync(
-                    "stores",
-                    webpPath,
-                    webpStream,
-                    new Supabase.Storage.FileOptions
-                    {
-                        CacheControl = "3600",
-                        Upsert = true,
-                        ContentType = "image/webp"
-                    }
-                );
+                Console.WriteLine($"[StoreImage] image-from-url failed for store {storeId}: {ex}");
+                return StatusCode(500, new { message = $"Image processing failed: {ex.Message}" });
             }
-
-            var publicUrl = _supabase.GetPublicUrl("stores", webpPath);
-
-            var updateRow = new StoreAdminImageUpdateRow
-            {
-                Id = store.Id,
-                Slug = store.Slug,
-                ImageUrl = publicUrl
-            };
-            await client.From<StoreAdminImageUpdateRow>().Update(updateRow);
-
-            return Ok(new { imageUrl = publicUrl });
         }
 
         [HttpGet("{slug}")]
