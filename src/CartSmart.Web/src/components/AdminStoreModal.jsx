@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 const resolveApiBaseUrl = () => {
@@ -143,6 +143,57 @@ export default function AdminStoreModal({
   const [storeImageUrlInput, setStoreImageUrlInput] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [storeImageZoom, setStoreImageZoom] = useState(1);
+  const storeCanvasRef = useRef(null);
+  const storeImgRef = useRef(null);
+
+  const PREVIEW_SIZE = 128;
+
+  const drawStorePreview = useCallback(() => {
+    const canvas = storeCanvasRef.current;
+    const img = storeImgRef.current;
+    if (!canvas || !img || !img.naturalWidth) return;
+    const dpr = window.devicePixelRatio || 1;
+    const pxSize = PREVIEW_SIZE * dpr;
+    canvas.width = pxSize;
+    canvas.height = pxSize;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, pxSize, pxSize);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    const scale = storeImageZoom;
+    const sw = img.naturalWidth / scale;
+    const sh = img.naturalHeight / scale;
+    const sx = (img.naturalWidth - sw) / 2;
+    const sy = (img.naturalHeight - sh) / 2;
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, pxSize, pxSize);
+  }, [storeImageZoom]);
+
+  useEffect(() => { drawStorePreview(); }, [drawStorePreview]);
+
+  const exportStoreZoomedBlob = () =>
+    new Promise((resolve) => {
+      const img = storeImgRef.current;
+      if (!img || !img.naturalWidth) return resolve(null);
+      const EXPORT_SIZE = 512;
+      const offscreen = document.createElement('canvas');
+      offscreen.width = EXPORT_SIZE;
+      offscreen.height = EXPORT_SIZE;
+      const ctx = offscreen.getContext('2d');
+      ctx.clearRect(0, 0, EXPORT_SIZE, EXPORT_SIZE);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      const scale = storeImageZoom;
+      const sw = img.naturalWidth / scale;
+      const sh = img.naturalHeight / scale;
+      const sx = (img.naturalWidth - sw) / 2;
+      const sy = (img.naturalHeight - sh) / 2;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, EXPORT_SIZE, EXPORT_SIZE);
+      offscreen.toBlob((blob) => resolve(blob), 'image/png');
+    });
+
+  const hasStoreImageEdit = !!(selectedFile || (previewUrl && previewUrl !== storeImageUrl) || (storeImageUrlInput || '').trim());
 
   const close = () => {
     if (saving) return;
@@ -163,6 +214,7 @@ export default function AdminStoreModal({
     setPreviewUrl('');
     setStoreImageUrl('');
     setStoreImageUrlInput('');
+    setStoreImageZoom(1);
     setSlugEdited(false);
     setTestScrapeUrl('');
     setTestHttpResult(null);
@@ -222,6 +274,7 @@ export default function AdminStoreModal({
       } catch {}
     }
     setPreviewUrl('');
+    setStoreImageZoom(1);
   };
 
   const loadEditData = async (id) => {
@@ -259,6 +312,36 @@ export default function AdminStoreModal({
   const uploadImageIfNeeded = async (id) => {
     if (!selectedFile && !(storeImageUrlInput || '').trim()) return null;
 
+    const useZoomed = storeImageZoom !== 1 && storeCanvasRef.current && (selectedFile || (storeImageUrlInput || '').trim() || previewUrl);
+
+    if (useZoomed) {
+      const zoomedBlob = await exportStoreZoomedBlob();
+      if (zoomedBlob) {
+        const fd = new FormData();
+        fd.append('file', zoomedBlob, 'image.png');
+        const res = await authFetch(`${API_URL}/api/stores/${id}/admin/image`, {
+          method: 'POST',
+          body: fd
+        });
+        if (!res.ok) {
+          const msg = await res.text().catch(() => '');
+          throw new Error(msg || 'Failed to upload image');
+        }
+        const data = await res.json();
+        const url = data?.imageUrl || null;
+        if (url) setStoreImageUrl(url);
+        setSelectedFile(null);
+        if ((previewUrl || '').startsWith('blob:')) {
+          try { URL.revokeObjectURL(previewUrl); } catch {}
+        }
+        setPreviewUrl('');
+        setStoreImageUrlInput('');
+        setStoreImageZoom(1);
+        return url;
+      }
+      // Canvas was tainted — fall through
+    }
+
     if ((storeImageUrlInput || '').trim() && !selectedFile) {
       const res = await authFetch(`${API_URL}/api/stores/${id}/admin/image-from-url`, {
         method: 'POST',
@@ -273,32 +356,35 @@ export default function AdminStoreModal({
       const url = data?.imageUrl || null;
       if (url) setStoreImageUrl(url);
       setStoreImageUrlInput('');
+      setStoreImageZoom(1);
       return url;
     }
 
-    const fd = new FormData();
-    fd.append('file', selectedFile);
+    if (selectedFile) {
+      const fd = new FormData();
+      fd.append('file', selectedFile);
+      const res = await authFetch(`${API_URL}/api/stores/${id}/admin/image`, {
+        method: 'POST',
+        body: fd
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => '');
+        throw new Error(msg || 'Failed to upload image');
+      }
+      const data = await res.json();
+      const url = data?.imageUrl || null;
+      if (url) setStoreImageUrl(url);
 
-    const res = await authFetch(`${API_URL}/api/stores/${id}/admin/image`, {
-      method: 'POST',
-      body: fd
-    });
-    if (!res.ok) {
-      const msg = await res.text().catch(() => '');
-      throw new Error(msg || 'Failed to upload image');
+      setSelectedFile(null);
+      if ((previewUrl || '').startsWith('blob:')) {
+        try { URL.revokeObjectURL(previewUrl); } catch {}
+      }
+      setPreviewUrl('');
+      setStoreImageZoom(1);
+      return url;
     }
-    const data = await res.json();
-    const url = data?.imageUrl || null;
-    if (url) setStoreImageUrl(url);
 
-    setSelectedFile(null);
-    if ((previewUrl || '').startsWith('blob:')) {
-      try {
-        URL.revokeObjectURL(previewUrl);
-      } catch {}
-    }
-    setPreviewUrl('');
-    return url;
+    return null;
   };
 
   const handleSave = async () => {
@@ -457,19 +543,47 @@ export default function AdminStoreModal({
               <div className="mb-4">
                 <div className="text-sm font-medium text-gray-700 mb-2">Store Image</div>
                 <div className="flex items-start gap-4">
-                  <div className="relative w-24 h-24">
-                    <img
-                      src={imageSrc}
-                      alt="Store"
-                      className="w-full h-full rounded-lg object-cover border cursor-pointer"
-                      onClick={() => document.getElementById('storeImageInput')?.click()}
-                    />
-                    <div
-                      className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
-                      onClick={() => document.getElementById('storeImageInput')?.click()}
-                    >
-                      <span className="text-white text-sm font-medium">Change</span>
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="relative" style={{ width: PREVIEW_SIZE, height: PREVIEW_SIZE }}>
+                      <img
+                        ref={storeImgRef}
+                        src={imageSrc}
+                        alt=""
+                        crossOrigin="anonymous"
+                        className="hidden"
+                        onLoad={drawStorePreview}
+                      />
+                      <canvas
+                        ref={storeCanvasRef}
+                        width={PREVIEW_SIZE}
+                        height={PREVIEW_SIZE}
+                        className="w-full h-full rounded-lg border cursor-pointer"
+                        style={{ background: 'repeating-conic-gradient(#d1d5db 0% 25%, transparent 0% 50%) 0 0 / 16px 16px' }}
+                        onClick={() => document.getElementById('storeImageInput')?.click()}
+                      />
+                      <div
+                        className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
+                        onClick={() => document.getElementById('storeImageInput')?.click()}
+                      >
+                        <span className="text-white text-sm font-medium">Change</span>
+                      </div>
                     </div>
+                    {hasStoreImageEdit && (
+                      <div className="flex items-center gap-2 w-full" style={{ maxWidth: PREVIEW_SIZE }}>
+                        <span className="text-xs text-gray-500 select-none">−</span>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="3"
+                          step="0.05"
+                          value={storeImageZoom}
+                          onChange={(e) => setStoreImageZoom(parseFloat(e.target.value))}
+                          className="flex-1 h-1 accent-blue-600"
+                          disabled={saving}
+                        />
+                        <span className="text-xs text-gray-500 select-none">+</span>
+                      </div>
+                    )}
                     <input
                       id="storeImageInput"
                       type="file"
@@ -480,6 +594,7 @@ export default function AdminStoreModal({
                         if (!file) return;
                         setStoreImageUrlInput('');
                         setSelectedFile(file);
+                        setStoreImageZoom(1);
                         const nextPreview = URL.createObjectURL(file);
                         if ((previewUrl || '').startsWith('blob:')) {
                           try {
@@ -504,6 +619,7 @@ export default function AdminStoreModal({
                             setStoreImageUrlInput(next);
                             if ((next || '').trim()) {
                               setSelectedFile(null);
+                              setStoreImageZoom(1);
                               if ((previewUrl || '').startsWith('blob:')) {
                                 try {
                                   URL.revokeObjectURL(previewUrl);

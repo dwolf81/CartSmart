@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 const resolveApiBaseUrl = () => {
@@ -44,6 +44,9 @@ export default function AdminProductModal({
   const [adminProductImageUrlInput, setAdminProductImageUrlInput] = useState('');
   const [adminProductSelectedFile, setAdminProductSelectedFile] = useState(null);
   const [adminProductPreviewUrl, setAdminProductPreviewUrl] = useState('');
+  const [adminProductImageZoom, setAdminProductImageZoom] = useState(1);
+  const adminProductCanvasRef = useRef(null);
+  const adminProductImgRef = useRef(null);
 
   const [adminBrands, setAdminBrands] = useState([]);
   const [adminBrandId, setAdminBrandId] = useState('');
@@ -59,6 +62,55 @@ export default function AdminProductModal({
   const [adminAttrExpanded, setAdminAttrExpanded] = useState({});
 
   const canEdit = isAuthenticated && !!user?.admin;
+
+  // ---------- image‑zoom helpers ----------
+  const PREVIEW_SIZE = 128;
+
+  const drawProductPreview = useCallback(() => {
+    const canvas = adminProductCanvasRef.current;
+    const img = adminProductImgRef.current;
+    if (!canvas || !img || !img.naturalWidth) return;
+    const dpr = window.devicePixelRatio || 1;
+    const pxSize = PREVIEW_SIZE * dpr;
+    canvas.width = pxSize;
+    canvas.height = pxSize;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, pxSize, pxSize);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    const scale = adminProductImageZoom;
+    const sw = img.naturalWidth / scale;
+    const sh = img.naturalHeight / scale;
+    const sx = (img.naturalWidth - sw) / 2;
+    const sy = (img.naturalHeight - sh) / 2;
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, pxSize, pxSize);
+  }, [adminProductImageZoom]);
+
+  useEffect(() => { drawProductPreview(); }, [drawProductPreview]);
+
+  const exportProductZoomedBlob = () =>
+    new Promise((resolve) => {
+      const img = adminProductImgRef.current;
+      if (!img || !img.naturalWidth) return resolve(null);
+      const EXPORT_SIZE = 512;
+      const offscreen = document.createElement('canvas');
+      offscreen.width = EXPORT_SIZE;
+      offscreen.height = EXPORT_SIZE;
+      const ctx = offscreen.getContext('2d');
+      ctx.clearRect(0, 0, EXPORT_SIZE, EXPORT_SIZE);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      const scale = adminProductImageZoom;
+      const sw = img.naturalWidth / scale;
+      const sh = img.naturalHeight / scale;
+      const sx = (img.naturalWidth - sw) / 2;
+      const sy = (img.naturalHeight - sh) / 2;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, EXPORT_SIZE, EXPORT_SIZE);
+      offscreen.toBlob((blob) => resolve(blob), 'image/png');
+    });
+
+  const hasProductImageEdit = !!(adminProductSelectedFile || (adminProductPreviewUrl && adminProductPreviewUrl !== adminProductImageUrl) || (adminProductImageUrlInput || '').trim());
 
   const title = internalMode === 'add' ? 'Add Product' : 'Edit Product';
   const saveLabel = internalMode === 'add' ? 'Create Product' : 'Save Product';
@@ -80,6 +132,7 @@ export default function AdminProductModal({
     setAdminProductImageUrlInput('');
     setAdminProductSelectedFile(null);
     setAdminProductPreviewUrl('');
+    setAdminProductImageZoom(1);
 
     setAdminBrands([]);
     setAdminBrandId('');
@@ -126,6 +179,7 @@ export default function AdminProductModal({
       } catch {}
     }
     setAdminProductPreviewUrl('');
+    setAdminProductImageZoom(1);
 
     const attrs = Array.isArray(data?.attributes) ? data.attributes : [];
     const available = Array.isArray(data?.availableAttributes) ? data.availableAttributes : [];
@@ -326,6 +380,37 @@ export default function AdminProductModal({
   const uploadOrImportProductImageIfNeeded = async (id) => {
     if (!id) return null;
 
+    // If zoom != 1 and we have a canvas preview, try to send the zoomed canvas blob
+    const useZoomed = adminProductImageZoom !== 1 && adminProductCanvasRef.current && (adminProductSelectedFile || (adminProductImageUrlInput || '').trim() || adminProductPreviewUrl);
+
+    if (useZoomed) {
+      const zoomedBlob = await exportProductZoomedBlob();
+      if (zoomedBlob) {
+        const formData = new FormData();
+        formData.append('file', zoomedBlob, 'image.png');
+        const uploadRes = await authFetch(`${API_URL}/api/products/${id}/admin/image`, {
+          method: 'POST',
+          body: formData
+        });
+        if (!uploadRes.ok) {
+          const msg = await uploadRes.text().catch(() => '');
+          throw new Error(msg || 'Failed to upload product image');
+        }
+        const payload = await uploadRes.json().catch(() => ({}));
+        const newUrl = payload?.imageUrl || null;
+        if (newUrl) setAdminProductImageUrl(newUrl);
+        setAdminProductSelectedFile(null);
+        if ((adminProductPreviewUrl || '').startsWith('blob:')) {
+          try { URL.revokeObjectURL(adminProductPreviewUrl); } catch {}
+        }
+        setAdminProductPreviewUrl('');
+        setAdminProductImageUrlInput('');
+        setAdminProductImageZoom(1);
+        return newUrl;
+      }
+      // Canvas was tainted (cross-origin URL) — fall through to file upload or URL import
+    }
+
     if (adminProductSelectedFile) {
       const formData = new FormData();
       formData.append('file', adminProductSelectedFile);
@@ -343,11 +428,10 @@ export default function AdminProductModal({
 
       setAdminProductSelectedFile(null);
       if ((adminProductPreviewUrl || '').startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(adminProductPreviewUrl);
-        } catch {}
+        try { URL.revokeObjectURL(adminProductPreviewUrl); } catch {}
       }
       setAdminProductPreviewUrl('');
+      setAdminProductImageZoom(1);
       return newUrl;
     }
 
@@ -368,6 +452,7 @@ export default function AdminProductModal({
     if (newUrl) setAdminProductImageUrl(newUrl);
 
     setAdminProductImageUrlInput('');
+    setAdminProductImageZoom(1);
     return newUrl;
   };
 
@@ -739,19 +824,48 @@ export default function AdminProductModal({
               <div className="mb-4">
                 <div className="text-sm font-medium text-gray-700 mb-2">Product Photo</div>
                 <div className="flex items-start gap-4">
-                  <div className="relative w-24 h-24">
-                    <img
-                      src={imageSrc}
-                      alt="Product"
-                      className="w-full h-full rounded-lg object-cover border cursor-pointer"
-                      onClick={() => document.getElementById('productImageInput')?.click()}
-                    />
-                    <div
-                      className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
-                      onClick={() => document.getElementById('productImageInput')?.click()}
-                    >
-                      <span className="text-white text-sm font-medium">Change</span>
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="relative" style={{ width: PREVIEW_SIZE, height: PREVIEW_SIZE }}>
+                      {/* hidden img used as source for canvas drawing */}
+                      <img
+                        ref={adminProductImgRef}
+                        src={imageSrc}
+                        alt=""
+                        crossOrigin="anonymous"
+                        className="hidden"
+                        onLoad={drawProductPreview}
+                      />
+                      <canvas
+                        ref={adminProductCanvasRef}
+                        width={PREVIEW_SIZE}
+                        height={PREVIEW_SIZE}
+                        className="w-full h-full rounded-lg border cursor-pointer"
+                        style={{ background: 'repeating-conic-gradient(#d1d5db 0% 25%, transparent 0% 50%) 0 0 / 16px 16px' }}
+                        onClick={() => document.getElementById('productImageInput')?.click()}
+                      />
+                      <div
+                        className="absolute inset-0 bg-black bg-opacity-50 rounded-lg flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity cursor-pointer"
+                        onClick={() => document.getElementById('productImageInput')?.click()}
+                      >
+                        <span className="text-white text-sm font-medium">Change</span>
+                      </div>
                     </div>
+                    {hasProductImageEdit && (
+                      <div className="flex items-center gap-2 w-full" style={{ maxWidth: PREVIEW_SIZE }}>
+                        <span className="text-xs text-gray-500 select-none">−</span>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="3"
+                          step="0.05"
+                          value={adminProductImageZoom}
+                          onChange={(e) => setAdminProductImageZoom(parseFloat(e.target.value))}
+                          className="flex-1 h-1 accent-blue-600"
+                          disabled={adminEditSaving}
+                        />
+                        <span className="text-xs text-gray-500 select-none">+</span>
+                      </div>
+                    )}
                     <input
                       id="productImageInput"
                       type="file"
@@ -762,6 +876,7 @@ export default function AdminProductModal({
                         if (!file) return;
                         setAdminProductImageUrlInput('');
                         setAdminProductSelectedFile(file);
+                        setAdminProductImageZoom(1);
                         const previewUrl = URL.createObjectURL(file);
                         if ((adminProductPreviewUrl || '').startsWith('blob:')) {
                           try {
@@ -789,6 +904,7 @@ export default function AdminProductModal({
                             setAdminProductImageUrlInput(next);
                             if ((next || '').trim()) {
                               setAdminProductSelectedFile(null);
+                              setAdminProductImageZoom(1);
                               if ((adminProductPreviewUrl || '').startsWith('blob:')) {
                                 try {
                                   URL.revokeObjectURL(adminProductPreviewUrl);

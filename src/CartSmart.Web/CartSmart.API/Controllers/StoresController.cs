@@ -74,7 +74,7 @@ namespace CartSmart.API.Controllers
         {
             using var image = SixLabors.ImageSharp.Image.Load(imageBytes);
             using var output = new MemoryStream();
-            await image.SaveAsWebpAsync(output, new WebpEncoder { Quality = 85 });
+            await image.SaveAsWebpAsync(output, new WebpEncoder { Quality = 95 });
             return output.ToArray();
         }
 
