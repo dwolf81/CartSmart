@@ -88,11 +88,13 @@ namespace CartSmart.API.Controllers
         {
             if (string.IsNullOrWhiteSpace(url)) return null;
 
-            if (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var abs))
+            if (Uri.TryCreate(url.Trim(), UriKind.Absolute, out var abs)
+                && (abs.Scheme == Uri.UriSchemeHttp || abs.Scheme == Uri.UriSchemeHttps))
                 return abs;
 
             var candidate = $"https://{url.Trim()}";
-            if (Uri.TryCreate(candidate, UriKind.Absolute, out abs))
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out abs)
+                && (abs.Scheme == Uri.UriSchemeHttp || abs.Scheme == Uri.UriSchemeHttps))
                 return abs;
 
             return null;
@@ -459,6 +461,7 @@ namespace CartSmart.API.Controllers
 
             using (var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) })
             {
+                http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; CartSmart/1.0)");
                 using var resp = await http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead);
                 if (!resp.IsSuccessStatusCode)
                     return BadRequest(new { message = $"Failed to fetch image (HTTP {(int)resp.StatusCode})" });
