@@ -20,6 +20,16 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
     // Cache for brand name → brand ID lookups (populated lazily during ingest)
     private Dictionary<string, int>? _brandNameToIdCache;
 
+    // Word-form numbers for pack-count parsing in listing titles
+    private static readonly Dictionary<string, int> WordToNumber = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["one"] = 1, ["two"] = 2, ["three"] = 3, ["four"] = 4, ["five"] = 5,
+        ["six"] = 6, ["seven"] = 7, ["eight"] = 8, ["nine"] = 9, ["ten"] = 10,
+        ["eleven"] = 11, ["twelve"] = 12, ["thirteen"] = 13, ["fourteen"] = 14,
+        ["fifteen"] = 15, ["sixteen"] = 16, ["seventeen"] = 17, ["eighteen"] = 18,
+        ["nineteen"] = 19, ["twenty"] = 20,
+    };
+
     public DealUpdateOrchestrator(
         IDealRepository repo,
         IEnumerable<IStoreClient> storeClients,
@@ -276,6 +286,21 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     .OrderBy(x => x.Price!.Value)
                     .Take(200)
                     .ToList();
+
+                // For count-enabled products, only import listings whose detected item count
+                // matches the product's default_count. If no count can be parsed from the
+                // title, assume it matches (keep the listing).
+                if (product?.CountEnabled == true && product.DefaultCount > 0)
+                {
+                    var expectedCount = product.DefaultCount;
+                    priced = priced
+                        .Where(l =>
+                        {
+                            var parsed = ParsePackCount(l.Title ?? string.Empty);
+                            return !parsed.HasValue || parsed.Value == expectedCount;
+                        })
+                        .ToList();
+                }
 
                 if (!hasVariants)
                 {
@@ -1088,7 +1113,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         foreach (var nk in normalizedNegativeKeywords)
         {
             if (string.IsNullOrWhiteSpace(nk)) continue;
-            if (lowerTitle.Contains(nk, StringComparison.Ordinal))
+            if (Regex.IsMatch(lowerTitle, @"\b" + Regex.Escape(nk) + @"\b"))
                 return true;
         }
         return false;
@@ -1116,11 +1141,49 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         var lower = title.ToLowerInvariant();
         try
         {
-            var m = Regex.Match(lower, @"(\d+)\s*(pack|pk|ct|count|pc|pcs)");
+            // 1) Numeric + qualifier: "12 pack", "12-pack", "12pk", "12 ct", "12 count"
+            var m = Regex.Match(lower, @"(\d+)\s*[-]?\s*(pack|pk|ct|count|pc|pcs|piece|pieces)\b");
             if (m.Success && int.TryParse(m.Groups[1].Value, out var n) && n > 0)
                 return n;
-            if (lower.Contains("dozen"))
+
+            // 2) "pack/box/set/case of N"
+            m = Regex.Match(lower, @"\b(pack|box|set|case)\s+of\s+(\d+)\b");
+            if (m.Success && int.TryParse(m.Groups[2].Value, out n) && n > 0)
+                return n;
+
+            // 3) "Nx" or "xN" patterns (e.g. "12x", "x12") — only when N > 1
+            m = Regex.Match(lower, @"\b(\d+)\s*x\b");
+            if (m.Success && int.TryParse(m.Groups[1].Value, out n) && n > 1)
+                return n;
+            m = Regex.Match(lower, @"\bx\s*(\d+)\b");
+            if (m.Success && int.TryParse(m.Groups[1].Value, out n) && n > 1)
+                return n;
+
+            // 4) Special phrases: "half dozen" → 6, "N dozen" / "<word> dozen" → N*12, bare "dozen" → 12
+            if (Regex.IsMatch(lower, @"\bhalf\s+dozen\b"))
+                return 6;
+            var wordPattern = string.Join("|", WordToNumber.Keys);
+            var dozenMatch = Regex.Match(lower, @"\b(\d+|" + wordPattern + @")\s+dozen\b");
+            if (dozenMatch.Success)
+            {
+                var prefix = dozenMatch.Groups[1].Value;
+                if (int.TryParse(prefix, out var dnum) && dnum > 0)
+                    return dnum * 12;
+                if (WordToNumber.TryGetValue(prefix, out var wnum))
+                    return wnum * 12;
+            }
+            if (Regex.IsMatch(lower, @"\bdozen\b"))
                 return 12;
+
+            // 5) Word number + qualifier: "twelve pack", "twelve-pack", "twelve ct"
+            m = Regex.Match(lower, @"\b(" + wordPattern + @")\s*[-]?\s*(pack|pk|ct|count|pc|pcs|piece|pieces)\b");
+            if (m.Success && WordToNumber.TryGetValue(m.Groups[1].Value, out var wn) && wn > 0)
+                return wn;
+
+            // 6) "pack/box/set/case of <word>"
+            m = Regex.Match(lower, @"\b(pack|box|set|case)\s+of\s+(" + wordPattern + @")\b");
+            if (m.Success && WordToNumber.TryGetValue(m.Groups[2].Value, out wn) && wn > 0)
+                return wn;
         }
         catch { }
         return null;
