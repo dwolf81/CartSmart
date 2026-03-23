@@ -184,12 +184,52 @@ namespace CartSmart.API.Controllers
                 });
             }
 
-            // ── 3. Update prices where changed ──────────────────────────────
+            // ── 3. Pre-fetch products for MSRP validation ───────────────────
+            var productIds = matched.Select(dp => dp.ProductId).Distinct().ToList();
+            var productsMap = new Dictionary<int, Product>();
+            foreach (var pid in productIds)
+            {
+                var prodResp = await client
+                    .From<Product>()
+                    .Select("id, msrp, count_enabled, default_count")
+                    .Where(p => p.Id == pid)
+                    .Limit(1)
+                    .Get();
+                var prod = prodResp.Models.FirstOrDefault();
+                if (prod != null) productsMap[prod.Id] = prod;
+            }
+
+            // ── 4. Update prices where changed ──────────────────────────────
             int updated = 0;
+            int msrpSkipped = 0;
             var now = DateTime.UtcNow;
 
             foreach (var dp in matched)
             {
+                // Don't accept prices above MSRP (may be quantity-discount pricing)
+                if (productsMap.TryGetValue(dp.ProductId, out var msrpProduct) && msrpProduct.MSRP is > 0)
+                {
+                    double effectiveMsrp = (double)msrpProduct.MSRP.Value;
+                    double effectivePrice = (double)report.price.Value;
+
+                    if (msrpProduct.CountEnabled && msrpProduct.DefaultCount > 0 && dp.ItemCount > 0)
+                    {
+                        effectiveMsrp /= msrpProduct.DefaultCount;
+                        effectivePrice /= dp.ItemCount;
+                    }
+
+                    if (effectivePrice > effectiveMsrp)
+                    {
+                        Console.WriteLine($"[Extension] Skipping dp.Id={dp.Id}: price ${report.price.Value} exceeds MSRP ${msrpProduct.MSRP.Value}");
+                        dp.LastCheckedAt = now;
+                        dp.ErrorCount = 0;
+                        dp.NextCheckAt = now.AddHours(24);
+                        await client.From<DealProduct>().Update(dp);
+                        msrpSkipped++;
+                        continue;
+                    }
+                }
+
                 // Only update if the price actually changed
                 if (dp.Price == report.price.Value) 
                 {
@@ -229,13 +269,7 @@ namespace CartSmart.API.Controllers
                     var deal = dealResp2.Models.FirstOrDefault();
                     if (deal != null && deal.DealTypeId == 1) // Direct deal
                     {
-                        var productResp = await client
-                            .From<Product>()
-                            .Select("id, msrp, count_enabled, default_count")
-                            .Where(p => p.Id == dp.ProductId)
-                            .Limit(1)
-                            .Get();
-                        var product = productResp.Models.FirstOrDefault();
+                        productsMap.TryGetValue(dp.ProductId, out var product);
                         if (product?.MSRP is > 0)
                         {
                             double effectiveMsrp = (double)product.MSRP.Value;
@@ -335,7 +369,10 @@ namespace CartSmart.API.Controllers
                 updatedDealProducts = updated,
                 message = updated > 0
                     ? $"Updated {updated} deal product(s) with new price ${report.price:F2}."
-                    : "Price unchanged; timestamps updated."
+                        + (msrpSkipped > 0 ? $" Skipped {msrpSkipped} where price exceeds MSRP." : "")
+                    : msrpSkipped > 0
+                        ? $"Skipped {msrpSkipped} deal product(s) where price ${report.price:F2} exceeds MSRP."
+                        : "Price unchanged; timestamps updated."
             });
         }
 

@@ -23,6 +23,48 @@ let recentReports = []; // last N reports for popup display
 const MAX_RECENT = 50;
 const testTabs = new Set(); // tabs opened for admin test-scrape (skip normal flow)
 
+// ─── No-match URL cache ──────────────────────────────────────────────────
+// Tracks URLs the server says have no matching deal_products, so we don't
+// keep sending useless reports for every page on a tracked store.
+const NO_MATCH_CACHE_KEY = "cartsmart_no_match_urls";
+const NO_MATCH_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const NO_MATCH_MAX_ENTRIES = 1000;
+
+function normalizeUrlKey(url) {
+  try {
+    const u = new URL(url);
+    return (u.hostname.replace(/^www\./, "") + u.pathname).toLowerCase().replace(/\/+$/, "");
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
+async function isNoMatchUrl(url) {
+  const cache = (await storageGet(NO_MATCH_CACHE_KEY)) || {};
+  const key = normalizeUrlKey(url);
+  const ts = cache[key];
+  if (!ts) return false;
+  if (Date.now() - ts > NO_MATCH_TTL_MS) {
+    delete cache[key];
+    await storageSet({ [NO_MATCH_CACHE_KEY]: cache });
+    return false;
+  }
+  return true;
+}
+
+async function markNoMatchUrl(url) {
+  const cache = (await storageGet(NO_MATCH_CACHE_KEY)) || {};
+  const key = normalizeUrlKey(url);
+  cache[key] = Date.now();
+  const entries = Object.entries(cache);
+  if (entries.length > NO_MATCH_MAX_ENTRIES) {
+    entries.sort((a, b) => a[1] - b[1]);
+    await storageSet({ [NO_MATCH_CACHE_KEY]: Object.fromEntries(entries.slice(-NO_MATCH_MAX_ENTRIES)) });
+  } else {
+    await storageSet({ [NO_MATCH_CACHE_KEY]: cache });
+  }
+}
+
 /**
  * MV3 service workers are terminated after ~30s of inactivity.
  * When Chrome restarts the worker for a new event, in-memory state is lost.
@@ -338,6 +380,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handlePriceExtracted(message, sender) {
   const tabId = sender.tab?.id;
   const { storeId, storeName, result } = message;
+  const pageUrl = result?.url;
+
+  // Skip if this URL is already known to have no matching deal products
+  if (pageUrl && await isNoMatchUrl(pageUrl)) {
+    console.log("[CartSmart] Skipping report — no matching deal products:", pageUrl);
+    if (tabId) setBadge(tabId, "–", "#9CA3AF");
+    return;
+  }
 
   if (!result || result.price === null) {
     console.log("[CartSmart] No price extracted for store", storeName);
@@ -372,6 +422,15 @@ async function handlePriceExtracted(message, sender) {
 
   const submitResult = await submitPriceReport(report);
 
+  // If the server says no deal products matched this URL, cache it
+  // so we don't keep sending reports for this page
+  if (submitResult.ok && submitResult.data?.matchedDealProducts === 0) {
+    await markNoMatchUrl(result.url);
+    console.log("[CartSmart] No matching deal products — URL cached:", result.url);
+    if (tabId) setBadge(tabId, "–", "#9CA3AF");
+    return;
+  }
+
   // Track recent reports — deduplicate by URL so the same page doesn't appear twice
   const existingIdx = recentReports.findIndex(r => r.url === report.url);
   if (existingIdx !== -1) recentReports.splice(existingIdx, 1);
@@ -403,6 +462,8 @@ async function refreshStores() {
   console.log("[CartSmart] Refreshing store configs...");
   storeConfigs = await fetchStoreConfigs(true);
   console.log(`[CartSmart] Loaded ${storeConfigs.length} scrape-configured store(s)`);
+  // Clear no-match URL cache since deal products may have changed
+  await storageSet({ [NO_MATCH_CACHE_KEY]: {} });
 }
 
 // ─── Auto-scan state ──────────────────────────────────────────────────────
