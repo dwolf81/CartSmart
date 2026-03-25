@@ -218,7 +218,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             var candidates = new List<NewListing>();
             foreach (var l in listings)
             {
-                if (normalizedNegativeKeywords.Count > 0 && TitleMatchesAnyNegativeKeyword(l.Title, normalizedNegativeKeywords))
+                if (normalizedNegativeKeywords.Count > 0 && MatchesAnyNegativeKeyword(l.Title, l.ShortDescription, normalizedNegativeKeywords))
                     continue;
 
                 // Respect product's preferred condition category for all stores as a safety net.
@@ -296,7 +296,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     priced = priced
                         .Where(l =>
                         {
-                            var parsed = ParsePackCount(l.Title ?? string.Empty);
+                            var parsed = ParsePackCount(l.Title ?? string.Empty)
+                                ?? ParsePackCount(l.ShortDescription ?? string.Empty);
                             return !parsed.HasValue || parsed.Value == expectedCount;
                         })
                         .ToList();
@@ -481,7 +482,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     }
                 }
                 var itemCount = product?.CountEnabled == true
-                    ? (ParsePackCount(listing.Title ?? string.Empty) ?? product.DefaultCount)
+                    ? (ParsePackCount(listing.Title ?? string.Empty)
+                        ?? ParsePackCount(listing.ShortDescription ?? string.Empty)
+                        ?? product.DefaultCount)
                     : 1;
                 var deal = new Deal
                 {
@@ -509,6 +512,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
                     NextCheckAt = _timeProvider.GetUtcNow().UtcDateTime.AddHours(6),
                     ItemCount = itemCount,
+                    ShortDescription = listing.ShortDescription,
                     Primary = true
                 };
                 await repoImpl.CreateDealProductAsync(dp, ct);
@@ -1104,16 +1108,16 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         return (double)inter / (double)setProduct.Count;
     }
 
-    private static bool TitleMatchesAnyNegativeKeyword(string? title, IReadOnlyList<string> normalizedNegativeKeywords)
+    private static bool MatchesAnyNegativeKeyword(string? title, string? shortDescription, IReadOnlyList<string> normalizedNegativeKeywords)
     {
-        if (string.IsNullOrWhiteSpace(title)) return false;
         if (normalizedNegativeKeywords == null || normalizedNegativeKeywords.Count == 0) return false;
-        var lowerTitle = title.Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(lowerTitle)) return false;
         foreach (var nk in normalizedNegativeKeywords)
         {
             if (string.IsNullOrWhiteSpace(nk)) continue;
-            if (Regex.IsMatch(lowerTitle, @"\b" + Regex.Escape(nk) + @"\b"))
+            var pattern = @"\b" + Regex.Escape(nk) + @"\b";
+            if (!string.IsNullOrWhiteSpace(title) && Regex.IsMatch(title.Trim().ToLowerInvariant(), pattern))
+                return true;
+            if (!string.IsNullOrWhiteSpace(shortDescription) && Regex.IsMatch(shortDescription.Trim().ToLowerInvariant(), pattern))
                 return true;
         }
         return false;

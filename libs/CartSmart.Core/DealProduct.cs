@@ -67,5 +67,8 @@ namespace CartSmart.API.Models
         [Column("item_count")]
         public int ItemCount { get; set; } = 1;
 
+        [Column("short_description")]
+        public string? ShortDescription { get; set; }
+
     }
 }

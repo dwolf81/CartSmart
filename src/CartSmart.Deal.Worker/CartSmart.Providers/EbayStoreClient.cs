@@ -25,7 +25,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
     private readonly ConcurrentDictionary<long, ProductVariantConfigIndex> _variantConfigCache = new();
     private readonly ConcurrentDictionary<long, long?> _defaultVariantIdCache = new();
-    private readonly ConcurrentDictionary<string, string> _listingTextCache = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly ConcurrentDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>?> _itemAspectsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<long, IReadOnlyList<string>> _productSearchAliasCache = new();
     private readonly ConcurrentDictionary<long, decimal?> _productMsrpCache = new();
@@ -73,9 +73,9 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         if (config.EnumValueTokensByAttribute.Count == 0)
             return await GetDefaultVariantIdAsync(productId, ct);
 
-        // Build a normalized search surface from title + item specifics (aspects) + listing page text (HTML)
-        // Note: listing page fetch is lazy (only when needed), since it can be relatively expensive.
+        // Build a normalized search surface from title + item specifics (aspects) + short description
         var titleNorm = NormalizeComparable(listing.Title);
+        var shortDescNorm = NormalizeComparable(listing.ShortDescription);
 
         var aspectValueNorms = new List<string>();
         if (listing.Aspects != null)
@@ -113,15 +113,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             }
         }
 
-        string? pageTextNorm = null;
-        async Task<string> GetPageTextNormAsync()
-        {
-            if (pageTextNorm != null) return pageTextNorm;
-            pageTextNorm = await GetOrFetchListingPageTextNormAsync(listing.Url, ct);
-            return pageTextNorm;
-        }
-
-        Dictionary<int, int> DetectConstraints(string title, List<string> aspectValues, string? pageText)
+        Dictionary<int, int> DetectConstraints(string title, List<string> aspectValues, string? shortDesc)
         {
             var constraintsLocal = new Dictionary<int, int>();
             foreach (var (attributeId, enumValueIdToTokens) in config.EnumValueTokensByAttribute)
@@ -131,7 +123,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
 
                 foreach (var (enumValueId, tokens) in enumValueIdToTokens)
                 {
-                    var score = ScoreEnumCandidate(tokens, title, aspectValues, pageText);
+                    var score = ScoreEnumCandidate(tokens, title, aspectValues, shortDesc);
                     if (score <= 0) continue;
 
                     if (score > bestScore)
@@ -163,17 +155,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             return constraintsLocal;
         }
 
-        // First pass: title + aspects.
-        var constraints = DetectConstraints(titleNorm, aspectValueNorms, pageText: null);
-        var allowPageTextFallback = bool.TryParse(Environment.GetEnvironmentVariable("EBAY_VARIANT_RESOLVE_USE_PAGE_TEXT"), out var usePageText)
-            ? usePageText
-            : false;
-        if (constraints.Count == 0 && allowPageTextFallback)
-        {
-            // Second pass: include listing page text (item specifics + description HTML).
-            var page = await GetPageTextNormAsync();
-            constraints = DetectConstraints(titleNorm, aspectValueNorms, page);
-        }
+        // Match using title + aspects + short description.
+        var constraints = DetectConstraints(titleNorm, aspectValueNorms, shortDescNorm);
 
         if (constraints.Count == 0)
             return null;
@@ -186,7 +169,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         return await ResolveOrCreateVariantIdAsync(productId, constraints, config, ct);
     }
 
-    private static int ScoreEnumCandidate(IReadOnlyList<string> tokens, string titleNorm, List<string> aspectValueNorms, string? pageTextNorm)
+    private static int ScoreEnumCandidate(IReadOnlyList<string> tokens, string titleNorm, List<string> aspectValueNorms, string? shortDescNorm)
     {
         if (tokens == null || tokens.Count == 0) return 0;
 
@@ -204,49 +187,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         var score = 0;
         if (Matches(titleNorm)) score += 2;
         if (aspectValueNorms != null && aspectValueNorms.Any(Matches)) score += 3;
-        if (!string.IsNullOrWhiteSpace(pageTextNorm) && Matches(pageTextNorm)) score += 1;
+        if (!string.IsNullOrWhiteSpace(shortDescNorm) && Matches(shortDescNorm)) score += 1;
         return score;
-    }
-
-    private async Task<string> GetOrFetchListingPageTextNormAsync(string? url, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(url)) return string.Empty;
-
-        if (_listingTextCache.TryGetValue(url, out var cached))
-            return cached;
-
-        try
-        {
-            using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (CartSmart) AppleWebKit/537.36 (KHTML, like Gecko)");
-
-            using var resp = await _http.SendAsync(req, ct);
-            if (!resp.IsSuccessStatusCode)
-                return string.Empty;
-
-            var html = await resp.Content.ReadAsStringAsync(ct);
-            if (string.IsNullOrWhiteSpace(html))
-                return string.Empty;
-
-            // Drop script/style blocks, then strip tags.
-            var cleaned = Regex.Replace(html, "<script[\\s\\S]*?</script>", " ", RegexOptions.IgnoreCase);
-            cleaned = Regex.Replace(cleaned, "<style[\\s\\S]*?</style>", " ", RegexOptions.IgnoreCase);
-            cleaned = Regex.Replace(cleaned, "<noscript[\\s\\S]*?</noscript>", " ", RegexOptions.IgnoreCase);
-            cleaned = Regex.Replace(cleaned, "<[^>]+>", " ");
-            cleaned = WebUtility.HtmlDecode(cleaned);
-
-            // Limit size to keep memory bounded.
-            if (cleaned.Length > 50_000)
-                cleaned = cleaned.Substring(0, 50_000);
-
-            var norm = NormalizeComparable(cleaned);
-            _listingTextCache[url] = norm;
-            return norm;
-        }
-        catch
-        {
-            return string.Empty;
-        }
     }
 
     public async Task<bool> HasActiveVariantsAsync(long productId, CancellationToken ct)
@@ -727,7 +669,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
                 s.brand,
                 MapConditionToCategory(s.conditionId),
                 freeShipping,
-                BuildAspects(s.localizedAspects)
+                BuildAspects(s.localizedAspects),
+                s.shortDescription
             ));
         }
 
@@ -1471,6 +1414,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         sb.Append(Uri.EscapeDataString(filter));
         sb.Append("&limit=");
         sb.Append(limit.ToString());
+        sb.Append("&fieldgroups=EXTENDED");
 
         // Optional lookback: keep only listings created within the last N minutes.
         int? lookbackMinutes = int.TryParse(Environment.GetEnvironmentVariable("EBAY_SEARCH_LOOKBACK_MINUTES"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var lm) && lm > 0
@@ -1777,6 +1721,7 @@ internal class ItemSummary
     public List<ShippingOption>? shippingOptions { get; set; }
     public SellerSummary? seller { get; set; }
     public List<LocalizedAspect>? localizedAspects { get; set; }
+    public string? shortDescription { get; set; }
 }
 
 internal class LocalizedAspect
@@ -1796,6 +1741,7 @@ internal class ItemResponse
     public string? itemState { get; set; }
     public DateTimeOffset? itemEndDate { get; set; }
     public List<LocalizedAspect>? localizedAspects { get; set; }
+    public string? shortDescription { get; set; }
     public List<string>? buyingOptions { get; set; }
     public bool? eligibleForInlineCheckout { get; set; }
 }

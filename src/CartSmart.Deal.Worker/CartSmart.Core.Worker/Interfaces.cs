@@ -72,7 +72,8 @@ public sealed record NewListing(
     string? Brand,
     int? ConditionCategoryId,
     bool? FreeShipping,
-    IReadOnlyDictionary<string, IReadOnlyList<string>>? Aspects = null
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? Aspects = null,
+    string? ShortDescription = null
 );
 
 public sealed record NewListingQuery(
