@@ -214,18 +214,33 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             // otherwise search stays broad and downstream selection takes top N per condition.
             var preferredConditionForSearch = product?.PreferredConditionCategoryId;
             var listings = await client.SearchNewListingsAsync(q.ProductId, q.Query, preferredConditionForSearch, ct);
+
+            // Ingest log: track outcome for every listing returned by the API
+            var ingestLogEntries = new Dictionary<string, (NewListing Listing, string Outcome, int? DealProductId, string? IgnoreReason)>(StringComparer.OrdinalIgnoreCase);
+            void LogListing(NewListing l, string outcome, int? dpId = null, string? reason = null)
+            {
+                var key = l.ItemId ?? Guid.NewGuid().ToString();
+                ingestLogEntries[key] = (l, outcome, dpId, reason);
+            }
+
             // Apply matching hierarchy and price sanity
             var candidates = new List<NewListing>();
             foreach (var l in listings)
             {
                 if (normalizedNegativeKeywords.Count > 0 && MatchesAnyNegativeKeyword(l.Title, l.ShortDescription, normalizedNegativeKeywords))
+                {
+                    LogListing(l, "ignored", reason: "negative_keyword");
                     continue;
+                }
 
                 // Respect product's preferred condition category for all stores as a safety net.
                 if (product?.PreferredConditionCategoryId.HasValue == true)
                 {
                     if (l.ConditionCategoryId != product.PreferredConditionCategoryId.Value)
+                    {
+                        LogListing(l, "ignored", reason: "condition_mismatch");
                         continue;
+                    }
                 }
                 // 1) GTIN authoritative
                 if (!string.IsNullOrWhiteSpace(l.GTIN))
@@ -259,6 +274,10 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 {
                     candidates.Add(l);
                 }
+                else
+                {
+                    LogListing(l, "ignored", reason: !titleMatch ? "title_mismatch" : "price_out_of_range");
+                }
             }
 
             // From candidates, pick lowest priced listings.
@@ -271,21 +290,29 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             List<(NewListing Listing, long? VariantId)> selected;
             if (storeType == StoreType.Ebay)
             {
-                // Safety cap: limit variant-resolution calls per product to avoid excessive eBay item requests.
-                var maxVariantResolveAttempts = int.TryParse(Environment.GetEnvironmentVariable("EBAY_VARIANT_RESOLVE_MAX_ATTEMPTS"), out var parsedMaxVariantResolveAttempts)
-                    ? Math.Clamp(parsedMaxVariantResolveAttempts, 0, 500)
-                    : 40;
                 var targetConditions = product?.PreferredConditionCategoryId is int preferred && (preferred == 1 || preferred == 2 || preferred == 3)
                     ? new[] { preferred }
                     : new[] { 1, 2, 3 }; // New, Used, Refurbished
 
                 // EbayStoreClient already returns a price-sorted list capped at 200 item summaries.
                 // Still defensively sort and cap here.
-                var priced = candidates
-                    .Where(x => x.Price.HasValue)
-                    .OrderBy(x => x.Price!.Value)
-                    .Take(200)
-                    .ToList();
+                var pricedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var priced = new List<NewListing>();
+                foreach (var c in candidates.OrderBy(x => x.Price ?? decimal.MaxValue))
+                {
+                    if (!c.Price.HasValue)
+                    {
+                        LogListing(c, "ignored", reason: "no_price");
+                        continue;
+                    }
+                    if (pricedSet.Count >= 200)
+                    {
+                        LogListing(c, "ignored", reason: "over_cap");
+                        continue;
+                    }
+                    pricedSet.Add(c.ItemId ?? "");
+                    priced.Add(c);
+                }
 
                 // For count-enabled products, only import listings whose detected item count
                 // matches the product's default_count. If no count can be parsed from the
@@ -293,24 +320,41 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 if (product?.CountEnabled == true && product.DefaultCount > 0)
                 {
                     var expectedCount = product.DefaultCount;
-                    priced = priced
-                        .Where(l =>
+                    var filtered = new List<NewListing>();
+                    foreach (var l in priced)
+                    {
+                        var parsed = ParsePackCount(l.Title ?? string.Empty)
+                            ?? ParsePackCount(l.ShortDescription ?? string.Empty);
+                        if (parsed.HasValue && parsed.Value != expectedCount)
                         {
-                            var parsed = ParsePackCount(l.Title ?? string.Empty)
-                                ?? ParsePackCount(l.ShortDescription ?? string.Empty);
-                            return !parsed.HasValue || parsed.Value == expectedCount;
-                        })
-                        .ToList();
+                            LogListing(l, "ignored", reason: $"pack_count_mismatch (detected={parsed.Value}, expected={expectedCount})");
+                            continue;
+                        }
+                        filtered.Add(l);
+                    }
+                    priced = filtered;
                 }
 
                 if (!hasVariants)
                 {
-                    selected = priced
-                        .Where(l => l.ConditionCategoryId.HasValue && targetConditions.Contains(l.ConditionCategoryId.Value))
-                        .GroupBy(l => l.ConditionCategoryId!.Value)
-                        .SelectMany(g => g.Take(topPerProduct))
-                        .Select(l => (Listing: l, VariantId: (long?)null))
-                        .ToList();
+                    var conditionCounts = targetConditions.ToDictionary(c => c, _ => 0);
+                    selected = new List<(NewListing Listing, long? VariantId)>();
+                    foreach (var l in priced)
+                    {
+                        if (!l.ConditionCategoryId.HasValue || !targetConditions.Contains(l.ConditionCategoryId.Value))
+                        {
+                            LogListing(l, "ignored", reason: $"condition_not_in_target (condition={l.ConditionCategoryId})");
+                            continue;
+                        }
+                        var cond = l.ConditionCategoryId.Value;
+                        if (conditionCounts[cond] >= topPerProduct)
+                        {
+                            LogListing(l, "ignored", reason: $"per_condition_cap_reached (condition={cond})");
+                            continue;
+                        }
+                        selected.Add((l, (long?)null));
+                        conditionCounts[cond]++;
+                    }
                 }
                 else
                 {
@@ -322,28 +366,39 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     if (variantIds.Count == 0)
                     {
                         var resolvedFallback = new List<(NewListing Listing, long? VariantId)>();
-                        var variantResolveAttempts = 0;
                         foreach (var l in priced)
                         {
-                            if (variantResolveAttempts >= maxVariantResolveAttempts)
-                            {
-                                _logger.LogInformation("Reached variant resolve cap for product {ProductId}. Attempts={Attempts}", q.ProductId, variantResolveAttempts);
-                                break;
-                            }
-
-                            variantResolveAttempts++;
                             var vid = variantClient != null
                                 ? await variantClient.TryResolveProductVariantIdAsync(q.ProductId, l, ct)
                                 : null;
-                            if (!vid.HasValue) continue;
+                            if (!vid.HasValue)
+                            {
+                                LogListing(l, "ignored", reason: "variant_unresolved");
+                                continue;
+                            }
                             resolvedFallback.Add((l, vid));
                         }
 
-                        selected = resolvedFallback
-                            .Where(x => x.Listing.ConditionCategoryId.HasValue && targetConditions.Contains(x.Listing.ConditionCategoryId.Value))
-                            .GroupBy(x => (x.VariantId!.Value, x.Listing.ConditionCategoryId!.Value))
-                            .SelectMany(g => g.Take(topPerProduct))
-                            .ToList();
+                        // Apply condition + cap filtering on resolved
+                        var fallbackCounts = new Dictionary<(long, int), int>();
+                        selected = new List<(NewListing Listing, long? VariantId)>();
+                        foreach (var (l, vid) in resolvedFallback)
+                        {
+                            if (!l.ConditionCategoryId.HasValue || !targetConditions.Contains(l.ConditionCategoryId.Value))
+                            {
+                                LogListing(l, "ignored", reason: $"condition_not_in_target (condition={l.ConditionCategoryId})");
+                                continue;
+                            }
+                            var key = (vid!.Value, l.ConditionCategoryId.Value);
+                            fallbackCounts.TryGetValue(key, out var cnt);
+                            if (cnt >= topPerProduct)
+                            {
+                                LogListing(l, "ignored", reason: $"per_variant_condition_cap_reached (variant={vid}, condition={l.ConditionCategoryId})");
+                                continue;
+                            }
+                            selected.Add((l, vid));
+                            fallbackCounts[key] = cnt + 1;
+                        }
                     }
                     else
                     {
@@ -351,38 +406,51 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                             .SelectMany(vid => targetConditions.Select(cond => (vid, cond)))
                             .ToDictionary(k => k, _ => 0);
                         var picked = new List<(NewListing Listing, long? VariantId)>();
-                        var variantResolveAttempts = 0;
+                        var allFull = false;
 
                         foreach (var l in priced)
                         {
-                            if (picked.Count >= variantIds.Count * targetConditions.Length * topPerProduct)
-                                break;
-
-                            if (variantResolveAttempts >= maxVariantResolveAttempts)
+                            if (allFull)
                             {
-                                _logger.LogInformation("Reached variant resolve cap for product {ProductId}. Attempts={Attempts}", q.ProductId, variantResolveAttempts);
-                                break;
+                                LogListing(l, "ignored", reason: "all_variant_slots_filled");
+                                continue;
                             }
 
-                            variantResolveAttempts++;
-
                             var vid = await variantClient!.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
-                            if (!vid.HasValue) continue;
-                            if (!l.ConditionCategoryId.HasValue) continue;
+                            if (!vid.HasValue)
+                            {
+                                LogListing(l, "ignored", reason: "variant_unresolved");
+                                continue;
+                            }
+                            if (!l.ConditionCategoryId.HasValue)
+                            {
+                                LogListing(l, "ignored", reason: "no_condition");
+                                continue;
+                            }
                             var condition = l.ConditionCategoryId.Value;
-                            if (!targetConditions.Contains(condition)) continue;
+                            if (!targetConditions.Contains(condition))
+                            {
+                                LogListing(l, "ignored", reason: $"condition_not_in_target (condition={condition})");
+                                continue;
+                            }
 
                             var key = (vid.Value, condition);
                             if (!counts.TryGetValue(key, out var c))
-                                continue; // ignore variants outside the configured active set
-                            if (c >= topPerProduct)
+                            {
+                                LogListing(l, "ignored", reason: $"variant_not_in_active_set (variant={vid})");
                                 continue;
+                            }
+                            if (c >= topPerProduct)
+                            {
+                                LogListing(l, "ignored", reason: $"per_variant_condition_cap_reached (variant={vid}, condition={condition})");
+                                continue;
+                            }
 
                             picked.Add((l, vid));
                             counts[key] = c + 1;
 
                             if (counts.Values.All(v => v >= topPerProduct))
-                                break;
+                                allFull = true;
                         }
 
                         selected = picked;
@@ -400,25 +468,44 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         variantId = await variantClient.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
 
                     if (hasVariants && !variantId.HasValue)
+                    {
+                        LogListing(l, "ignored", reason: "variant_unresolved");
                         continue;
+                    }
 
                     resolved.Add((l, variantId));
                 }
 
                 if (hasVariants)
                 {
-                    selected = resolved
+                    var grouped = resolved
                         .Where(x => x.VariantId.HasValue)
                         .GroupBy(x => (VariantId: x.VariantId!.Value, ConditionId: x.Listing.ConditionCategoryId ?? 0))
-                        .SelectMany(g => g.OrderBy(x => x.Listing.Price!.Value).Take(topPerProduct))
                         .ToList();
+                    selected = new List<(NewListing Listing, long? VariantId)>();
+                    foreach (var g in grouped)
+                    {
+                        var taken = 0;
+                        foreach (var x in g.OrderBy(x => x.Listing.Price!.Value))
+                        {
+                            if (taken < topPerProduct)
+                            {
+                                selected.Add(x);
+                                taken++;
+                            }
+                            else
+                            {
+                                LogListing(x.Listing, "ignored", reason: $"per_variant_condition_cap_reached (variant={x.VariantId}, condition={g.Key.ConditionId})");
+                            }
+                        }
+                    }
                 }
                 else
                 {
-                    selected = resolved
-                        .OrderBy(x => x.Listing.Price!.Value)
-                        .Take(topPerProduct)
-                        .ToList();
+                    var ordered = resolved.OrderBy(x => x.Listing.Price!.Value).ToList();
+                    selected = ordered.Take(topPerProduct).ToList();
+                    foreach (var x in ordered.Skip(topPerProduct))
+                        LogListing(x.Listing, "ignored", reason: "per_product_cap_reached");
                 }
             }
 
@@ -477,6 +564,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         existing.LastCheckedAt = refreshNow;
                         existing.NextCheckAt = refreshNow.AddHours(6);
                         await repoImpl.UpdateDealProductAsync(existing, ct);
+                        LogListing(listing, "updated", dpId: existing.Id);
                         _logger.LogDebug("Refreshed existing deal_product {Id} (store_item_id={ItemId})", existing.Id, listing.ItemId);
                         continue;
                     }
@@ -517,10 +605,33 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 };
                 await repoImpl.CreateDealProductAsync(dp, ct);
                 await _repo.UpdateProductBestDealAsync(q.ProductId, ct);
+                LogListing(listing, "added", dpId: dp.Id);
                 created++;
+            }
+
+            // Flush ingest log entries for this product
+            if (ingestLogEntries.Count > 0)
+            {
+                var logRows = ingestLogEntries.Values.Select(e => new IngestLog
+                {
+                    ProductId = q.ProductId,
+                    StoreItemId = e.Listing.ItemId,
+                    Title = e.Listing.Title?.Length > 500 ? e.Listing.Title[..500] : e.Listing.Title,
+                    ShortDescription = e.Listing.ShortDescription?.Length > 1000 ? e.Listing.ShortDescription[..1000] : e.Listing.ShortDescription,
+                    Price = e.Listing.Price,
+                    Outcome = e.Outcome,
+                    DealProductId = e.DealProductId,
+                    IgnoreReason = e.IgnoreReason
+                }).ToList();
+                await repoImpl.InsertIngestLogBatchAsync(logRows, ct);
             }
         }
         _logger.LogInformation("Ingested {Count} eBay deals", created);
+
+        // Purge old ingest log entries (keep last 7 days)
+        var retentionDays = int.TryParse(Environment.GetEnvironmentVariable("INGEST_LOG_RETENTION_DAYS"), out var rd) && rd > 0 ? rd : 7;
+        await repoImpl.PurgeOldIngestLogsAsync(retentionDays, ct);
+
         return created;
     }
 

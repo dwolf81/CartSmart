@@ -1060,4 +1060,35 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             Console.WriteLine($"[ScrapeLog] Worker insert failed for store {storeId}, method {method}: {ex.Message}");
         }
     }
+
+    // ── Ingest log ────────────────────────────────────────────────────────
+    public async Task InsertIngestLogBatchAsync(IReadOnlyList<IngestLog> entries, CancellationToken ct)
+    {
+        if (entries == null || entries.Count == 0) return;
+        try
+        {
+            // Supabase-csharp Insert supports collections.
+            await _client.From<IngestLog>().Insert(entries.ToList(), cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[IngestLog] Batch insert failed ({entries.Count} rows): {ex.Message}");
+        }
+    }
+
+    public async Task PurgeOldIngestLogsAsync(int retentionDays, CancellationToken ct)
+    {
+        if (retentionDays <= 0) retentionDays = 7;
+        try
+        {
+            var cutoff = DateTime.UtcNow.AddDays(-retentionDays).ToString("o");
+            await _client.From<IngestLog>()
+                .Filter("created_at", Supabase.Postgrest.Constants.Operator.LessThan, cutoff)
+                .Delete(cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[IngestLog] Purge failed: {ex.Message}");
+        }
+    }
 }
