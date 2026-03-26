@@ -603,7 +603,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     ShortDescription = listing.ShortDescription,
                     Primary = true
                 };
-                await repoImpl.CreateDealProductAsync(dp, ct);
+                dp = await repoImpl.CreateDealProductAsync(dp, ct);
                 await _repo.UpdateProductBestDealAsync(q.ProductId, ct);
                 LogListing(listing, "added", dpId: dp.Id);
                 created++;
