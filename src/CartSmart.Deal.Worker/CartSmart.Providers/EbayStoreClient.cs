@@ -150,6 +150,12 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
                     // Prefer to return no match rather than creating incorrect variants.
                     return new Dictionary<int, int>();
                 }
+
+                // No match found for this attribute — fall back to the configured default.
+                if (bestIds.Count == 0 && config.DefaultEnumValueByAttribute.TryGetValue(attributeId, out var defaultEvId))
+                {
+                    constraintsLocal[attributeId] = defaultEvId;
+                }
             }
 
             return constraintsLocal;
@@ -838,7 +844,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             var empty = new ProductVariantConfigIndex(
                 new Dictionary<int, Dictionary<int, List<string>>>(),
                 new HashSet<int>(),
-                new Dictionary<int, string>());
+                new Dictionary<int, string>(),
+                new Dictionary<int, int>());
             _variantConfigCache[productId] = empty;
             return empty;
         }
@@ -847,7 +854,7 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         var paResp = await _supabase
             .From<CartSmart.API.Models.ProductAttribute>()
             .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
-            .Select("product_id, attribute_id, is_required")
+            .Select("product_id, attribute_id, is_required, default_enum_value_id")
             .Get(ct);
         var productAttributes = paResp.Models ?? new List<CartSmart.API.Models.ProductAttribute>();
         var attributeIds = productAttributes
@@ -860,7 +867,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             var empty = new ProductVariantConfigIndex(
                 new Dictionary<int, Dictionary<int, List<string>>>(),
                 new HashSet<int>(),
-                new Dictionary<int, string>());
+                new Dictionary<int, string>(),
+                new Dictionary<int, int>());
             _variantConfigCache[productId] = empty;
             return empty;
         }
@@ -885,7 +893,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             var empty = new ProductVariantConfigIndex(
                 new Dictionary<int, Dictionary<int, List<string>>>(),
                 new HashSet<int>(),
-                new Dictionary<int, string>());
+                new Dictionary<int, string>(),
+                new Dictionary<int, int>());
             _variantConfigCache[productId] = empty;
             return empty;
         }
@@ -998,7 +1007,12 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
             .Distinct()
             .ToHashSet();
 
-        var built = new ProductVariantConfigIndex(tokensByAttribute, required, displayByEnumId);
+        var defaultEnumByAttr = productAttributes
+            .Where(pa => pa.DefaultEnumValueId.HasValue && enumAttributeIds.Contains(pa.AttributeId))
+            .GroupBy(pa => pa.AttributeId)
+            .ToDictionary(g => g.Key, g => g.First().DefaultEnumValueId!.Value);
+
+        var built = new ProductVariantConfigIndex(tokensByAttribute, required, displayByEnumId, defaultEnumByAttr);
         _variantConfigCache[productId] = built;
         return built;
     }
@@ -1178,7 +1192,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
     private sealed record ProductVariantConfigIndex(
         Dictionary<int, Dictionary<int, List<string>>> EnumValueTokensByAttribute,
         HashSet<int> RequiredAttributeIds,
-        Dictionary<int, string> EnumValueDisplayNameById);
+        Dictionary<int, string> EnumValueDisplayNameById,
+        Dictionary<int, int> DefaultEnumValueByAttribute);
 
     private static bool IsRetryableStatus(HttpStatusCode status)
     {

@@ -17,5 +17,8 @@ namespace CartSmart.API.Models
 
         [Column("is_required")]
         public bool IsRequired { get; set; }
+
+        [Column("default_enum_value_id")]
+        public int? DefaultEnumValueId { get; set; }
     }
 }

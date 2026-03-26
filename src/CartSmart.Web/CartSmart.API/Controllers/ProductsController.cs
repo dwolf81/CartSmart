@@ -700,6 +700,7 @@ namespace CartSmart.API.Controllers
                         DataType = a.DataType,
                         Description = a.Description,
                         IsRequired = productAttributes.FirstOrDefault(pa => pa.AttributeId == a.Id)?.IsRequired ?? false,
+                        DefaultEnumValueId = productAttributes.FirstOrDefault(pa => pa.AttributeId == a.Id)?.DefaultEnumValueId,
                         Options = enumValues
                             .Where(ev => ev.AttributeId == a.Id)
                             .OrderBy(ev => ev.SortOrder)
@@ -1250,7 +1251,8 @@ namespace CartSmart.API.Controllers
             {
                 ProductId = productId,
                 AttributeId = attributeId,
-                IsRequired = req.IsRequired
+                IsRequired = req.IsRequired,
+                DefaultEnumValueId = req.DefaultEnumValueId
             });
 
             InvalidateProductCaches(productId, product.Slug);

@@ -247,6 +247,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonPropertyName("isRequired")]
         public bool IsRequired { get; set; }
 
+        [JsonProperty("defaultEnumValueId")]
+        [JsonPropertyName("defaultEnumValueId")]
+        public int? DefaultEnumValueId { get; set; }
+
         [JsonProperty("options")]
         [JsonPropertyName("options")]
         public List<AdminAttributeEnumValueDTO> Options { get; set; } = new();
@@ -303,6 +307,10 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("isRequired")]
         [JsonPropertyName("isRequired")]
         public bool IsRequired { get; set; }
+
+        [JsonProperty("defaultEnumValueId")]
+        [JsonPropertyName("defaultEnumValueId")]
+        public int? DefaultEnumValueId { get; set; }
     }
 
     public class AdminUpsertAttributeEnumValueRequestDTO

@@ -638,18 +638,40 @@ export default function AdminProductModal({
   const handleAdminToggleAttributeRequired = async (attributeId, isRequired) => {
     setAdminEditError('');
     if (!currentProductId) return;
+    const attr = adminAttributes.find((a) => a.attributeId === attributeId);
     setAdminEditSaving(true);
     try {
       const res = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/product-attributes/${attributeId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ attributeId, isRequired: !!isRequired })
+        body: JSON.stringify({ attributeId, isRequired: !!isRequired, defaultEnumValueId: attr?.defaultEnumValueId ?? null })
       });
       if (!res.ok) throw new Error('Failed to update required flag');
       await refreshAdminEditData();
     } catch (e) {
       console.error(e);
       setAdminEditError('Failed to update attribute.');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleAdminChangeDefaultEnumValue = async (attributeId, defaultEnumValueId) => {
+    setAdminEditError('');
+    if (!currentProductId) return;
+    const attr = adminAttributes.find((a) => a.attributeId === attributeId);
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/product-attributes/${attributeId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attributeId, isRequired: attr?.isRequired ?? false, defaultEnumValueId: defaultEnumValueId || null })
+      });
+      if (!res.ok) throw new Error('Failed to update default enum value');
+      await refreshAdminEditData();
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to update default value.');
     } finally {
       setAdminEditSaving(false);
     }
@@ -1301,6 +1323,24 @@ export default function AdminProductModal({
                                 />
                                 Required
                               </label>
+                              {attr.dataType === 'enum' && (attr.options || []).length > 0 && (
+                                <label className="inline-flex items-center gap-2 text-sm">
+                                  <span className="text-gray-700">Default:</span>
+                                  <select
+                                    value={attr.defaultEnumValueId != null ? String(attr.defaultEnumValueId) : ''}
+                                    onChange={(e) => handleAdminChangeDefaultEnumValue(attr.attributeId, e.target.value ? Number(e.target.value) : null)}
+                                    className="px-2 py-1 border rounded-md text-sm"
+                                    disabled={adminEditSaving}
+                                  >
+                                    <option value="">None</option>
+                                    {(attr.options || []).filter((o) => o.isActive).map((o) => (
+                                      <option key={o.id} value={String(o.id)}>
+                                        {o.displayName || o.enumKey}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => handleAdminRemoveAttribute(attr.attributeId)}
