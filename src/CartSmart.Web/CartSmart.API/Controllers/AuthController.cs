@@ -8,12 +8,14 @@ using Microsoft.Extensions.Configuration;
 using CartSmart.API.Security;
 using CartSmart.API.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CartSmart.API.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
     [AllowAnonymous]
+    [EnableRateLimiting("auth")]
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;

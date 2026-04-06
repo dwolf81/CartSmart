@@ -1091,4 +1091,50 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             Console.WriteLine($"[IngestLog] Purge failed: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Checks whether a store item was previously rejected by AI validation.
+    /// Returns true if an ingest_log entry exists for this item with an ai_rejected ignore reason.
+    /// </summary>
+    public async Task<bool> HasAiRejectedEntryAsync(string storeItemId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(storeItemId)) return false;
+        try
+        {
+            var result = await _client.From<IngestLog>()
+                .Filter("store_item_id", Supabase.Postgrest.Constants.Operator.Equals, storeItemId)
+                .Filter("ignore_reason", Supabase.Postgrest.Constants.Operator.ILike, "ai_rejected%")
+                .Limit(1)
+                .Get(cancellationToken: ct);
+            return result.Models.Count > 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[IngestLog] AI rejection check failed for {storeItemId}: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether a store item was previously approved by AI validation.
+    /// Returns true if an ingest_log entry exists for this item with an ai_approved ignore reason.
+    /// </summary>
+    public async Task<bool> HasAiApprovedEntryAsync(string storeItemId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(storeItemId)) return false;
+        try
+        {
+            var result = await _client.From<IngestLog>()
+                .Filter("store_item_id", Supabase.Postgrest.Constants.Operator.Equals, storeItemId)
+                .Filter("ignore_reason", Supabase.Postgrest.Constants.Operator.ILike, "ai_approved%")
+                .Limit(1)
+                .Get(cancellationToken: ct);
+            return result.Models.Count > 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[IngestLog] AI approval check failed for {storeItemId}: {ex.Message}");
+            return false;
+        }
+    }
 }

@@ -19,6 +19,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
     private readonly Dictionary<StoreType, IStoreClient> _clientMap;
     // Cache for brand name → brand ID lookups (populated lazily during ingest)
     private Dictionary<string, int>? _brandNameToIdCache;
+    private readonly IAiDealValidator? _aiValidator;
 
     // Word-form numbers for pack-count parsing in listing titles
     private static readonly Dictionary<string, int> WordToNumber = new(StringComparer.OrdinalIgnoreCase)
@@ -38,7 +39,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         RefreshSchedulingOptions? schedulingOptions = null,
         TimeProvider? timeProvider = null,
         int maxParallel = 5,
-        TimeSpan? minRefreshInterval = null)
+        TimeSpan? minRefreshInterval = null,
+        IAiDealValidator? aiValidator = null)
     {
         _repo = repo;
         _storeClients = storeClients;
@@ -49,6 +51,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         _minRefreshInterval = minRefreshInterval ?? TimeSpan.FromMinutes(5);
         _semaphore = new SemaphoreSlim(maxParallel);
         _clientMap = storeClients.ToDictionary(c => c.StoreType, c => c);
+        _aiValidator = aiValidator;
     }
     public async Task<DealRefreshResult> RefreshDealsAsync(int batchSize, CancellationToken ct)
     {
@@ -217,6 +220,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
 
             // Ingest log: track outcome for every listing returned by the API
             var ingestLogEntries = new Dictionary<string, (NewListing Listing, string Outcome, int? DealProductId, string? IgnoreReason)>(StringComparer.OrdinalIgnoreCase);
+            var aiDecisions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             void LogListing(NewListing l, string outcome, int? dpId = null, string? reason = null)
             {
                 var key = l.ItemId ?? Guid.NewGuid().ToString();
@@ -278,6 +282,105 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 {
                     LogListing(l, "ignored", reason: !titleMatch ? "title_mismatch" : "price_out_of_range");
                 }
+            }
+
+            // ── AI validation for low-confidence title-only matches ──
+            if (_aiValidator != null && candidates.Count > 0)
+            {
+                var aiNoiseThreshold = double.TryParse(
+                    Environment.GetEnvironmentVariable("AI_VALIDATION_NOISE_THRESHOLD"), out var nt) ? nt : 0.5;
+
+                // Resolve brand name for AI prompt (reverse lookup from brand cache)
+                string? brandName = null;
+                if (brandId.HasValue)
+                {
+                    await EnsureBrandCacheAsync(ct);
+                    brandName = _brandNameToIdCache?
+                        .FirstOrDefault(kv => kv.Value == brandId.Value).Key;
+                }
+
+                var aiValidated = new List<NewListing>(candidates.Count);
+                foreach (var c in candidates)
+                {
+                    // Structural matches (GTIN or Brand+MPN) are high confidence — skip AI
+                    bool isStructural = !string.IsNullOrWhiteSpace(c.GTIN)
+                        || (!string.IsNullOrWhiteSpace(c.Brand) && !string.IsNullOrWhiteSpace(c.MPN) && brandId.HasValue);
+
+                    if (isStructural)
+                    {
+                        aiValidated.Add(c);
+                        continue;
+                    }
+
+                    // Already tracked as a deal_product — no need to re-validate with AI
+                    if (!string.IsNullOrWhiteSpace(c.ItemId)
+                        && await repoImpl.GetDealProductByStoreItemIdAsync(c.ItemId, ct) != null)
+                    {
+                        aiValidated.Add(c);
+                        continue;
+                    }
+
+                    // Compute noise ratio: fraction of listing tokens NOT matching product tokens
+                    var cTitleTokens = NormalizeIdentityTokens(c.Title ?? string.Empty).ToList();
+                    var productTokenSet = productTokens.ToHashSet();
+                    var matchedCount = cTitleTokens.Count(t => productTokenSet.Contains(t));
+                    var noiseRatio = cTitleTokens.Count > 0
+                        ? 1.0 - ((double)matchedCount / cTitleTokens.Count)
+                        : 0.0;
+
+                    if (noiseRatio <= aiNoiseThreshold)
+                    {
+                        aiValidated.Add(c);
+                        continue;
+                    }
+
+                    // High noise — check ingest_log for a previous AI decision
+                    if (!string.IsNullOrWhiteSpace(c.ItemId))
+                    {
+                        if (await repoImpl.HasAiRejectedEntryAsync(c.ItemId, ct))
+                        {
+                            LogListing(c, "ignored", reason: "ai_previously_rejected");
+                            continue;
+                        }
+                        if (await repoImpl.HasAiApprovedEntryAsync(c.ItemId, ct))
+                        {
+                            aiValidated.Add(c);
+                            continue;
+                        }
+                    }
+
+                    // Call AI validation
+                    _logger.LogDebug("AI validating listing {ItemId} (noise={Noise:P0}): {Title}",
+                        c.ItemId, noiseRatio, c.Title);
+
+                    var aiResult = await _aiValidator.ValidateAsync(new AiValidationRequest(
+                        ProductName: product?.Name ?? productName,
+                        ProductBrand: brandName,
+                        ProductMsrp: msrp.HasValue ? (decimal)msrp.Value : null,
+                        ExpectedPackCount: product?.CountEnabled == true ? product.DefaultCount : null,
+                        ContentType: "ebay_listing",
+                        ContentTitle: c.Title ?? string.Empty,
+                        ContentBody: c.ShortDescription,
+                        ContentPrice: c.Price,
+                        ContentUrl: c.Url
+                    ), ct);
+
+                    if (aiResult.IsLegitimate)
+                    {
+                        _logger.LogInformation("AI approved listing {ItemId}: {Reason}", c.ItemId, aiResult.Reason);
+                        if (!string.IsNullOrWhiteSpace(c.ItemId))
+                            aiDecisions[c.ItemId] = $"ai_approved: {aiResult.Reason}";
+                        aiValidated.Add(c);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("AI rejected listing {ItemId}: {Reason}", c.ItemId, aiResult.Reason);
+                        if (!string.IsNullOrWhiteSpace(c.ItemId))
+                            aiDecisions[c.ItemId] = $"ai_rejected: {aiResult.Reason}";
+                        LogListing(c, "ignored", reason: $"ai_rejected: {aiResult.Reason}");
+                    }
+                }
+                candidates = aiValidated;
             }
 
             // From candidates, pick lowest priced listings.
@@ -612,16 +715,26 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             // Flush ingest log entries for this product
             if (ingestLogEntries.Count > 0)
             {
-                var logRows = ingestLogEntries.Values.Select(e => new IngestLog
+                var logRows = ingestLogEntries.Values.Select(e =>
                 {
-                    ProductId = q.ProductId,
-                    StoreItemId = e.Listing.ItemId,
-                    Title = e.Listing.Title?.Length > 500 ? e.Listing.Title[..500] : e.Listing.Title,
-                    ShortDescription = e.Listing.ShortDescription?.Length > 1000 ? e.Listing.ShortDescription[..1000] : e.Listing.ShortDescription,
-                    Price = e.Listing.Price,
-                    Outcome = e.Outcome,
-                    DealProductId = e.DealProductId,
-                    IgnoreReason = e.IgnoreReason
+                    var reason = e.IgnoreReason;
+                    // Merge AI decision into the final reason so it's always visible
+                    if (e.Listing.ItemId != null && aiDecisions.TryGetValue(e.Listing.ItemId, out var aiDecision)
+                        && (reason == null || !reason.StartsWith("ai_", StringComparison.Ordinal)))
+                    {
+                        reason = reason != null ? $"{aiDecision} | {reason}" : aiDecision;
+                    }
+                    return new IngestLog
+                    {
+                        ProductId = q.ProductId,
+                        StoreItemId = e.Listing.ItemId,
+                        Title = e.Listing.Title?.Length > 500 ? e.Listing.Title[..500] : e.Listing.Title,
+                        ShortDescription = e.Listing.ShortDescription?.Length > 1000 ? e.Listing.ShortDescription[..1000] : e.Listing.ShortDescription,
+                        Price = e.Listing.Price,
+                        Outcome = e.Outcome,
+                        DealProductId = e.DealProductId,
+                        IgnoreReason = reason
+                    };
                 }).ToList();
                 await repoImpl.InsertIngestLogBatchAsync(logRows, ct);
             }
@@ -635,34 +748,33 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         return created;
     }
 
+    private async Task EnsureBrandCacheAsync(CancellationToken ct)
+    {
+        if (_brandNameToIdCache != null) return;
+        try
+        {
+            var brands = await _repo.GetAllBrandsAsync(ct);
+            _brandNameToIdCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var b in brands)
+            {
+                if (!string.IsNullOrWhiteSpace(b.Name))
+                    _brandNameToIdCache.TryAdd(b.Name.Trim(), b.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load brands for EnsureBrandCacheAsync");
+            _brandNameToIdCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     private async Task<int?> InferBrandIdAsync(string brandName, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(brandName)) return null;
-
-        // Lazily load and cache all brands on first use
-        if (_brandNameToIdCache == null)
-        {
-            try
-            {
-                var brands = await _repo.GetAllBrandsAsync(ct);
-                _brandNameToIdCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                foreach (var b in brands)
-                {
-                    if (!string.IsNullOrWhiteSpace(b.Name))
-                        _brandNameToIdCache.TryAdd(b.Name.Trim(), b.Id);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to load brands for InferBrandIdAsync");
-                _brandNameToIdCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            }
-        }
-
+        await EnsureBrandCacheAsync(ct);
         var normalized = brandName.Trim();
-        if (_brandNameToIdCache.TryGetValue(normalized, out var id))
+        if (_brandNameToIdCache!.TryGetValue(normalized, out var id))
             return id;
-
         return null;
     }
 

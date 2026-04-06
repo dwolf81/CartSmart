@@ -676,7 +676,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
                 MapConditionToCategory(s.conditionId),
                 freeShipping,
                 BuildAspects(s.localizedAspects),
-                s.shortDescription
+                s.shortDescription,
+                score
             ));
         }
 

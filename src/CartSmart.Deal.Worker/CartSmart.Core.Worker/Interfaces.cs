@@ -73,10 +73,38 @@ public sealed record NewListing(
     int? ConditionCategoryId,
     bool? FreeShipping,
     IReadOnlyDictionary<string, IReadOnlyList<string>>? Aspects = null,
-    string? ShortDescription = null
+    string? ShortDescription = null,
+    double? ConfidenceScore = null
 );
 
 public sealed record NewListingQuery(
     int ProductId,
     string Query
+);
+
+/// <summary>
+/// Source-agnostic AI validation for deal content.
+/// Validates whether content (listing, email, forum post, etc.) represents
+/// a legitimate deal for a given product.
+/// </summary>
+public interface IAiDealValidator
+{
+    Task<AiValidationResult> ValidateAsync(AiValidationRequest request, CancellationToken ct);
+}
+
+public sealed record AiValidationRequest(
+    string ProductName,
+    string? ProductBrand,
+    decimal? ProductMsrp,
+    int? ExpectedPackCount,
+    string ContentType,     // "ebay_listing", "email", "forum_post", "social_media", "web_page"
+    string ContentTitle,
+    string? ContentBody,
+    decimal? ContentPrice,
+    string? ContentUrl
+);
+
+public sealed record AiValidationResult(
+    bool IsLegitimate,
+    string Reason
 );

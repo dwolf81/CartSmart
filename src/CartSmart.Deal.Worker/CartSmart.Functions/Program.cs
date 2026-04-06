@@ -118,13 +118,25 @@ var host = new HostBuilder()
             var supabase = sp.GetRequiredService<Supabase.Client>();
             return new CartSmart.Providers.EbayStoreClient(http, logger, auth, stopWordsProvider, supabase);
         });
+
+        // AI deal validator (optional — only active when OPENAI_API_KEY is configured)
+        services.AddHttpClient<CartSmart.Providers.OpenAiDealValidator>();
+        services.AddSingleton<IAiDealValidator>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.OpenAiDealValidator));
+            var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<CartSmart.Providers.OpenAiDealValidator>>();
+            return new CartSmart.Providers.OpenAiDealValidator(http, logger);
+        });
+
         services.AddSingleton<IDealUpdateOrchestrator>(sp => new DealUpdateOrchestrator(
             sp.GetRequiredService<IDealRepository>(),
             sp.GetServices<IStoreClient>(),
             sp.GetRequiredService<ILogger<DealUpdateOrchestrator>>(),
             sp.GetRequiredService<IHtmlScraper>(),
             schedulingOptions: sp.GetRequiredService<IOptions<RefreshSchedulingOptions>>().Value,
-            maxParallel: 1));
+            maxParallel: 1,
+            aiValidator: sp.GetRequiredService<IAiDealValidator>()));
     })
     .Build();
 

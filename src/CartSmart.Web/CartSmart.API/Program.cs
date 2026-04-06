@@ -6,6 +6,7 @@ using Supabase;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using System.Threading.RateLimiting;
 
 // Load environment variables
 Env.Load();
@@ -15,6 +16,35 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddMemoryCache();
 builder.Services.AddDistributedMemoryCache();
 builder.Services.AddHttpContextAccessor();
+
+// ── Rate limiting ──
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Global per-IP policy: generous enough for normal browsing, blocks floods
+    options.AddPolicy("per-ip", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+
+    // Stricter policy for auth endpoints (login, register, password reset)
+    options.AddPolicy("auth", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            }));
+});
+
 builder.Services.AddSession(options =>
 {
     options.IdleTimeout = TimeSpan.FromMinutes(30);
@@ -31,10 +61,6 @@ builder.Services.AddControllers().AddNewtonsoftJson(options =>
     options.SerializerSettings.ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore;
 });
 
-// Debug: Print environment variables
-Console.WriteLine($"SUPABASE_URL: {Environment.GetEnvironmentVariable("SUPABASE_URL")}");
-Console.WriteLine($"SUPABASE_KEY: {Environment.GetEnvironmentVariable("SUPABASE_KEY")}");
-
 // Add configuration sources
 builder.Configuration
     .SetBasePath(Directory.GetCurrentDirectory())
@@ -47,36 +73,39 @@ builder.Services.AddControllers();
 builder.Services.AddResponseCaching();
 builder.Services.AddEndpointsApiExplorer();
 
-// Configure Swagger
-builder.Services.AddSwaggerGen(c =>
+// Configure Swagger (dev only)
+if (builder.Environment.IsDevelopment())
 {
-    c.SwaggerDoc("v1", new OpenApiInfo { Title = "CartSmart API", Version = "v1" });
-    
-    // Add JWT Authentication
-    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    builder.Services.AddSwaggerGen(c =>
     {
-        Description = "JWT Authorization header using the Bearer scheme",
-        Name = "Authorization",
-        In = ParameterLocation.Header,
-        Type = SecuritySchemeType.ApiKey,
-        Scheme = "Bearer"
-    });
-
-    c.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
+        c.SwaggerDoc("v1", new OpenApiInfo { Title = "CartSmart API", Version = "v1" });
+        
+        // Add JWT Authentication
+        c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
         {
-            new OpenApiSecurityScheme
+            Description = "JWT Authorization header using the Bearer scheme",
+            Name = "Authorization",
+            In = ParameterLocation.Header,
+            Type = SecuritySchemeType.ApiKey,
+            Scheme = "Bearer"
+        });
+
+        c.AddSecurityRequirement(new OpenApiSecurityRequirement
+        {
             {
-                Reference = new OpenApiReference
+                new OpenApiSecurityScheme
                 {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            Array.Empty<string>()
-        }
+                    Reference = new OpenApiReference
+                    {
+                        Type = ReferenceType.SecurityScheme,
+                        Id = "Bearer"
+                    }
+                },
+                Array.Empty<string>()
+            }
+        });
     });
-});
+}
 
 // Add Authentication
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -161,7 +190,13 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp",
         builder => builder
-            .SetIsOriginAllowed(origin => true)
+            .WithOrigins(
+                "https://cartsmart.com",
+                "https://www.cartsmart.com",
+                "http://localhost:3000",
+                "http://localhost:5000",
+                "https://localhost:5001"
+            )
             .AllowAnyMethod()
             .AllowAnyHeader()
             .AllowCredentials()
@@ -186,6 +221,9 @@ if (app.Environment.IsDevelopment())
 // Use routing before CORS/endpoints
 app.UseRouting();
 
+// Rate limiting (before CORS/auth so floods are rejected early)
+app.UseRateLimiter();
+
 // CORS must run between routing and endpoints to apply to controllers
 app.UseCors("AllowReactApp");
 app.UseMiddleware<ActiveUserMiddleware>();
@@ -197,6 +235,11 @@ app.Use(async (context, next) =>
 {
     // Allow Google OAuth popup messaging
     context.Response.Headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups";
+    // Security headers
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    context.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
     await next();
 });
 
@@ -205,7 +248,7 @@ app.Use(async (context, next) =>
 // Use endpoints after routing and auth
 app.UseEndpoints(endpoints =>
 {
-    endpoints.MapControllers();
+    endpoints.MapControllers().RequireRateLimiting("per-ip");
 });
 
 app.UseDefaultFiles();   // lets index.html be served automatically
