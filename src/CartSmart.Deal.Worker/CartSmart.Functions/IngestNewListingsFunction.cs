@@ -42,8 +42,9 @@ public class IngestNewListingsFunction
         {
             if (key == "ebay")
             {
+                var topPerProduct = int.TryParse(_config["Values:TopPerProduct"] ?? _config["TopPerProduct"], out var t) ? t : 5;
                 _logger.LogInformation("Ingesting listings for {Store} at {Time}. Count={Count}", "ebay", DateTime.UtcNow, queries.Count);
-                totalCreated += await _orchestrator.IngestNewListingsAsync(StoreType.Ebay, 5, queries, ct);
+                totalCreated += await _orchestrator.IngestNewListingsAsync(StoreType.Ebay, topPerProduct, queries, ct);
             }
             else
             {

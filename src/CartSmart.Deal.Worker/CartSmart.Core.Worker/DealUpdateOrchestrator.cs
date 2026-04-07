@@ -270,9 +270,13 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 bool priceOk = false;
                 if (msrp.HasValue && l.Price.HasValue)
                 {
-                    // Accept listings priced within 40%..150% of MSRP to avoid low-cost accessories and overpriced bundles
+                    // Accept listings priced within floor..150% of MSRP to avoid low-cost accessories and overpriced bundles.
+                    // Floor defaults to 40% of MSRP but respects api_min_price when set on the product.
                     var p = l.Price!.Value;
-                    priceOk = p >= (decimal)msrp.Value * 0.4m && p <= (decimal)msrp.Value * 1.5m;
+                    var floor = product?.ApiMinPrice.HasValue == true
+                        ? (decimal)product.ApiMinPrice.Value
+                        : (decimal)msrp.Value * 0.4m;
+                    priceOk = p >= floor && p <= (decimal)msrp.Value * 1.5m;
                 }
                 if (titleMatch && priceOk)
                 {
@@ -391,6 +395,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             var hasVariants = variantClient != null && await variantClient.HasActiveVariantsAsync(q.ProductId, ct);
 
             List<(NewListing Listing, long? VariantId)> selected;
+            var cappedItemIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (storeType == StoreType.Ebay)
             {
                 var targetConditions = product?.PreferredConditionCategoryId is int preferred && (preferred == 1 || preferred == 2 || preferred == 3)
@@ -438,6 +443,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     priced = filtered;
                 }
 
+                // Pre-fetch tracked store_item_ids so we can bypass caps for existing deal_products
+                var trackedItemIds = await repoImpl.GetTrackedStoreItemIdsForProductAsync(q.ProductId, ct);
+
                 if (!hasVariants)
                 {
                     var conditionCounts = targetConditions.ToDictionary(c => c, _ => 0);
@@ -452,7 +460,17 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         var cond = l.ConditionCategoryId.Value;
                         if (conditionCounts[cond] >= topPerProduct)
                         {
-                            LogListing(l, "ignored", reason: $"per_condition_cap_reached (condition={cond})");
+                            // Cap reached — still include if already tracked so it gets
+                            // refreshed (marked Capped instead of Sold).
+                            if (l.ItemId != null && trackedItemIds.Contains(l.ItemId))
+                            {
+                                selected.Add((l, (long?)null));
+                                cappedItemIds.Add(l.ItemId);
+                            }
+                            else
+                            {
+                                LogListing(l, "ignored", reason: $"per_condition_cap_reached (condition={cond})");
+                            }
                             continue;
                         }
                         selected.Add((l, (long?)null));
@@ -496,7 +514,15 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                             fallbackCounts.TryGetValue(key, out var cnt);
                             if (cnt >= topPerProduct)
                             {
-                                LogListing(l, "ignored", reason: $"per_variant_condition_cap_reached (variant={vid}, condition={l.ConditionCategoryId})");
+                                if (l.ItemId != null && trackedItemIds.Contains(l.ItemId))
+                                {
+                                    selected.Add((l, vid));
+                                    cappedItemIds.Add(l.ItemId);
+                                }
+                                else
+                                {
+                                    LogListing(l, "ignored", reason: $"per_variant_condition_cap_reached (variant={vid}, condition={l.ConditionCategoryId})");
+                                }
                                 continue;
                             }
                             selected.Add((l, vid));
@@ -515,7 +541,17 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         {
                             if (allFull)
                             {
-                                LogListing(l, "ignored", reason: "all_variant_slots_filled");
+                                if (l.ItemId != null && trackedItemIds.Contains(l.ItemId))
+                                {
+                                    // Resolve variant for the tracked item before adding
+                                    var capVid = await variantClient!.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
+                                    picked.Add((l, capVid));
+                                    cappedItemIds.Add(l.ItemId);
+                                }
+                                else
+                                {
+                                    LogListing(l, "ignored", reason: "all_variant_slots_filled");
+                                }
                                 continue;
                             }
 
@@ -545,7 +581,15 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                             }
                             if (c >= topPerProduct)
                             {
-                                LogListing(l, "ignored", reason: $"per_variant_condition_cap_reached (variant={vid}, condition={condition})");
+                                if (l.ItemId != null && trackedItemIds.Contains(l.ItemId))
+                                {
+                                    picked.Add((l, vid));
+                                    cappedItemIds.Add(l.ItemId);
+                                }
+                                else
+                                {
+                                    LogListing(l, "ignored", reason: $"per_variant_condition_cap_reached (variant={vid}, condition={condition})");
+                                }
                                 continue;
                             }
 
@@ -612,6 +656,10 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 }
             }
 
+            // Capture before the selected loop so any listing updated during the loop
+            // gets last_checked_at >= this timestamp, and stale ones remain below it.
+            var ingestStartedAt = _timeProvider.GetUtcNow().UtcDateTime;
+
             foreach (var (listing, variantId) in selected)
             {
                 if (listing.ItemId != null)
@@ -619,6 +667,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     var existing = await repoImpl.GetDealProductByStoreItemIdAsync(listing.ItemId, ct);
                     if (existing != null)
                     {
+                        var isCapped = cappedItemIds.Contains(listing.ItemId);
                         // Listing already tracked — refresh price and scheduling timestamps
                         // so the refresh pipeline doesn't re-check it shortly after ingest.
                         var refreshNow = _timeProvider.GetUtcNow().UtcDateTime;
@@ -643,32 +692,56 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                                 }
                             }
                         }
-                        // Reactivate if the listing appeared again during ingest but was
-                        // previously marked Expired/Sold/OutOfStock (skip if deleted).
-                        if (!existing.Deleted
-                            && (existing.DealStatusId == SupabaseDealRepository.DealStatusExpired
-                                || existing.DealStatusId == SupabaseDealRepository.DealStatusSold
-                                || existing.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock))
+
+                        if (isCapped)
                         {
-                            existing.DealStatusId = SupabaseDealRepository.DealStatusActive;
-                            var existingDeal = await _repo.GetDealByIdAsync(existing.DealId, ct);
-                            if (existingDeal != null && !existingDeal.Deleted
-                                && (existingDeal.DealStatusId == SupabaseDealRepository.DealStatusExpired
-                                    || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusSold
-                                    || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock))
+                            // Listing is still on eBay but exceeds the cap — mark as Capped.
+                            if (existing.DealStatusId != SupabaseDealRepository.DealStatusCapped)
                             {
-                                existingDeal.DealStatusId = SupabaseDealRepository.DealStatusActive;
-                                await _repo.UpdateDealsAsync(new[] { existingDeal }, ct);
+                                existing.DealStatusId = SupabaseDealRepository.DealStatusCapped;
+                                var existingDeal = await _repo.GetDealByIdAsync(existing.DealId, ct);
+                                if (existingDeal != null && !existingDeal.Deleted
+                                    && existingDeal.DealStatusId == SupabaseDealRepository.DealStatusActive)
+                                {
+                                    existingDeal.DealStatusId = SupabaseDealRepository.DealStatusCapped;
+                                    await _repo.UpdateDealsAsync(new[] { existingDeal }, ct);
+                                }
+                                _logger.LogInformation(
+                                    "Capped deal_product {Id} (deal_id={DealId}) — listing still live but exceeds ingest cap.",
+                                    existing.Id, existing.DealId);
                             }
-                            _logger.LogInformation(
-                                "Reactivated deal_product {Id} (deal_id={DealId}) — listing available again during ingest.",
-                                existing.Id, existing.DealId);
+                        }
+                        else
+                        {
+                            // Reactivate if the listing appeared again during ingest but was
+                            // previously marked Expired/Sold/OutOfStock/Capped (skip if deleted).
+                            if (!existing.Deleted
+                                && (existing.DealStatusId == SupabaseDealRepository.DealStatusExpired
+                                    || existing.DealStatusId == SupabaseDealRepository.DealStatusSold
+                                    || existing.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock
+                                    || existing.DealStatusId == SupabaseDealRepository.DealStatusCapped))
+                            {
+                                existing.DealStatusId = SupabaseDealRepository.DealStatusActive;
+                                var existingDeal = await _repo.GetDealByIdAsync(existing.DealId, ct);
+                                if (existingDeal != null && !existingDeal.Deleted
+                                    && (existingDeal.DealStatusId == SupabaseDealRepository.DealStatusExpired
+                                        || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusSold
+                                        || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock
+                                        || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusCapped))
+                                {
+                                    existingDeal.DealStatusId = SupabaseDealRepository.DealStatusActive;
+                                    await _repo.UpdateDealsAsync(new[] { existingDeal }, ct);
+                                }
+                                _logger.LogInformation(
+                                    "Reactivated deal_product {Id} (deal_id={DealId}) — listing available again during ingest.",
+                                    existing.Id, existing.DealId);
+                            }
                         }
                         existing.LastCheckedAt = refreshNow;
                         existing.NextCheckAt = refreshNow.AddHours(6);
                         await repoImpl.UpdateDealProductAsync(existing, ct);
-                        LogListing(listing, "updated", dpId: existing.Id);
-                        _logger.LogDebug("Refreshed existing deal_product {Id} (store_item_id={ItemId})", existing.Id, listing.ItemId);
+                        LogListing(listing, isCapped ? "capped" : "updated", dpId: existing.Id);
+                        _logger.LogDebug("Refreshed existing deal_product {Id} (store_item_id={ItemId}, capped={Capped})", existing.Id, listing.ItemId, isCapped);
                         continue;
                     }
                 }
@@ -707,10 +780,11 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     Primary = true
                 };
                 dp = await repoImpl.CreateDealProductAsync(dp, ct);
-                await _repo.UpdateProductBestDealAsync(q.ProductId, ct);
                 LogListing(listing, "added", dpId: dp.Id);
                 created++;
             }
+
+
 
             // Flush ingest log entries for this product
             if (ingestLogEntries.Count > 0)
@@ -738,6 +812,19 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 }).ToList();
                 await repoImpl.InsertIngestLogBatchAsync(logRows, ct);
             }
+
+            // ── eBay staleness: mark deal_products as sold if no longer in search results ──
+            // Uses last_checked_at: the selected loop above updates it for found listings,
+            // so any active deal_product with last_checked_at < ingestStartedAt wasn't in this run.
+            if (storeType == StoreType.Ebay)
+            {
+                var markedSold = await repoImpl.MarkStaleDealProductsSoldAsync(q.ProductId, 4, ingestStartedAt, ct);
+                if (markedSold > 0)
+                    _logger.LogInformation(
+                        "Marked {Count} stale eBay deal_product(s) as sold for product {ProductId}.",
+                        markedSold, q.ProductId);
+            }
+
         }
         _logger.LogInformation("Ingested {Count} eBay deals", created);
 
@@ -832,14 +919,6 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 {
                     deal.DealStatusId = SupabaseDealRepository.DealStatusExpired;
                     await _repo.UpdateDealsAsync(new[] { deal }, ct);
-                }
-                try
-                {
-                    await _repo.UpdateProductBestDealAsync(dealProduct.ProductId, ct);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Best deal RPC failed (expired) for product {ProductId}", dealProduct.ProductId);
                 }
                 return DealProcessOutcome.Expired;
             }

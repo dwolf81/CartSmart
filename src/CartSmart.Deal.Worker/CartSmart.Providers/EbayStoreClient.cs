@@ -1391,11 +1391,11 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         string BuildConditionFilter(int? category)
         {
             if (!category.HasValue)
-                return "conditionIds:{1000|1500|2000|2500|3000|4000|5000|6000}"; // broad: new/open-box/refurb/used family
+                return "conditionIds:{1000|1500|2000|2010|2020|2030|2500|3000|4000|5000|6000}"; // broad: new/open-box/refurb/used family
             var ids = category.Value switch
             {
                 1 => new[] { 1000 }, // New
-                3 => new[] { 2000, 2500 }, // Refurbished
+                3 => new[] { 2000, 2010, 2020, 2030, 2500 }, // Refurbished (Certified, Excellent, Very Good, Good, Seller)
                 2 => new[] { 3000, 4000, 5000, 6000 }, // Used family
                 _ => Array.Empty<int>()
             };
@@ -1699,7 +1699,10 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         // Common mappings:
         // 1000=New -> 1
         // 1500=New (Other)/Open Box -> 2 (Used-like)
-        // 2000=Manufacturer Refurbished -> 3
+        // 2000=Certified Refurbished -> 3
+        // 2010=Excellent - Refurbished -> 3
+        // 2020=Very Good - Refurbished -> 3
+        // 2030=Good - Refurbished -> 3
         // 2500=Seller Refurbished -> 3
         // 3000=Used -> 2
         // 4000=Very Good/Like New -> 2
@@ -1709,6 +1712,9 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         {
             1000 => 1,
             2000 => 3,
+            2010 => 3,
+            2020 => 3,
+            2030 => 3,
             2500 => 3,
             3000 => 2,
             4000 => 2,

@@ -21,6 +21,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     public const int DealStatusExpired = 6;
     public const int DealStatusSold = 7;
     public const int DealStatusOutOfStock = 8;
+    public const int DealStatusCapped = 9;
 
     public SupabaseDealRepository(Client client, TimeProvider? timeProvider = null)
     {
@@ -717,6 +718,46 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
     {
         var insert = await _client.From<DealProduct>().Insert(dealProduct);
         return insert.Models.First();
+    }
+
+    public async Task<HashSet<string>> GetTrackedStoreItemIdsForProductAsync(int productId, CancellationToken ct)
+    {
+        var resp = await _client.From<DealProduct>()
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Select("store_item_id")
+            .Get(ct);
+        return (resp.Models ?? new List<DealProduct>())
+            .Where(dp => !string.IsNullOrWhiteSpace(dp.StoreItemId))
+            .Select(dp => dp.StoreItemId!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Marks active deal_products as sold if they were not refreshed during the
+    /// current ingest run (last_checked_at &lt; ingestStartedAt) for the given
+    /// product and store. Also cascades to parent deals with no remaining active
+    /// deal_products. Returns the count marked sold.
+    /// </summary>
+    public async Task<int> MarkStaleDealProductsSoldAsync(int productId, int storeId, DateTime ingestStartedAt, CancellationToken ct)
+    {
+        var args = new Dictionary<string, object>
+        {
+            { "p_product_id", productId },
+            { "p_store_id", storeId },
+            { "p_ingest_started_at", ingestStartedAt.ToString("o") }
+        };
+        try
+        {
+            var result = await _client.Rpc("f_mark_stale_deal_products_sold", args);
+            if (result?.Content != null && int.TryParse(result.Content.Trim('"'), out var count))
+                return count;
+            return 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     public async Task<IReadOnlyList<Product>> GetActiveProductsAsync(CancellationToken ct)
