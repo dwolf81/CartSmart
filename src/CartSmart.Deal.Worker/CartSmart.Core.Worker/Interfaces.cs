@@ -101,7 +101,8 @@ public sealed record AiValidationRequest(
     string ContentTitle,
     string? ContentBody,
     decimal? ContentPrice,
-    string? ContentUrl
+    string? ContentUrl,
+    IReadOnlyList<string>? KnownAliases = null
 );
 
 public sealed record AiValidationResult(

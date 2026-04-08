@@ -102,7 +102,7 @@ public class OpenAiDealValidator : IAiDealValidator
             - It is clearly a different product that happens to mention the target product name
             - It is selling ONLY accessories, parts, or add-ons WITHOUT the main product (e.g. just a travel case, just a charger, just a mount)
             - The title contains excessive unrelated keywords (keyword stuffing for search visibility)
-            - It is a collectible, commemorative, or special edition not representative of normal pricing
+            - It is a collectible, commemorative, or special edition not representative of normal pricing — UNLESS the edition, variant, or sub-model name is mentioned in the product name or in any of the known aliases (e.g. if an alias contains "Circle B", then a "Circle B" edition is valid and should be approved)
 
             Approve the content if:
             - It is the target product in any condition (new, used, refurbished, open-box) at a reasonable price
@@ -133,6 +133,8 @@ public class OpenAiDealValidator : IAiDealValidator
             parts.Add($"MSRP: ${request.ProductMsrp.Value:F2}");
         if (request.ExpectedPackCount.HasValue && request.ExpectedPackCount.Value > 1)
             parts.Add($"Typical pack/set size (approximate): {request.ExpectedPackCount.Value} — but other set sizes are acceptable");
+        if (request.KnownAliases is { Count: > 0 })
+            parts.Add($"Known aliases / editions: {string.Join(", ", request.KnownAliases)}");
 
         parts.Add(string.Empty);
         parts.Add($"Content type: {request.ContentType}");

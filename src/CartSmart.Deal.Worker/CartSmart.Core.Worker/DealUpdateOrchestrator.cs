@@ -303,6 +303,9 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         .FirstOrDefault(kv => kv.Value == brandId.Value).Key;
                 }
 
+                // Fetch search aliases so the AI knows which editions/variants are valid
+                var searchAliases = await repoImpl.GetProductSearchAliasesAsync(q.ProductId, ct);
+
                 var aiValidated = new List<NewListing>(candidates.Count);
                 foreach (var c in candidates)
                 {
@@ -366,7 +369,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         ContentTitle: c.Title ?? string.Empty,
                         ContentBody: c.ShortDescription,
                         ContentPrice: c.Price,
-                        ContentUrl: c.Url
+                        ContentUrl: c.Url,
+                        KnownAliases: searchAliases
                     ), ct);
 
                     if (aiResult.IsLegitimate)

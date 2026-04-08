@@ -733,6 +733,20 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
+    public async Task<IReadOnlyList<string>> GetProductSearchAliasesAsync(int productId, CancellationToken ct)
+    {
+        var resp = await _client.From<ProductSearchAlias>()
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+            .Filter("is_active", Supabase.Postgrest.Constants.Operator.Equals, "true")
+            .Select("alias")
+            .Get(ct);
+        return (resp.Models ?? new List<ProductSearchAlias>())
+            .Select(x => (x.Alias ?? string.Empty).Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     /// <summary>
     /// Marks active deal_products as sold if they were not refreshed during the
     /// current ingest run (last_checked_at &lt; ingestStartedAt) for the given
@@ -1122,10 +1136,11 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
         if (retentionDays <= 0) retentionDays = 7;
         try
         {
-            var cutoff = DateTime.UtcNow.AddDays(-retentionDays).ToString("o");
-            await _client.From<IngestLog>()
-                .Filter("created_at", Supabase.Postgrest.Constants.Operator.LessThan, cutoff)
-                .Delete(cancellationToken: ct);
+            var args = new Dictionary<string, object>
+            {
+                { "p_retention_days", retentionDays }
+            };
+            await _client.Rpc("f_purge_old_ingest_logs", args);
         }
         catch (Exception ex)
         {
