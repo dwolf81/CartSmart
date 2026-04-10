@@ -74,7 +74,8 @@ public sealed record NewListing(
     bool? FreeShipping,
     IReadOnlyDictionary<string, IReadOnlyList<string>>? Aspects = null,
     string? ShortDescription = null,
-    double? ConfidenceScore = null
+    double? ConfidenceScore = null,
+    bool HasCoupons = false
 );
 
 public sealed record NewListingQuery(
@@ -91,6 +92,21 @@ public interface IAiDealValidator
 {
     Task<AiValidationResult> ValidateAsync(AiValidationRequest request, CancellationToken ct);
 }
+
+/// <summary>
+/// Optional capability: fetch coupon/promotion details for a store listing.
+/// </summary>
+public interface ICouponResolvingStoreClient
+{
+    Task<IReadOnlyList<StoreCoupon>> GetItemCouponsAsync(string itemId, CancellationToken ct);
+}
+
+public sealed record StoreCoupon(
+    string? RedemptionCode,
+    string? DiscountType,  // "PERCENTAGE" or "FIXED_AMOUNT"
+    decimal? DiscountValue,
+    string? Currency
+);
 
 public sealed record AiValidationRequest(
     string ProductName,

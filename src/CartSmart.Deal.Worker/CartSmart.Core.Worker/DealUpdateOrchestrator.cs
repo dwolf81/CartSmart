@@ -396,6 +396,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
             // If the product has variants and we can't confidently resolve a variant from the listing, skip it.
 
             var variantClient = client as IVariantResolvingStoreClient;
+            var couponClient = client as ICouponResolvingStoreClient;
             var hasVariants = variantClient != null && await variantClient.HasActiveVariantsAsync(q.ProductId, ct);
 
             List<(NewListing Listing, long? VariantId)> selected;
@@ -675,10 +676,40 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         // Listing already tracked — refresh price and scheduling timestamps
                         // so the refresh pipeline doesn't re-check it shortly after ingest.
                         var refreshNow = _timeProvider.GetUtcNow().UtcDateTime;
-                        if (listing.Price.HasValue && existing.Price != listing.Price.Value)
+
+                        // Resolve eBay seller coupon to determine effective price
+                        decimal effectivePrice = listing.Price ?? existing.Price;
+                        StoreCoupon? activeCoupon = null;
+                        bool couponCheckFailed = false;
+                        if (listing.HasCoupons && couponClient != null)
                         {
-                            await repoImpl.AppendPriceHistoryForDealProductAsync(existing.Id, listing.Price.Value, listing.Currency, refreshNow, ct);
-                            existing.Price = listing.Price.Value;
+                            try
+                            {
+                                var coupons = await couponClient.GetItemCouponsAsync(listing.ItemId, ct);
+                                activeCoupon = coupons.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c.RedemptionCode));
+                                if (activeCoupon != null && listing.Price.HasValue
+                                    && activeCoupon.DiscountValue.HasValue && activeCoupon.DiscountValue.Value > 0)
+                                {
+                                    decimal? cp;
+                                    if (string.Equals(activeCoupon.DiscountType, "PERCENTAGE", StringComparison.OrdinalIgnoreCase))
+                                        cp = Math.Round(listing.Price.Value * (1 - activeCoupon.DiscountValue.Value / 100m), 2);
+                                    else
+                                        cp = Math.Max(0, listing.Price.Value - activeCoupon.DiscountValue.Value);
+                                    if (cp.HasValue && cp.Value > 0 && cp.Value < listing.Price.Value)
+                                        effectivePrice = cp.Value;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                couponCheckFailed = true;
+                                _logger.LogWarning(ex, "Failed to fetch coupon for eBay item {ItemId}", listing.ItemId);
+                            }
+                        }
+
+                        if (effectivePrice > 0 && existing.Price != effectivePrice)
+                        {
+                            await repoImpl.AppendPriceHistoryForDealProductAsync(existing.Id, effectivePrice, listing.Currency, refreshNow, ct);
+                            existing.Price = effectivePrice;
 
                             // Update discount on the parent deal when price changes for a primary deal_product
                             if (existing.Primary)
@@ -686,13 +717,51 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                                 var existingDealForDiscount = await _repo.GetDealByIdAsync(existing.DealId, ct);
                                 if (existingDealForDiscount != null)
                                 {
-                                    var newDiscount = ComputeDiscountPercent(msrp, listing.Price.Value,
+                                    var newDiscount = ComputeDiscountPercent(msrp, effectivePrice,
                                         product?.CountEnabled == true, product?.DefaultCount ?? 1, existing.ItemCount);
                                     if (existingDealForDiscount.DiscountPercent != newDiscount)
                                     {
                                         existingDealForDiscount.DiscountPercent = newDiscount;
                                         await _repo.UpdateDealDiscountOnlyAsync(existingDealForDiscount.Id, newDiscount, ct);
                                     }
+                                }
+                            }
+                        }
+
+                        // Convert deal type based on coupon presence
+                        if (couponClient != null && existing.Primary && !couponCheckFailed)
+                        {
+                            var parentDeal = await _repo.GetDealByIdAsync(existing.DealId, ct);
+                            if (parentDeal != null && parentDeal.StoreId == 4)
+                            {
+                                bool hasCouponNow = activeCoupon?.RedemptionCode != null;
+                                if (hasCouponNow && parentDeal.DealTypeId != 2)
+                                {
+                                    parentDeal.DealTypeId = 2;
+                                    parentDeal.CouponCode = activeCoupon!.RedemptionCode;
+                                    parentDeal.DiscountPercent = ComputeDiscountPercent(msrp, effectivePrice,
+                                        product?.CountEnabled == true, product?.DefaultCount ?? 1, existing.ItemCount);
+                                    await _repo.UpdateDealsAsync(new[] { parentDeal }, ct);
+                                    _logger.LogInformation(
+                                        "Converted deal {DealId} to coupon (code={Code}) for item {ItemId}",
+                                        parentDeal.Id, activeCoupon.RedemptionCode, listing.ItemId);
+                                }
+                                else if (hasCouponNow && parentDeal.DealTypeId == 2
+                                    && parentDeal.CouponCode != activeCoupon!.RedemptionCode)
+                                {
+                                    parentDeal.CouponCode = activeCoupon.RedemptionCode;
+                                    await _repo.UpdateDealsAsync(new[] { parentDeal }, ct);
+                                }
+                                else if (!hasCouponNow && parentDeal.DealTypeId == 2)
+                                {
+                                    parentDeal.DealTypeId = 1;
+                                    parentDeal.CouponCode = null;
+                                    parentDeal.DiscountPercent = ComputeDiscountPercent(msrp, effectivePrice,
+                                        product?.CountEnabled == true, product?.DefaultCount ?? 1, existing.ItemCount);
+                                    await _repo.UpdateDealsAsync(new[] { parentDeal }, ct);
+                                    _logger.LogInformation(
+                                        "Reverted deal {DealId} to direct — coupon removed for item {ItemId}",
+                                        parentDeal.Id, listing.ItemId);
                                 }
                             }
                         }
@@ -754,14 +823,50 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                         ?? ParsePackCount(listing.ShortDescription ?? string.Empty)
                         ?? product.DefaultCount)
                     : 1;
+                // Resolve eBay seller coupon before creating the deal
+                string? couponCode = null;
+                decimal effectiveCreatePrice = listing.Price ?? 0;
+                int dealTypeId = 1; // Direct by default
+                if (listing.HasCoupons && couponClient != null && !string.IsNullOrWhiteSpace(listing.ItemId))
+                {
+                    try
+                    {
+                        var coupons = await couponClient.GetItemCouponsAsync(listing.ItemId, ct);
+                        var best = coupons.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c.RedemptionCode));
+                        if (best != null)
+                        {
+                            couponCode = best.RedemptionCode;
+                            dealTypeId = 2; // Coupon deal
+                            if (listing.Price.HasValue && best.DiscountValue.HasValue && best.DiscountValue.Value > 0)
+                            {
+                                decimal? cp;
+                                if (string.Equals(best.DiscountType, "PERCENTAGE", StringComparison.OrdinalIgnoreCase))
+                                    cp = Math.Round(listing.Price.Value * (1 - best.DiscountValue.Value / 100m), 2);
+                                else
+                                    cp = Math.Max(0, listing.Price.Value - best.DiscountValue.Value);
+                                if (cp.HasValue && cp.Value > 0 && cp.Value < listing.Price.Value)
+                                    effectiveCreatePrice = cp.Value;
+                            }
+                            _logger.LogInformation(
+                                "eBay coupon {Code} detected for item {ItemId} (base={BasePrice}, effective={EffectivePrice})",
+                                couponCode, listing.ItemId, listing.Price, effectiveCreatePrice);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to fetch coupon for eBay item {ItemId}", listing.ItemId);
+                    }
+                }
+
                 var deal = new Deal
                 {
                     CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
                     DealStatusId = 2,
-                    DealTypeId = 1,                    
+                    DealTypeId = dealTypeId,
+                    CouponCode = couponCode,
                     AdditionalDetails = listing.Title,
                     StoreId = 4,
-                    DiscountPercent = ComputeDiscountPercent(msrp, listing.Price,
+                    DiscountPercent = ComputeDiscountPercent(msrp, effectiveCreatePrice,
                         product?.CountEnabled == true, product?.DefaultCount ?? 1, itemCount),
                     UserId = 1 // TODO: system user
                 };
@@ -771,7 +876,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                     DealId = deal.Id,
                     ProductId = q.ProductId,
                     ProductVariantId = variantId,
-                    Price = listing.Price ?? 0,
+                    Price = effectiveCreatePrice,
                     DealStatusId = 2,
                     Url = listing.Url,
                     ConditionId = listing.ConditionCategoryId,

@@ -12,7 +12,7 @@ using System.Globalization;
 
 namespace CartSmart.Providers;
 
-public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
+public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient, ICouponResolvingStoreClient
 {
     private readonly HttpClient _http;
     private readonly ILogger<EbayStoreClient> _logger;
@@ -677,7 +677,8 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
                 freeShipping,
                 BuildAspects(s.localizedAspects),
                 s.shortDescription,
-                score
+                score,
+                s.availableCoupons == true
             ));
         }
 
@@ -1364,6 +1365,33 @@ public class EbayStoreClient : IStoreClient, IVariantResolvingStoreClient
         return await resp.Content.ReadFromJsonAsync<ItemResponse>(cancellationToken: ct);
     }
 
+    public async Task<IReadOnlyList<StoreCoupon>> GetItemCouponsAsync(string itemId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(itemId))
+            return Array.Empty<StoreCoupon>();
+
+        try
+        {
+            var item = await GetItemAsync(itemId, ct);
+            if (item?.availableCoupons == null || item.availableCoupons.Count == 0)
+                return Array.Empty<StoreCoupon>();
+
+            return item.availableCoupons
+                .Where(c => !string.IsNullOrWhiteSpace(c.redemptionCode))
+                .Select(c => new StoreCoupon(
+                    c.redemptionCode,
+                    c.discountType,
+                    c.discountAmount?.value,
+                    c.discountAmount?.currency))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to fetch coupons for eBay item {ItemId}", itemId);
+            return Array.Empty<StoreCoupon>();
+        }
+    }
+
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>?> GetOrFetchItemAspectsAsync(string itemId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(itemId)) return null;
@@ -1744,6 +1772,7 @@ internal class ItemSummary
     public SellerSummary? seller { get; set; }
     public List<LocalizedAspect>? localizedAspects { get; set; }
     public string? shortDescription { get; set; }
+    public bool? availableCoupons { get; set; }
 }
 
 internal class LocalizedAspect
@@ -1766,6 +1795,7 @@ internal class ItemResponse
     public string? shortDescription { get; set; }
     public List<string>? buyingOptions { get; set; }
     public bool? eligibleForInlineCheckout { get; set; }
+    public List<AvailableCoupon>? availableCoupons { get; set; }
 }
 internal class Price { public decimal? value { get; set; } public string? currency { get; set; } }
 internal class Availability { public ShipAvail? shipToLocationAvailability { get; set; } public string? availabilityStatus { get; set; } }
@@ -1788,4 +1818,12 @@ internal class SellerSummary
     public int? feedbackScore { get; set; }
     public bool? topRatedSeller { get; set; }
     public string? sellerAccountType { get; set; }
+}
+
+internal class AvailableCoupon
+{
+    public string? redemptionCode { get; set; }
+    public string? discountType { get; set; }
+    public Price? discountAmount { get; set; }
+    public string? message { get; set; }
 }
