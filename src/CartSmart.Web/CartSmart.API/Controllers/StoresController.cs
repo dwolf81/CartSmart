@@ -1195,7 +1195,7 @@ namespace CartSmart.API.Controllers
         {
             price = 0m;
             if (string.IsNullOrWhiteSpace(s)) return false;
-            var m = Regex.Match(s, "(?<![A-Za-z0-9])([0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]{2})|[0-9]+(?:\\.[0-9]{1,2})?)");
+            var m = Regex.Match(s, "(?<![A-Za-z0-9])([0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]{1,2})?|[0-9]+(?:\\.[0-9]{1,2})?)");
             if (!m.Success) return false;
             var num = m.Groups[1].Value.Replace(",", "");
             return decimal.TryParse(num, out price);

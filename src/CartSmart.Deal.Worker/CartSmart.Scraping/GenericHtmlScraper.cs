@@ -414,7 +414,7 @@ public class GenericHtmlScraper : IHtmlScraper
         price = 0m;
         if (string.IsNullOrWhiteSpace(s)) return false;
         // Find first monetary number (supports comma thousand separators and dot decimals)
-        var m = System.Text.RegularExpressions.Regex.Match(s, "(?<![A-Za-z0-9])([0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]{2})|[0-9]+(?:\\.[0-9]{1,2})?)");
+        var m = System.Text.RegularExpressions.Regex.Match(s, "(?<![A-Za-z0-9])([0-9]{1,3}(?:,[0-9]{3})*(?:\\.[0-9]{1,2})?|[0-9]+(?:\\.[0-9]{1,2})?)");
         if (!m.Success) return false;
         var num = m.Groups[1].Value;
         // Remove thousand separators
