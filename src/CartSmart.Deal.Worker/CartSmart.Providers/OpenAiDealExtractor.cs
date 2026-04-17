@@ -125,6 +125,7 @@ public class OpenAiDealExtractor : IAiDealExtractor
                   "expiration_date": "2026-04-15T00:00:00Z" or null,
                   "store_name": "Store Name",
                   "is_store_wide": true or false,
+                  "is_actionable": true or false,
                   "product_name": "Primary product name" or null,
                   "product_brand": "Brand" or null,
                   "products": [
@@ -148,6 +149,13 @@ public class OpenAiDealExtractor : IAiDealExtractor
             - "is_store_wide" = true when the deal applies to the entire store (sitewide sale, store-wide coupon).
               For store-wide deals, "products" can be empty and "product_name" can be null.
             - "is_store_wide" = false for product-specific deals. Include each product in the "products" array.
+            - "is_actionable" = true ONLY when the deal is specific and verifiable. It must have at least one of:
+              a concrete coupon code, a specific dollar price for a named product, or an exact discount
+              percentage for a specific product or store. Set to false for vague marketing language such as
+              "Sitewide Savings", "Up to 50% off", "Driver deals", "Save on select styles",
+              "Deals just for you", "Shop now and save", or any language where the actual discount or
+              price cannot be confirmed. If the content is just promotional fluff without a concrete,
+              verifiable offer, set is_actionable to false.
             - "confidence" is 0.0 to 1.0 indicating how confident you are this is a real deal.
             - Set confidence low (<0.3) if the content is vague, spam, or not clearly a deal.
             - "deal_type" should be "coupon" if there's a coupon code, "direct" for price deals,
@@ -231,6 +239,7 @@ public class OpenAiDealExtractor : IAiDealExtractor
             var confidence = TryGetDecimal(root, "confidence") ?? 0m;
             var reasoning = TryGetString(root, "reasoning");
             var isStoreWide = TryGetBool(root, "is_store_wide") ?? false;
+            var isActionable = TryGetBool(root, "is_actionable") ?? true;
 
             var dealTypeId = dealTypeStr?.ToLowerInvariant() switch
             {
@@ -281,6 +290,7 @@ public class OpenAiDealExtractor : IAiDealExtractor
                 ConfidenceScore: Math.Clamp(confidence, 0m, 1m),
                 Reasoning: reasoning,
                 IsStoreWide: isStoreWide,
+                IsActionable: isActionable,
                 Products: products
             );
         }

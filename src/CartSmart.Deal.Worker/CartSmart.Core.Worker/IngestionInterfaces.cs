@@ -41,6 +41,7 @@ public sealed record DealExtractionResult(
     decimal ConfidenceScore,      // 0.0–1.0
     string? Reasoning,
     bool IsStoreWide = false,     // true = applies to all products for the store
+    bool IsActionable = true,     // false = vague/unverifiable marketing language
     IReadOnlyList<ProductDealInfo>? Products = null  // product-specific deals within this signal
 );
 

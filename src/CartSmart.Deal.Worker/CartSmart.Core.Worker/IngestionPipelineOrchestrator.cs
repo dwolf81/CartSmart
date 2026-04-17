@@ -193,6 +193,33 @@ public class IngestionPipelineOrchestrator : IIngestionPipelineOrchestrator
                     // Auto-reject email signals that advertise products we don't carry (unless store-wide)
                     bool isEmailSource = ingestionSource?.SourceType?.Equals("email", StringComparison.OrdinalIgnoreCase) == true;
 
+                    // Auto-reject vague/unconfirmable email deals — the AI flags these as not actionable
+                    if (isEmailSource && !extraction.IsActionable)
+                    {
+                        _logger.LogInformation(
+                            "Auto-rejecting vague email deal '{Title}' from signal {SignalId} — AI flagged as not actionable",
+                            extraction.Title, signal.Id);
+                        await _repo.CreateExtractedDealAsync(new ExtractedDeal
+                        {
+                            RawSignalId = signal.Id,
+                            StoreId = matchedStore?.Id,
+                            Title = extraction.Title,
+                            Price = extraction.Price,
+                            Currency = extraction.Currency,
+                            CouponCode = extraction.CouponCode,
+                            Url = extraction.Url,
+                            DiscountPercent = extraction.DiscountPercent,
+                            DealTypeId = extraction.DealTypeId,
+                            ExpirationDate = extraction.ExpirationDate,
+                            ConfidenceScore = 0m,
+                            AiReasoning = $"[AUTO-REJECT] Deal is too vague to confirm. {extraction.Reasoning}",
+                            StoreWide = extraction.IsStoreWide,
+                            Status = "auto_rejected"
+                        }, ct);
+                        extracted++;
+                        continue;
+                    }
+
                     // Handle product-specific deals with multiple products
                     if (!extraction.IsStoreWide && extraction.Products is { Count: > 0 })
                     {
