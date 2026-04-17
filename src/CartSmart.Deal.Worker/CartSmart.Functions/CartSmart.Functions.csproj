@@ -18,5 +18,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\libs\CartSmart.Core\CartSmart.Core.csproj" />
     <ProjectReference Include="..\CartSmart.Providers\CartSmart.Providers.csproj" />
+    <ProjectReference Include="..\CartSmart.Scraping\CartSmart.Scraping.csproj" />
   </ItemGroup>
 </Project>

@@ -1,5 +1,6 @@
 using CartSmart.Core.Worker;
 using CartSmart.Providers;
+using CartSmart.Scraping;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -11,9 +12,13 @@ var host = new HostBuilder()
     .ConfigureServices((context, services) =>
     {
         var config = context.Configuration;
-        // Scraping assembly is optional in local/dev due endpoint application-control policies.
-        // Register a no-op scraper so Function host can still start and API-backed checks continue.
-        services.AddSingleton<IHtmlScraper, NoopHtmlScraper>();
+        // Register Playwright-backed HTML scraper for price checks.
+        services.AddSingleton<IJsRenderer, PlaywrightRenderer>();
+        services.AddSingleton<IHtmlScraper>(sp =>
+            new GenericHtmlScraper(
+                sp.GetRequiredService<ILogger<GenericHtmlScraper>>(),
+                jsRenderer: sp.GetRequiredService<IJsRenderer>(),
+                enableJsFallback: true));
         // Prefer Functions configuration (local.settings.json Values) over raw environment.
         // When not running via the Functions host, local.settings.json is NOT loaded automatically.
         // To make F5 debugging work, load local.settings.json manually and hydrate environment if needed.
