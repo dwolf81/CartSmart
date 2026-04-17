@@ -200,17 +200,75 @@ namespace CartSmart.API.Controllers
             }
 
             // ── 4. Update prices where changed ──────────────────────────────
+            //
+            // The extension scrapes the listing price from the HTML page. For non-direct
+            // deals (coupon, external, stacked), the stored deal_product.price should
+            // reflect the FINAL price after applying the deal's discount(s).
+            //   - Direct (type 1): stored price = scraped listing price
+            //   - Coupon/External (type 2/4): stored price = listing × (1 - discount_percent/100)
+            //   - Stacked (type 3): stored price = listing with each combo discount applied
             int updated = 0;
             int msrpSkipped = 0;
             var now = DateTime.UtcNow;
 
+            // Pre-fetch parent deals for all matched deal products
+            var matchedDealIds = matched.Select(dp => dp.DealId).Distinct().ToList();
+            var dealsMap = new Dictionary<int, Deal>();
+            foreach (var did in matchedDealIds)
+            {
+                var dResp = await client.From<Deal>()
+                    .Where(d => d.Id == did)
+                    .Limit(1)
+                    .Get();
+                var d = dResp.Models.FirstOrDefault();
+                if (d != null) dealsMap[d.Id] = d;
+            }
+
+            // Pre-fetch combo definitions for stacked deals
+            var stackedDealIds = dealsMap.Values
+                .Where(d => d.DealTypeId == 3)
+                .Select(d => d.Id)
+                .ToList();
+            var combosByDeal = new Dictionary<int, List<DealCombo>>();
+            var componentDealsMap = new Dictionary<int, Deal>();
+
+            if (stackedDealIds.Count > 0)
+            {
+                foreach (var sdid in stackedDealIds)
+                {
+                    var comboResp = await client.From<DealCombo>()
+                        .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, sdid.ToString())
+                        .Get();
+                    combosByDeal[sdid] = comboResp.Models ?? new List<DealCombo>();
+                }
+
+                var componentIds = combosByDeal.Values
+                    .SelectMany(c => c)
+                    .Select(c => c.ComboDealId)
+                    .Distinct()
+                    .Where(id => !dealsMap.ContainsKey(id))
+                    .ToList();
+
+                foreach (var cid in componentIds)
+                {
+                    var cResp = await client.From<Deal>()
+                        .Where(d => d.Id == cid)
+                        .Limit(1)
+                        .Get();
+                    var cd = cResp.Models.FirstOrDefault();
+                    if (cd != null) componentDealsMap[cd.Id] = cd;
+                }
+            }
+
             foreach (var dp in matched)
             {
-                // Don't accept prices above MSRP (may be quantity-discount pricing)
+                var scrapedPrice = report.price!.Value;
+
+                // Don't accept scraped prices above MSRP (may be quantity-discount pricing)
                 if (productsMap.TryGetValue(dp.ProductId, out var msrpProduct) && msrpProduct.MSRP is > 0)
                 {
                     double effectiveMsrp = (double)msrpProduct.MSRP.Value;
-                    double effectivePrice = (double)report.price.Value;
+                    double effectivePrice = (double)scrapedPrice;
 
                     if (msrpProduct.CountEnabled && msrpProduct.DefaultCount > 0 && dp.ItemCount > 0)
                     {
@@ -220,7 +278,7 @@ namespace CartSmart.API.Controllers
 
                     if (effectivePrice > effectiveMsrp)
                     {
-                        Console.WriteLine($"[Extension] Skipping dp.Id={dp.Id}: price ${report.price.Value} exceeds MSRP ${msrpProduct.MSRP.Value}");
+                        Console.WriteLine($"[Extension] Skipping dp.Id={dp.Id}: price ${scrapedPrice} exceeds MSRP ${msrpProduct.MSRP.Value}");
                         dp.LastCheckedAt = now;
                         dp.ErrorCount = 0;
                         dp.NextCheckAt = now.AddHours(24);
@@ -230,8 +288,28 @@ namespace CartSmart.API.Controllers
                     }
                 }
 
+                // Compute the final price after applying deal discounts
+                dealsMap.TryGetValue(dp.DealId, out var parentDeal);
+                var finalPrice = scrapedPrice;
+
+                if (parentDeal != null)
+                {
+                    var dealType = parentDeal.DealTypeId ?? 1;
+
+                    if (dealType is 2 or 4) // Coupon or External
+                    {
+                        finalPrice = ApplyPercentOff(scrapedPrice, parentDeal.DiscountPercent);
+                        Console.WriteLine($"[Extension] dp.Id={dp.Id}: applying {parentDeal.DiscountPercent}% off to ${scrapedPrice} → ${finalPrice} (deal_type={dealType})");
+                    }
+                    else if (dealType == 3) // Stacked
+                    {
+                        finalPrice = ComputeStackedPrice(scrapedPrice, parentDeal.Id, combosByDeal, componentDealsMap);
+                        Console.WriteLine($"[Extension] dp.Id={dp.Id}: stacked price from ${scrapedPrice} → ${finalPrice}");
+                    }
+                }
+
                 // Only update if the price actually changed
-                if (dp.Price == report.price.Value) 
+                if (dp.Price == finalPrice)
                 {
                     // Still update last_checked_at
                     dp.LastCheckedAt = now;
@@ -245,59 +323,50 @@ namespace CartSmart.API.Controllers
                 var history = new DealProductPriceHistory
                 {
                     DealProductId = dp.Id,
-                    Price = report.price.Value,
+                    Price = finalPrice,
                     Currency = report.currency ?? "USD",
                     ChangedAt = now
                 };
                 await client.From<DealProductPriceHistory>().Insert(history);
 
                 // Update the deal product price
-                dp.Price = report.price.Value;
+                dp.Price = finalPrice;
                 dp.LastCheckedAt = now;
                 dp.ErrorCount = 0;
                 dp.NextCheckAt = now.AddHours(24);
                 await client.From<DealProduct>().Update(dp);
 
                 // Recalculate deal discount_percent for primary direct deal products
-                if (dp.Primary)
+                if (dp.Primary && parentDeal != null && parentDeal.DealTypeId == 1)
                 {
-                    var dealResp2 = await client
-                        .From<Deal>()
-                        .Where(d => d.Id == dp.DealId)
-                        .Limit(1)
-                        .Get();
-                    var deal = dealResp2.Models.FirstOrDefault();
-                    if (deal != null && deal.DealTypeId == 1) // Direct deal
+                    productsMap.TryGetValue(dp.ProductId, out var product);
+                    if (product?.MSRP is > 0)
                     {
-                        productsMap.TryGetValue(dp.ProductId, out var product);
-                        if (product?.MSRP is > 0)
+                        double effectiveMsrp = (double)product.MSRP.Value;
+                        double effectivePrice = (double)scrapedPrice;
+
+                        if (product.CountEnabled && product.DefaultCount > 0 && dp.ItemCount > 0)
                         {
-                            double effectiveMsrp = (double)product.MSRP.Value;
-                            double effectivePrice = (double)report.price.Value;
+                            effectiveMsrp /= product.DefaultCount;
+                            effectivePrice /= dp.ItemCount;
+                        }
 
-                            if (product.CountEnabled && product.DefaultCount > 0 && dp.ItemCount > 0)
+                        var newDiscount = effectiveMsrp > 0
+                            ? (int)Math.Round((1.0 - effectivePrice / effectiveMsrp) * 100.0)
+                            : 0;
+                        if (newDiscount < 0) newDiscount = 0;
+                        if (newDiscount > 100) newDiscount = 100;
+                        if (parentDeal.DiscountPercent != newDiscount)
+                        {
+                            parentDeal.DiscountPercent = newDiscount;
+                            var discountRow = new DealDiscountUpdateRow
                             {
-                                effectiveMsrp /= product.DefaultCount;
-                                effectivePrice /= dp.ItemCount;
-                            }
-
-                            var newDiscount = effectiveMsrp > 0
-                                ? (int)Math.Round((1.0 - effectivePrice / effectiveMsrp) * 100.0)
-                                : 0;
-                            if (newDiscount < 0) newDiscount = 0;
-                            if (newDiscount > 100) newDiscount = 100;
-                            if (deal.DiscountPercent != newDiscount)
-                            {
-                                deal.DiscountPercent = newDiscount;
-                                var discountRow = new DealDiscountUpdateRow
-                                {
-                                    Id = deal.Id,
-                                    DiscountPercent = newDiscount
-                                };
-                                await client.From<DealDiscountUpdateRow>()
-                                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, deal.Id.ToString())
-                                    .Update(discountRow);
-                            }
+                                Id = parentDeal.Id,
+                                DiscountPercent = newDiscount
+                            };
+                            await client.From<DealDiscountUpdateRow>()
+                                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, parentDeal.Id.ToString())
+                                .Update(discountRow);
                         }
                     }
                 }
@@ -474,6 +543,45 @@ namespace CartSmart.API.Controllers
             {
                 return null;
             }
+        }
+
+        // ── Discount helpers ────────────────────────────────────────────────
+
+        /// <summary>Apply a percent-off discount to a base price.</summary>
+        private static decimal ApplyPercentOff(decimal basePrice, int? percentOff)
+        {
+            if (!percentOff.HasValue || percentOff.Value <= 0) return basePrice;
+            if (percentOff.Value >= 100) return 0m;
+            return Math.Round(basePrice * (1m - percentOff.Value / 100m), 2, MidpointRounding.AwayFromZero);
+        }
+
+        /// <summary>Compute the final price for a stacked deal by applying each combo component's discount in order.</summary>
+        private static decimal ComputeStackedPrice(
+            decimal listingPrice,
+            int stackedDealId,
+            Dictionary<int, List<DealCombo>> combosByDeal,
+            Dictionary<int, Deal> componentDealsMap)
+        {
+            if (!combosByDeal.TryGetValue(stackedDealId, out var combos) || combos.Count == 0)
+                return listingPrice;
+
+            var price = listingPrice;
+            var ordered = combos
+                .OrderBy(c => c.Order ?? int.MaxValue)
+                .ThenBy(c => c.ComboDealId)
+                .ToList();
+
+            foreach (var combo in ordered)
+            {
+                if (!componentDealsMap.TryGetValue(combo.ComboDealId, out var comp))
+                    continue;
+
+                // Apply percent-off for coupon/external components; skip direct components (they define the base)
+                if (comp.DealTypeId is 2 or 4)
+                    price = ApplyPercentOff(price, comp.DiscountPercent);
+            }
+
+            return price;
         }
 
         /// <summary>

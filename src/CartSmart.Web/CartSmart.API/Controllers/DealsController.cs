@@ -4,6 +4,7 @@ using CartSmart.API.Models;
 using CartSmart.API.Services;
 using CartSmart.API.Models.DTOs;
 using CartSmart.API.Exceptions;
+using static Supabase.Postgrest.Constants;
 
 namespace CartSmart.API.Controllers
 {
@@ -225,6 +226,198 @@ namespace CartSmart.API.Controllers
             {
                 return StatusCode(500, new { message = ex.Message });
             }
+        }
+
+        // ─── Ingested Deals (from ingestion pipeline) ──────────────────────────
+
+        [HttpGet("ingested-queue")]
+        [Authorize]
+        public async Task<IActionResult> GetIngestedQueue(
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 10,
+            [FromServices] ISupabaseService supabase = null!)
+        {
+            var client = supabase.GetServiceRoleClient();
+
+            var allPending = await client.From<ExtractedDeal>()
+                .Filter("status", Operator.Equals, "pending_review")
+                .Order("created_at", Ordering.Descending)
+                .Get();
+
+            var totalCount = allPending.Models.Count;
+            var page_items = allPending.Models
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToList();
+
+            // Batch-load related raw_signals and ingestion_sources
+            var signalIds = page_items.Select(d => d.RawSignalId).Distinct().ToList();
+            var signals = new Dictionary<long, RawSignal>();
+            var sources = new Dictionary<long, IngestionSource>();
+
+            if (signalIds.Count > 0)
+            {
+                var sigResponse = await client.From<RawSignal>()
+                    .Filter("id", Operator.In, signalIds.Select(id => (object)id.ToString()).ToArray())
+                    .Get();
+                foreach (var s in sigResponse.Models)
+                    signals[s.Id] = s;
+
+                var sourceIds = sigResponse.Models.Select(s => s.IngestionSourceId).Distinct().ToList();
+                if (sourceIds.Count > 0)
+                {
+                    var srcResponse = await client.From<IngestionSource>()
+                        .Filter("id", Operator.In, sourceIds.Select(id => (object)id.ToString()).ToArray())
+                        .Get();
+                    foreach (var src in srcResponse.Models)
+                        sources[src.Id] = src;
+                }
+            }
+
+            // Also look up product/store names
+            var productIds = page_items.Where(d => d.ProductId.HasValue).Select(d => d.ProductId!.Value).Distinct().ToList();
+            var storeIds = page_items.Where(d => d.StoreId.HasValue).Select(d => d.StoreId!.Value).Distinct().ToList();
+            var products = new Dictionary<long, string>();
+            var stores = new Dictionary<int, string>();
+
+            if (productIds.Count > 0)
+            {
+                var prodResp = await client.From<Product>()
+                    .Filter("id", Operator.In, productIds.Select(id => (object)id.ToString()).ToArray())
+                    .Get();
+                foreach (var p in prodResp.Models)
+                    products[p.Id] = p.Name;
+            }
+            if (storeIds.Count > 0)
+            {
+                var storeResp = await client.From<Store>()
+                    .Filter("id", Operator.In, storeIds.Select(id => (object)id.ToString()).ToArray())
+                    .Get();
+                foreach (var s in storeResp.Models)
+                    stores[s.Id] = s.Name;
+            }
+
+            var items = page_items.Select(d =>
+            {
+                signals.TryGetValue(d.RawSignalId, out var signal);
+                IngestionSource? source = null;
+                if (signal != null)
+                    sources.TryGetValue(signal.IngestionSourceId, out source);
+
+                return new
+                {
+                    id = d.Id,
+                    title = d.Title,
+                    price = d.Price,
+                    currency = d.Currency,
+                    coupon_code = d.CouponCode,
+                    url = d.Url,
+                    discount_percent = d.DiscountPercent,
+                    deal_type_id = d.DealTypeId,
+                    expiration_date = d.ExpirationDate,
+                    confidence_score = d.ConfidenceScore,
+                    ai_reasoning = d.AiReasoning,
+                    status = d.Status,
+                    created_at = d.CreatedAt,
+                    product_id = d.ProductId,
+                    product_name = d.ProductId.HasValue && products.ContainsKey(d.ProductId.Value) ? products[d.ProductId.Value] : null,
+                    store_id = d.StoreId,
+                    store_name = d.StoreId.HasValue && stores.ContainsKey(d.StoreId.Value) ? stores[d.StoreId.Value] : null,
+                    source_name = source?.Name,
+                    source_type = source?.SourceType,
+                    signal_title = signal?.Title,
+                    signal_url = signal?.Url,
+                    signal_author = signal?.Author,
+                    signal_body = signal?.Body,
+                    store_wide = d.StoreWide,
+                };
+            }).ToList();
+
+            return Ok(new { deals = items, totalCount });
+        }
+
+        [HttpPost("review-ingested")]
+        [Authorize]
+        public async Task<IActionResult> ReviewIngested(
+            [FromQuery] long extractedDealId,
+            [FromQuery] string action,
+            [FromServices] ISupabaseService supabase = null!,
+            [FromServices] IAuthService authService = null!)
+        {
+            if (action != "approve" && action != "reject")
+                return BadRequest(new { message = "action must be 'approve' or 'reject'" });
+
+            var client = supabase.GetServiceRoleClient();
+
+            var dealResp = await client.From<ExtractedDeal>()
+                .Filter("id", Operator.Equals, extractedDealId.ToString())
+                .Get();
+
+            var extracted = dealResp.Models.FirstOrDefault();
+            if (extracted == null)
+                return NotFound(new { message = "Extracted deal not found" });
+
+            if (extracted.Status != "pending_review")
+                return BadRequest(new { message = $"Deal is already {extracted.Status}" });
+
+            var userIdStr = authService.GetCurrentUserId();
+            int.TryParse(userIdStr, out var userId);
+
+            if (action == "reject")
+            {
+                await client.From<ExtractedDeal>()
+                    .Filter("id", Operator.Equals, extractedDealId.ToString())
+                    .Set(x => x.Status, "rejected")
+                    .Set(x => x.ReviewedBy!, (long)userId)
+                    .Set(x => x.ReviewedAt!, DateTime.UtcNow)
+                    .Update();
+                return Ok(new { message = "Ingested deal rejected" });
+            }
+
+            // Approve: create Deal + DealProduct, link back
+            var newDeal = new Deal
+            {
+                CouponCode = extracted.CouponCode,
+                DealStatusId = 2, // Active
+                UserId = userId,
+                StoreId = extracted.StoreId,
+                DiscountPercent = extracted.DiscountPercent,
+                DealTypeId = extracted.DealTypeId ?? 1,
+                ExpirationDate = extracted.ExpirationDate,
+                Deleted = false,
+                StoreWide = extracted.StoreWide,
+                CreatedAt = DateTime.UtcNow,
+            };
+            var dealInsert = await client.From<Deal>().Insert(newDeal);
+            var createdDeal = dealInsert.Models.First();
+
+            if (extracted.ProductId.HasValue)
+            {
+                var newDealProduct = new DealProduct
+                {
+                    DealId = createdDeal.Id,
+                    ProductId = (int)extracted.ProductId.Value,
+                    Price = extracted.Price ?? 0,
+                    Url = extracted.Url,
+                    DealStatusId = 2, // Active
+                    Deleted = false,
+                    Primary = true,
+                    CreatedAt = DateTime.UtcNow,
+                    ItemCount = 1,
+                };
+                await client.From<DealProduct>().Insert(newDealProduct);
+            }
+
+            await client.From<ExtractedDeal>()
+                .Filter("id", Operator.Equals, extractedDealId.ToString())
+                .Set(x => x.Status, "manually_imported")
+                .Set(x => x.DealId!, (long)createdDeal.Id)
+                .Set(x => x.ReviewedBy!, (long)userId)
+                .Set(x => x.ReviewedAt!, DateTime.UtcNow)
+                .Set(x => x.ImportedAt!, DateTime.UtcNow)
+                .Update();
+
+            return Ok(new { message = "Ingested deal approved and imported", dealId = createdDeal.Id });
         }
 
         [HttpPut("{id}")]

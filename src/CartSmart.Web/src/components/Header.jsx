@@ -7,9 +7,11 @@ import { FaBell } from 'react-icons/fa';
 import { useNotifications } from '../hooks/useNotifications';
 import { Bars3Icon, XMarkIcon } from '@heroicons/react/24/outline';
 import CookiePreferencesModal from './CookiePreferencesModal';
+import { useActionItems } from '../hooks/useActionItems';
 
 const Header = () => {
     const { isAuthenticated, user, logout, loading } = useAuth();
+    const { pendingReviews, pendingTasks } = useActionItems();
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [isNotifOpen, setIsNotifOpen] = useState(false);
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -184,12 +186,17 @@ const Header = () => {
                                     </div>
                                     {/* User menu */}
                                     <Menu as="div" className="relative inline-flex items-center">
-                                        <Menu.Button className="inline-flex items-center justify-center h-8 w-8">
+                                        <Menu.Button className="relative inline-flex items-center justify-center h-8 w-8">
                                             <img
                                                 src={(user?.imageUrl?.replace('_100x100.webp', '_32x32.webp')) || user?.imageUrl || '/default-avatar.png'}
                                                 alt="User Avatar"
                                                 className="h-8 w-8 rounded-full"
                                             />
+                                            {(pendingReviews + pendingTasks) > 0 && (
+                                                <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] leading-none rounded-full px-1 py-[2px] min-w-[18px] text-center font-semibold shadow">
+                                                    {pendingReviews + pendingTasks}
+                                                </span>
+                                            )}
                                         </Menu.Button>
                                         <Menu.Items className="absolute right-0 top-full mt-3 w-48 bg-white rounded-md shadow-lg py-1 z-50">
                                             <Menu.Item>
@@ -217,9 +224,14 @@ const Header = () => {
                                                     {({ active }) => (
                                                         <Link
                                                             to="/deal-review"
-                                                            className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                            className={`${active ? 'bg-gray-100' : ''} flex items-center justify-between px-4 py-2 text-sm text-gray-700`}
                                                         >
                                                             Review Deals
+                                                            {pendingReviews > 0 && (
+                                                                <span className="ml-2 bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
+                                                                    {pendingReviews}
+                                                                </span>
+                                                            )}
                                                         </Link>
                                                     )}
                                                 </Menu.Item>
@@ -230,9 +242,14 @@ const Header = () => {
                                                     {({ active }) => (
                                                         <Link
                                                             to="/admin/manual-price"
-                                                            className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                            className={`${active ? 'bg-gray-100' : ''} flex items-center justify-between px-4 py-2 text-sm text-gray-700`}
                                                         >
                                                             Manual Price Tasks
+                                                            {pendingTasks > 0 && (
+                                                                <span className="ml-2 bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
+                                                                    {pendingTasks}
+                                                                </span>
+                                                            )}
                                                         </Link>
                                                     )}
                                                 </Menu.Item>
@@ -408,18 +425,28 @@ const Header = () => {
                                         <Link
                                             to="/deal-review"
                                             onClick={() => setMobileOpen(false)}
-                                            className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                            className="flex items-center justify-between text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
                                         >
                                             Review Deals
+                                            {pendingReviews > 0 && (
+                                                <span className="bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
+                                                    {pendingReviews}
+                                                </span>
+                                            )}
                                         </Link>
                                     )}
                                     {Boolean(user?.admin) && (
                                         <Link
                                             to="/admin/manual-price"
                                             onClick={() => setMobileOpen(false)}
-                                            className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                            className="flex items-center justify-between text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
                                         >
                                             Manual Price Tasks
+                                            {pendingTasks > 0 && (
+                                                <span className="bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
+                                                    {pendingTasks}
+                                                </span>
+                                            )}
                                         </Link>
                                     )}
                                     {Boolean(user?.admin) && (

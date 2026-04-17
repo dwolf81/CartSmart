@@ -365,5 +365,39 @@ namespace CartSmart.API.Controllers
 
             return Ok(new { message = "Account deleted. All associated deals were marked as deleted." });
         }
+
+        /// <summary>Counts of pending review deals and manual price tasks for the current user.</summary>
+        [HttpGet("action-items")]
+        public async Task<IActionResult> GetActionItems([FromServices] ISupabaseService supabase)
+        {
+            var userIdStr = _authService.GetCurrentUserId();
+            if (string.IsNullOrWhiteSpace(userIdStr) || !int.TryParse(userIdStr, out var userId))
+                return Unauthorized();
+
+            var user = await _userService.GetUserByIdAsync(userId);
+            if (user == null) return Unauthorized();
+
+            var client = supabase.GetServiceRoleClient();
+            int pendingReviews = 0;
+            int pendingTasks = 0;
+
+            if (user.AllowReview)
+            {
+                var reviewResp = await client.From<ExtractedDeal>()
+                    .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending_review")
+                    .Get();
+                pendingReviews = reviewResp.Models.Count;
+            }
+
+            if (user.Admin)
+            {
+                var taskResp = await client.From<ManualPriceTask>()
+                    .Filter("status", Supabase.Postgrest.Constants.Operator.Equals, "pending")
+                    .Get();
+                pendingTasks = taskResp.Models.Count;
+            }
+
+            return Ok(new { pendingReviews, pendingTasks });
+        }
     }
 }

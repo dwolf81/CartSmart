@@ -137,6 +137,75 @@ var host = new HostBuilder()
             schedulingOptions: sp.GetRequiredService<IOptions<RefreshSchedulingOptions>>().Value,
             maxParallel: 1,
             aiValidator: sp.GetRequiredService<IAiDealValidator>()));
+
+        // ── Deal Ingestion Pipeline ──────────────────────────────────────────
+        services.AddSingleton<SupabaseIngestionRepository>();
+        services.AddSingleton<IIngestionRepository>(sp => sp.GetRequiredService<SupabaseIngestionRepository>());
+
+        // AI deal extractor (reuses OpenAI config)
+        services.AddHttpClient<CartSmart.Providers.OpenAiDealExtractor>();
+        services.AddSingleton<IAiDealExtractor>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.OpenAiDealExtractor));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.OpenAiDealExtractor>>();
+            return new CartSmart.Providers.OpenAiDealExtractor(http, logger);
+        });
+
+        // Signal source providers (one per source type)
+        services.AddHttpClient<CartSmart.Providers.EmailSignalSourceProvider>();
+        services.AddSingleton<ISignalSourceProvider>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.EmailSignalSourceProvider));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.EmailSignalSourceProvider>>();
+            return new CartSmart.Providers.EmailSignalSourceProvider(http, logger);
+        });
+        services.AddHttpClient<CartSmart.Providers.RedditSignalSourceProvider>();
+        services.AddSingleton<ISignalSourceProvider>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.RedditSignalSourceProvider));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.RedditSignalSourceProvider>>();
+            return new CartSmart.Providers.RedditSignalSourceProvider(http, logger);
+        });
+        services.AddHttpClient<CartSmart.Providers.SocialSignalSourceProvider>();
+        services.AddSingleton<ISignalSourceProvider>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.SocialSignalSourceProvider));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.SocialSignalSourceProvider>>();
+            return new CartSmart.Providers.SocialSignalSourceProvider(http, logger);
+        });
+        services.AddHttpClient<CartSmart.Providers.RetailSignalSourceProvider>();
+        services.AddSingleton<ISignalSourceProvider>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.RetailSignalSourceProvider));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.RetailSignalSourceProvider>>();
+            return new CartSmart.Providers.RetailSignalSourceProvider(http, logger);
+        });
+        services.AddHttpClient<CartSmart.Providers.ForumSignalSourceProvider>();
+        services.AddSingleton<ISignalSourceProvider>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.ForumSignalSourceProvider));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.ForumSignalSourceProvider>>();
+            return new CartSmart.Providers.ForumSignalSourceProvider(http, logger);
+        });
+
+        // Ingestion pipeline orchestrator
+        var autoImportMinConfidence = decimal.TryParse(
+            config["Values:IngestionAutoImportMinConfidence"] ?? config["IngestionAutoImportMinConfidence"],
+            out var aic) ? aic : 0.90m;
+
+        services.AddSingleton<IIngestionPipelineOrchestrator>(sp => new IngestionPipelineOrchestrator(
+            sp.GetRequiredService<IIngestionRepository>(),
+            sp.GetRequiredService<IDealRepository>(),
+            sp.GetServices<ISignalSourceProvider>(),
+            sp.GetRequiredService<IAiDealExtractor>(),
+            sp.GetRequiredService<ILogger<IngestionPipelineOrchestrator>>(),
+            autoImportMinConfidence));
     })
     .Build();
 

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import LoadingSpinner from './LoadingSpinner';
-import { FaTag, FaTicketAlt, FaLink, FaLayerGroup } from 'react-icons/fa';
+import { FaTag, FaTicketAlt, FaLink, FaLayerGroup, FaEnvelope, FaReddit, FaTwitter, FaStore, FaComments, FaRobot } from 'react-icons/fa';
 import { appendAffiliateParam, getAffiliateFields } from '../utils/affiliateUrl';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -125,6 +125,7 @@ const DealReviewPage = () => {
   const [pendingCount, setPendingCount] = useState(0);
   const [reviewedCount, setReviewedCount] = useState(0);
   const [submittedCount, setSubmittedCount] = useState(0);
+  const [ingestedCount, setIngestedCount] = useState(0);
   const [dealsLoading, setDealsLoading] = useState(true);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectReasonId, setRejectReasonId] = useState(null);
@@ -179,6 +180,9 @@ const DealReviewPage = () => {
       else if (activeTab === '5') {
         endpoint = `/api/deals/reviewed?page=${currentPage}&pageSize=${itemsPerPage}`;
       }
+      else if (activeTab === 'ingested') {
+        endpoint = `/api/deals/ingested-queue?page=${currentPage}&pageSize=${itemsPerPage}`;
+      }
       else {
         endpoint = `/api/deals/user-submitted?page=${currentPage}&pageSize=${itemsPerPage}`;
       }
@@ -206,9 +210,14 @@ const DealReviewPage = () => {
       const reviewedRes = await fetch(`${API_URL}/api/deals/reviewed?page=1&pageSize=1`, { credentials: 'include' });
       const reviewedData = await reviewedRes.json();
       setReviewedCount(reviewedData.totalCount || 0);
+
+      const ingestedRes = await fetch(`${API_URL}/api/deals/ingested-queue?page=1&pageSize=1`, { credentials: 'include' });
+      const ingestedData = await ingestedRes.json();
+      setIngestedCount(ingestedData.totalCount || 0);
     } catch (err) {
       setPendingCount(0);
       setReviewedCount(0);
+      setIngestedCount(0);
     }
   };
 
@@ -306,6 +315,21 @@ const copyCoupon = (code, event) => {
     }
   };
 
+  const handleIngestedAction = async (extractedDealId, action) => {
+    try {
+      const response = await fetch(
+        `${API_URL}/api/deals/review-ingested?extractedDealId=${extractedDealId}&action=${action}`,
+        { method: 'POST', credentials: 'include' }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || 'review failed');
+      fetchPagedDeals();
+      fetchCounts();
+    } catch (err) {
+      console.error('Error reviewing ingested deal:', err);
+    }
+  };
+
   // Helper to format relative time
   function getRelativeTime(dateString) {
     const now = new Date();
@@ -342,6 +366,166 @@ const DEAL_TYPE_META = {
     badge: 'inline-flex items-center gap-2 bg-white border border-indigo-200 text-indigo-700 px-2 py-1 rounded-md shadow-sm'
   }
 };
+
+const SOURCE_TYPE_META = {
+  email:  { label: 'Email',  icon: <FaEnvelope className="inline mr-1" />, color: 'text-blue-600 bg-blue-50 border-blue-200' },
+  reddit: { label: 'Reddit', icon: <FaReddit className="inline mr-1" />,   color: 'text-orange-600 bg-orange-50 border-orange-200' },
+  social: { label: 'Social', icon: <FaTwitter className="inline mr-1" />,  color: 'text-sky-600 bg-sky-50 border-sky-200' },
+  retail: { label: 'Retail', icon: <FaStore className="inline mr-1" />,    color: 'text-purple-600 bg-purple-50 border-purple-200' },
+  forum:  { label: 'Forum',  icon: <FaComments className="inline mr-1" />, color: 'text-teal-600 bg-teal-50 border-teal-200' },
+};
+
+const ConfidenceBadge = ({ score }) => {
+  const pct = Math.round(score * 100);
+  const color = pct >= 90 ? 'text-green-700 bg-green-50 border-green-200'
+    : pct >= 70 ? 'text-yellow-700 bg-yellow-50 border-yellow-200'
+    : 'text-red-700 bg-red-50 border-red-200';
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-semibold ${color}`}>
+      <FaRobot className="inline" /> {pct}% confidence
+    </span>
+  );
+};
+
+  const IngestedDealCard = ({ deal, onAction }) => {
+    const [showBody, setShowBody] = useState(false);
+    const srcMeta = SOURCE_TYPE_META[deal.source_type] || SOURCE_TYPE_META.email;
+    const dealMeta = DEAL_TYPE_META[deal.deal_type_id] || DEAL_TYPE_META[1];
+
+    return (
+      <div className="bg-white rounded-lg shadow-md p-6 mb-4 border-l-4 border-blue-400">
+        {/* Source + Confidence badges */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-xs font-semibold ${srcMeta.color}`}>
+            {srcMeta.icon} {deal.source_name || srcMeta.label}
+          </span>
+          <span className={`${dealMeta.badge} text-xs`}>
+            {dealMeta.icon} {dealMeta.label} Deal
+          </span>
+          <ConfidenceBadge score={deal.confidence_score} />
+          {deal.store_wide && (
+            <span className="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-700 border border-purple-300 rounded-md text-xs font-semibold">
+              🏪 Store-Wide
+            </span>
+          )}
+          <span className="text-xs text-gray-400 ml-auto">{getRelativeTime(deal.created_at)}</span>
+        </div>
+
+        {/* Title */}
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">{deal.title}</h3>
+
+        {/* Details grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-sm mb-3">
+          {deal.product_name && (
+            <div><span className="font-medium">Product:</span> {deal.product_name}</div>
+          )}
+          {deal.store_name && (
+            <div><span className="font-medium">Store:</span> {deal.store_name}</div>
+          )}
+          {deal.price != null && (
+            <div><span className="font-medium">Price:</span> {formatPrice(deal.price)}</div>
+          )}
+          {deal.discount_percent > 0 && (
+            <div>
+              <span className="font-medium">Discount:</span>{' '}
+              <span className="bg-green-100 text-green-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                {deal.discount_percent}% Off
+              </span>
+            </div>
+          )}
+          {deal.coupon_code && (
+            <div>
+              <span className="font-medium">Coupon:</span>{' '}
+              <code className="bg-gray-100 px-2 py-0.5 rounded text-xs">{deal.coupon_code}</code>
+            </div>
+          )}
+          {deal.expiration_date && (
+            <div><span className="font-medium">Expires:</span> {new Date(deal.expiration_date).toLocaleDateString()}</div>
+          )}
+          {deal.url && (
+            <div className="sm:col-span-2">
+              <span className="font-medium">URL:</span>{' '}
+              <a href={ensureHttps(deal.url)} target="_blank" rel="noopener noreferrer"
+                className="text-blue-600 hover:underline break-all">{truncateUrl(deal.url)}</a>
+            </div>
+          )}
+          {deal.signal_url && deal.signal_url !== deal.url && (
+            <div className="sm:col-span-2">
+              <span className="font-medium">Source URL:</span>{' '}
+              <a href={ensureHttps(deal.signal_url)} target="_blank" rel="noopener noreferrer"
+                className="text-blue-600 hover:underline break-all">{truncateUrl(deal.signal_url)}</a>
+            </div>
+          )}
+          {deal.signal_author && (
+            <div><span className="font-medium">Author:</span> {deal.signal_author}</div>
+          )}
+        </div>
+
+        {/* AI Reasoning */}
+        {deal.ai_reasoning && (
+          <div className="bg-gray-50 rounded-lg p-3 mb-3 text-sm">
+            <div className="flex items-center gap-1 text-gray-600 font-medium mb-1">
+              <FaRobot className="text-gray-400" /> AI Reasoning
+            </div>
+            <p className="text-gray-700 whitespace-pre-line">{deal.ai_reasoning}</p>
+          </div>
+        )}
+
+        {/* Original email / post body */}
+        {deal.signal_body && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setShowBody(o => !o)}
+              className="flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800"
+            >
+              <svg className={`h-3.5 w-3.5 transition-transform ${showBody ? 'rotate-90' : ''}`}
+                fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              {showBody ? 'Hide' : 'Show'} Original Text
+            </button>
+            {showBody && (
+              <div className="mt-2 bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm text-gray-700 whitespace-pre-line max-h-80 overflow-y-auto">
+                {deal.signal_body}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Warnings */}
+        {deal.ai_reasoning?.startsWith('[SENDER MISMATCH]') && (
+          <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 text-xs text-red-800">
+            🚫 Sender verification failed — the email/social author doesn't match the store. Confidence reduced.
+          </div>
+        )}
+        {(!deal.product_id || !deal.store_id) && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-xs text-amber-800">
+            ⚠️ {!deal.product_id && !deal.store_id
+              ? 'No product or store matched'
+              : !deal.product_id ? 'No product matched' : 'No store matched'}
+            {' — approving will create a deal with limited data.'}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-2 mt-2">
+          <button
+            onClick={() => onAction(deal.id, 'approve')}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+          >
+            Approve & Import
+          </button>
+          <button
+            onClick={() => onAction(deal.id, 'reject')}
+            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const DealCard = ({ deal, type }) => {
     const isStoreDeal = !deal?.deal_product_id && (deal?.store_url || deal?.store_name || deal?.store_id);
@@ -756,6 +940,16 @@ const DEAL_TYPE_META = {
         >
           Deals I Reviewed ({reviewedCount})
         </button>
+        <button
+          className={`px-6 py-3 text-lg font-medium ${
+            activeTab === 'ingested'
+              ? 'border-b-2 border-blue-500 text-blue-600'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+          onClick={() => { setActiveTab('ingested'); setCurrentPage(1); }}
+        >
+          Ingested Deals ({ingestedCount})
+        </button>
       </div>
 
       {/* Deal Lists */}
@@ -764,6 +958,10 @@ const DEAL_TYPE_META = {
           <LoadingSpinner />
         ) : deals.length === 0 ? (
           <div className="text-center text-gray-500 py-8">No deals found.</div>
+        ) : activeTab === 'ingested' ? (
+          deals.map(deal => (
+            <IngestedDealCard key={deal.id} deal={deal} onAction={handleIngestedAction} />
+          ))
         ) : (
           deals.map(deal => (
             <DealCard key={deal.deal_id} deal={deal} type={activeTab} />
