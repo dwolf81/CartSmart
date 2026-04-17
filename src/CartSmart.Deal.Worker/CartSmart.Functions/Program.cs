@@ -12,13 +12,10 @@ var host = new HostBuilder()
     .ConfigureServices((context, services) =>
     {
         var config = context.Configuration;
-        // Register Playwright-backed HTML scraper for price checks.
-        services.AddSingleton<IJsRenderer, PlaywrightRenderer>();
+        // Register HTML scraper for price checks (HTTP/AngleSharp only — no Playwright in Functions).
         services.AddSingleton<IHtmlScraper>(sp =>
             new GenericHtmlScraper(
-                sp.GetRequiredService<ILogger<GenericHtmlScraper>>(),
-                jsRenderer: sp.GetRequiredService<IJsRenderer>(),
-                enableJsFallback: true));
+                sp.GetRequiredService<ILogger<GenericHtmlScraper>>()));
         // Prefer Functions configuration (local.settings.json Values) over raw environment.
         // When not running via the Functions host, local.settings.json is NOT loaded automatically.
         // To make F5 debugging work, load local.settings.json manually and hydrate environment if needed.
