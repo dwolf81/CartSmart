@@ -190,6 +190,9 @@ public class IngestionPipelineOrchestrator : IIngestionPipelineOrchestrator
                         }
                     }
 
+                    // Auto-reject email signals that advertise products we don't carry (unless store-wide)
+                    bool isEmailSource = ingestionSource?.SourceType?.Equals("email", StringComparison.OrdinalIgnoreCase) == true;
+
                     // Handle product-specific deals with multiple products
                     if (!extraction.IsStoreWide && extraction.Products is { Count: > 0 })
                     {
@@ -197,6 +200,32 @@ public class IngestionPipelineOrchestrator : IIngestionPipelineOrchestrator
                         {
                             var matchedProduct = await _repo.FindProductByNameFuzzyAsync(
                                 productInfo.ProductName, productInfo.ProductBrand, ct);
+
+                            if (isEmailSource && matchedProduct is null)
+                            {
+                                _logger.LogInformation(
+                                    "Auto-rejecting email deal for unmatched product '{Product}' from signal {SignalId}",
+                                    productInfo.ProductName, signal.Id);
+                                await _repo.CreateExtractedDealAsync(new ExtractedDeal
+                                {
+                                    RawSignalId = signal.Id,
+                                    StoreId = matchedStore?.Id,
+                                    Title = $"{extraction.Title} — {productInfo.ProductName}",
+                                    Price = productInfo.Price ?? extraction.Price,
+                                    Currency = extraction.Currency,
+                                    CouponCode = productInfo.CouponCode ?? extraction.CouponCode,
+                                    Url = productInfo.Url ?? extraction.Url,
+                                    DiscountPercent = productInfo.DiscountPercent ?? extraction.DiscountPercent,
+                                    DealTypeId = extraction.DealTypeId,
+                                    ExpirationDate = extraction.ExpirationDate,
+                                    ConfidenceScore = 0m,
+                                    AiReasoning = $"[AUTO-REJECT] Product '{productInfo.ProductName}' not found in catalog. {extraction.Reasoning}",
+                                    StoreWide = false,
+                                    Status = "auto_rejected"
+                                }, ct);
+                                extracted++;
+                                continue;
+                            }
 
                             int? discountPct = productInfo.DiscountPercent ?? extraction.DiscountPercent;
                             decimal? price = productInfo.Price ?? extraction.Price;
@@ -246,6 +275,32 @@ public class IngestionPipelineOrchestrator : IIngestionPipelineOrchestrator
                         Product? matchedProduct = null;
                         if (!extraction.IsStoreWide && !string.IsNullOrWhiteSpace(extraction.ProductName))
                             matchedProduct = await _repo.FindProductByNameFuzzyAsync(extraction.ProductName, extraction.ProductBrand, ct);
+
+                        if (isEmailSource && !extraction.IsStoreWide && matchedProduct is null)
+                        {
+                            _logger.LogInformation(
+                                "Auto-rejecting email deal '{Title}' — product not in catalog (signal {SignalId})",
+                                extraction.Title, signal.Id);
+                            await _repo.CreateExtractedDealAsync(new ExtractedDeal
+                            {
+                                RawSignalId = signal.Id,
+                                StoreId = matchedStore?.Id,
+                                Title = extraction.Title,
+                                Price = extraction.Price,
+                                Currency = extraction.Currency,
+                                CouponCode = extraction.CouponCode,
+                                Url = extraction.Url,
+                                DiscountPercent = extraction.DiscountPercent,
+                                DealTypeId = extraction.DealTypeId,
+                                ExpirationDate = extraction.ExpirationDate,
+                                ConfidenceScore = 0m,
+                                AiReasoning = $"[AUTO-REJECT] Product not found in catalog. {extraction.Reasoning}",
+                                StoreWide = false,
+                                Status = "auto_rejected"
+                            }, ct);
+                            extracted++;
+                            continue;
+                        }
 
                         int? discountPercent = extraction.DiscountPercent;
                         if (discountPercent is null && extraction.Price.HasValue && matchedProduct?.MSRP is > 0)
