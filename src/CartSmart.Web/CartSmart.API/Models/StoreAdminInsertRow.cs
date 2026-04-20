@@ -21,6 +21,9 @@ public class StoreAdminInsertRow : BaseModel
     [Column("affiliate_code_var")]
     public string? AffiliateCodeVar { get; set; }
 
+    [Column("affiliate_url_template")]
+    public string? AffiliateUrlTemplate { get; set; }
+
     [Column("brand_id")]
     public int? BrandId { get; set; }
 

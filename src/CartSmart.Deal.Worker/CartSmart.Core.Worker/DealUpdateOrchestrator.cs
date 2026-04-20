@@ -715,7 +715,7 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                             if (existing.Primary)
                             {
                                 var existingDealForDiscount = await _repo.GetDealByIdAsync(existing.DealId, ct);
-                                if (existingDealForDiscount != null)
+                                if (existingDealForDiscount != null && existingDealForDiscount.DealTypeId == 1)
                                 {
                                     var newDiscount = ComputeDiscountPercent(msrp, effectivePrice,
                                         product?.CountEnabled == true, product?.DefaultCount ?? 1, existing.ItemCount);
@@ -941,6 +941,261 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
         var retentionDays = int.TryParse(Environment.GetEnvironmentVariable("INGEST_LOG_RETENTION_DAYS"), out var rd) && rd > 0 ? rd : 7;
         await repoImpl.PurgeOldIngestLogsAsync(retentionDays, ct);
 
+        return created;
+    }
+
+    /// <summary>
+    /// Ingest pre-fetched listings (from HTML scraping) through the standard filtering and deal-creation pipeline.
+    /// Skips API search and variant resolution — scraped listings are already matched to a product.
+    /// </summary>
+    public async Task<int> IngestPreFetchedListingsAsync(int storeId, int topPerProduct,
+        IEnumerable<NewListingQuery> queries, Dictionary<int, IReadOnlyList<NewListing>> listingsByProductId,
+        CancellationToken ct)
+    {
+        await EnsureStopWordsAsync(ct);
+        var repoImpl = _repo as SupabaseDealRepository;
+        if (repoImpl == null) return 0;
+
+        int created = 0;
+        foreach (var q in queries)
+        {
+            if (!listingsByProductId.TryGetValue(q.ProductId, out var listings) || listings.Count == 0)
+                continue;
+
+            var product = await repoImpl.GetProductByIdAsync(q.ProductId, ct);
+            var msrp = product?.MSRP;
+            var productName = product?.Name?.ToLowerInvariant() ?? string.Empty;
+            var productTokens = NormalizeIdentityTokens(product?.Name ?? string.Empty);
+
+            // Negative keyword filtering
+            var productNegativeKeywords = await repoImpl.GetOrFetchProductNegativeKeywordsAsync(q.ProductId, ct);
+            var productTypeNegativeKeywords = await repoImpl.GetOrFetchProductTypeNegativeKeywordsAsync(product?.ProductTypeId ?? 0, ct);
+            var normalizedNegativeKeywords = productNegativeKeywords
+                .Concat(productTypeNegativeKeywords)
+                .Select(k => (k ?? string.Empty).Trim().ToLowerInvariant())
+                .Where(k => k.Length >= 1)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            // Filter candidates
+            var candidates = new List<NewListing>();
+            foreach (var l in listings)
+            {
+                if (normalizedNegativeKeywords.Count > 0
+                    && MatchesAnyNegativeKeyword(l.Title, l.ShortDescription, normalizedNegativeKeywords))
+                    continue;
+
+                // Respect preferred condition
+                if (product?.PreferredConditionCategoryId.HasValue == true
+                    && l.ConditionCategoryId.HasValue
+                    && l.ConditionCategoryId != product.PreferredConditionCategoryId.Value)
+                    continue;
+
+                // Basic price sanity check against MSRP
+                if (msrp.HasValue && l.Price.HasValue)
+                {
+                    var floor = product?.ApiMinPrice.HasValue == true
+                        ? (decimal)product.ApiMinPrice.Value
+                        : (decimal)msrp.Value * 0.4m;
+                    if (l.Price.Value < floor || l.Price.Value > (decimal)msrp.Value * 1.5m)
+                        continue;
+                }
+
+                if (!l.Price.HasValue || l.Price.Value <= 0) continue;
+                candidates.Add(l);
+            }
+
+            // ── Variant-aware top-N selection (mirrors IngestNewListingsAsync) ──
+            var variantClient = _clientMap.Values.OfType<IVariantResolvingStoreClient>().FirstOrDefault();
+            var hasVariants = variantClient != null && await variantClient.HasActiveVariantsAsync(q.ProductId, ct);
+
+            var targetConditions = product?.PreferredConditionCategoryId is int pref && (pref == 1 || pref == 2 || pref == 3)
+                ? new[] { pref }
+                : new[] { 1, 2, 3 };
+
+            List<(NewListing Listing, long? VariantId)> selected;
+
+            if (hasVariants)
+            {
+                var variantIds = await variantClient!.GetActiveVariantIdsAsync(q.ProductId, ct);
+                if (variantIds.Count == 0)
+                {
+                    // Has variants configured but none active — fall back to condition-only
+                    var ordered = candidates
+                        .OrderBy(x => x.Price ?? decimal.MaxValue)
+                        .Select(x => (x, (long?)null))
+                        .ToList();
+                    var condCounts = targetConditions.ToDictionary(c => c, _ => 0);
+                    selected = new List<(NewListing Listing, long? VariantId)>();
+                    foreach (var (l, vid) in ordered)
+                    {
+                        var cond = l.ConditionCategoryId ?? 1;
+                        if (!targetConditions.Contains(cond)) continue;
+                        if (condCounts.TryGetValue(cond, out var cnt2) && cnt2 >= topPerProduct) continue;
+                        selected.Add((l, vid));
+                        condCounts[cond] = (condCounts.TryGetValue(cond, out var cc2) ? cc2 : 0) + 1;
+                    }
+                }
+                else
+                {
+                    // Resolve variants and group by (variant, condition) — top N per group
+                    var resolved = new List<(NewListing Listing, long? VariantId)>();
+                    foreach (var l in candidates.OrderBy(x => x.Price ?? decimal.MaxValue))
+                    {
+                        var vid = await variantClient!.TryResolveProductVariantIdAsync(q.ProductId, l, ct);
+                        if (!vid.HasValue)
+                        {
+                            _logger.LogDebug("Scraped listing {ItemId} skipped — variant unresolved", l.ItemId);
+                            continue;
+                        }
+                        resolved.Add((l, vid));
+                    }
+
+                    var grouped = resolved
+                        .Where(x => x.VariantId.HasValue)
+                        .GroupBy(x => (VariantId: x.VariantId!.Value, ConditionId: x.Listing.ConditionCategoryId ?? 1));
+
+                    selected = new List<(NewListing Listing, long? VariantId)>();
+                    foreach (var g in grouped)
+                    {
+                        var taken = 0;
+                        foreach (var x in g)
+                        {
+                            if (taken >= topPerProduct) break;
+                            selected.Add(x);
+                            taken++;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // No variants — top N per condition (original path)
+                var conditionCounts = targetConditions.ToDictionary(c => c, _ => 0);
+                selected = new List<(NewListing Listing, long? VariantId)>();
+                foreach (var c in candidates.OrderBy(x => x.Price ?? decimal.MaxValue))
+                {
+                    var cond = c.ConditionCategoryId ?? 1;
+                    if (!targetConditions.Contains(cond)) continue;
+                    if (conditionCounts.TryGetValue(cond, out var cnt) && cnt >= topPerProduct) continue;
+                    selected.Add((c, (long?)null));
+                    conditionCounts[cond] = (conditionCounts.TryGetValue(cond, out var cc) ? cc : 0) + 1;
+                }
+            }
+
+            var ingestStartedAt = _timeProvider.GetUtcNow().UtcDateTime;
+
+            foreach (var (listing, variantId) in selected)
+            {
+                if (listing.ItemId != null)
+                {
+                    var existing = await repoImpl.GetDealProductByStoreItemIdAsync(listing.ItemId, ct);
+                    if (existing != null)
+                    {
+                        // Update price and scheduling timestamps
+                        var refreshNow = _timeProvider.GetUtcNow().UtcDateTime;
+                        var effectivePrice = listing.Price ?? existing.Price;
+
+                        if (effectivePrice > 0 && existing.Price != effectivePrice)
+                        {
+                            await repoImpl.AppendPriceHistoryForDealProductAsync(existing.Id, effectivePrice, listing.Currency, refreshNow, ct);
+                            existing.Price = effectivePrice;
+
+                            if (existing.Primary)
+                            {
+                                var existingDeal = await _repo.GetDealByIdAsync(existing.DealId, ct);
+                                if (existingDeal != null && existingDeal.DealTypeId == 1)
+                                {
+                                    var newDiscount = ComputeDiscountPercent(msrp, effectivePrice,
+                                        product?.CountEnabled == true, product?.DefaultCount ?? 1, existing.ItemCount);
+                                    if (existingDeal.DiscountPercent != newDiscount)
+                                    {
+                                        existingDeal.DiscountPercent = newDiscount;
+                                        await _repo.UpdateDealDiscountOnlyAsync(existingDeal.Id, newDiscount, ct);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Reactivate if previously expired/sold
+                        if (!existing.Deleted
+                            && (existing.DealStatusId == SupabaseDealRepository.DealStatusExpired
+                                || existing.DealStatusId == SupabaseDealRepository.DealStatusSold
+                                || existing.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock
+                                || existing.DealStatusId == SupabaseDealRepository.DealStatusCapped))
+                        {
+                            existing.DealStatusId = SupabaseDealRepository.DealStatusActive;
+                            var existingDeal = await _repo.GetDealByIdAsync(existing.DealId, ct);
+                            if (existingDeal != null && !existingDeal.Deleted
+                                && (existingDeal.DealStatusId == SupabaseDealRepository.DealStatusExpired
+                                    || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusSold
+                                    || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusOutOfStock
+                                    || existingDeal.DealStatusId == SupabaseDealRepository.DealStatusCapped))
+                            {
+                                existingDeal.DealStatusId = SupabaseDealRepository.DealStatusActive;
+                                await _repo.UpdateDealsAsync(new[] { existingDeal }, ct);
+                            }
+                            _logger.LogInformation(
+                                "Reactivated deal_product {Id} (deal_id={DealId}) from scraped listing.",
+                                existing.Id, existing.DealId);
+                        }
+
+                        existing.LastCheckedAt = refreshNow;
+                        existing.NextCheckAt = refreshNow.AddHours(6);
+                        await repoImpl.UpdateDealProductAsync(existing, ct);
+                        _logger.LogDebug("Refreshed existing deal_product {Id} (store_item_id={ItemId})", existing.Id, listing.ItemId);
+                        continue;
+                    }
+                }
+
+                var itemCount = product?.CountEnabled == true
+                    ? (ParsePackCount(listing.Title ?? string.Empty) ?? product.DefaultCount)
+                    : 1;
+
+                var deal = new Deal
+                {
+                    CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
+                    DealStatusId = 2,
+                    DealTypeId = 1, // Direct — no coupon for scraped listings
+                    AdditionalDetails = listing.Title,
+                    StoreId = storeId,
+                    DiscountPercent = ComputeDiscountPercent(msrp, listing.Price ?? 0,
+                        product?.CountEnabled == true, product?.DefaultCount ?? 1, itemCount),
+                    UserId = 1
+                };
+                deal = await repoImpl.CreateDealAsync(deal, ct);
+
+                var dp = new DealProduct
+                {
+                    DealId = deal.Id,
+                    ProductId = q.ProductId,
+                    ProductVariantId = variantId,
+                    Price = listing.Price ?? 0,
+                    DealStatusId = 2,
+                    Url = listing.Url,
+                    ConditionId = listing.ConditionCategoryId,
+                    StoreItemId = listing.ItemId,
+                    FreeShipping = false,
+                    CreatedAt = _timeProvider.GetUtcNow().UtcDateTime,
+                    NextCheckAt = _timeProvider.GetUtcNow().UtcDateTime.AddHours(6),
+                    ItemCount = itemCount,
+                    ShortDescription = listing.ShortDescription,
+                    Primary = true
+                };
+                dp = await repoImpl.CreateDealProductAsync(dp, ct);
+                created++;
+                _logger.LogInformation("Created deal {DealId} + deal_product {DpId} from scraped listing for product {ProductId} (store={StoreId})",
+                    deal.Id, dp.Id, q.ProductId, storeId);
+            }
+
+            // Mark stale deal_products for this store/product
+            var markedSold = await repoImpl.MarkStaleDealProductsSoldAsync(q.ProductId, storeId, ingestStartedAt, ct);
+            if (markedSold > 0)
+                _logger.LogInformation("Marked {Count} stale deal_product(s) as sold for product {ProductId} on store {StoreId}",
+                    markedSold, q.ProductId, storeId);
+        }
+
+        _logger.LogInformation("Pre-fetched listing ingest complete: {Count} deals created for store {StoreId}", created, storeId);
         return created;
     }
 
@@ -1229,8 +1484,8 @@ public class DealUpdateOrchestrator : IDealUpdateOrchestrator
                 oldPriceForPropagation = oldPrice;
                 await _repo.AppendPriceHistoryAsync(dealProduct.DealId, data.Price.Value, data.Currency, _timeProvider.GetUtcNow().UtcDateTime, ct);
 
-                // Update discount on the parent deal when price changes for a primary deal_product
-                if (dealProduct.Primary && deal != null)
+                // Update discount on the parent deal when price changes for a primary direct deal_product
+                if (dealProduct.Primary && deal != null && deal.DealTypeId == 1)
                 {
                     var refreshProduct = await repoImpl.GetProductByIdAsync(dealProduct.ProductId, ct);
                     if (refreshProduct != null)

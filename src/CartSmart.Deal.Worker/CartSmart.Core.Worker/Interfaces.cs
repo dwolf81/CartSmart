@@ -52,11 +52,32 @@ public interface IHtmlScraper
         => ScrapeAsync(uri, overridePriceSelectors, ct);
 }
 
+public interface IListingPageScraper
+{
+    /// <summary>
+    /// Scrape product listings from an HTML page, following pagination up to maxPages.
+    /// Auto-detects single-product vs. multi-listing pages.
+    /// </summary>
+    Task<IReadOnlyList<ScrapedListing>> ScrapeListingsAsync(
+        string url,
+        ListingScrapeConfig selectors,
+        bool httpEnabled,
+        bool playwrightEnabled,
+        int maxPages = 10,
+        int delayBetweenPagesMs = 2000,
+        CancellationToken ct = default);
+}
+
 public interface IDealUpdateOrchestrator
 {
     Task<DealRefreshResult> RefreshDealsAsync(int batchSize, CancellationToken ct);
     Task<int> SweepExpiredDealsAsync(CancellationToken ct);
     Task<int> IngestNewListingsAsync(StoreType storeType, int topPerProduct, IEnumerable<NewListingQuery> queries, CancellationToken ct);
+    /// <summary>
+    /// Ingest pre-fetched listings (e.g. from HTML scraping) through the standard filtering/deal-creation pipeline.
+    /// </summary>
+    Task<int> IngestPreFetchedListingsAsync(int storeId, int topPerProduct, IEnumerable<NewListingQuery> queries,
+        Dictionary<int, IReadOnlyList<NewListing>> listingsByProductId, CancellationToken ct);
 }
 
 public sealed record DealRefreshResult(int Total, int Updated, int Expired, int Sold, int Errors);

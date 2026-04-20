@@ -7,6 +7,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Webp;
 using System.Text.RegularExpressions;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using AngleSharp;
 using AngleSharp.Dom;
@@ -173,6 +174,7 @@ namespace CartSmart.API.Controllers
                     url = store.URL,
                     affiliateCode = store.AffiliateCode,
                     affiliateCodeVar = store.AffiliateCodeVar,
+                    affiliateUrlTemplate = store.AffiliateUrlTemplate,
                     brandId = store.BrandId,
                     upfrontCost = store.UpfrontCost,
                     upfrontCostTermId = store.UpfrontCostTermId,
@@ -227,6 +229,7 @@ namespace CartSmart.API.Controllers
                 URL = string.IsNullOrWhiteSpace(request.url) ? null : request.url.Trim(),
                 AffiliateCode = string.IsNullOrWhiteSpace(request.affiliateCode) ? null : request.affiliateCode.Trim(),
                 AffiliateCodeVar = string.IsNullOrWhiteSpace(request.affiliateCodeVar) ? null : request.affiliateCodeVar.Trim(),
+                AffiliateUrlTemplate = string.IsNullOrWhiteSpace(request.affiliateUrlTemplate) ? null : request.affiliateUrlTemplate.Trim(),
                 BrandId = request.brandId,
                 UpfrontCost = request.upfrontCost,
                 UpfrontCostTermId = request.upfrontCostTermId,
@@ -314,6 +317,7 @@ namespace CartSmart.API.Controllers
                 URL = string.IsNullOrWhiteSpace(request.url) ? null : request.url.Trim(),
                 AffiliateCode = string.IsNullOrWhiteSpace(request.affiliateCode) ? null : request.affiliateCode.Trim(),
                 AffiliateCodeVar = string.IsNullOrWhiteSpace(request.affiliateCodeVar) ? null : request.affiliateCodeVar.Trim(),
+                AffiliateUrlTemplate = string.IsNullOrWhiteSpace(request.affiliateUrlTemplate) ? null : request.affiliateUrlTemplate.Trim(),
                 BrandId = request.brandId,
                 UpfrontCost = request.upfrontCost,
                 UpfrontCostTermId = request.upfrontCostTermId,
@@ -700,6 +704,168 @@ namespace CartSmart.API.Controllers
             catch (Exception ex)
             {
                 return Ok(new TestScrapeResponseDTO { success = false, error = $"Unexpected error: {ex.Message}" });
+            }
+        }
+
+        // POST /api/stores/admin/auto-generate-scrape-config
+        // ────────────────────────────────────────────────────────────
+
+        [HttpPost("admin/auto-generate-scrape-config")]
+        [Authorize]
+        public async Task<ActionResult<AutoGenerateScrapeConfigResponseDTO>> AutoGenerateScrapeConfig(
+            [FromBody] AutoGenerateScrapeConfigRequestDTO request)
+        {
+            var adminCheck = await EnsureAdminAsync();
+            if (adminCheck != null) return Unauthorized();
+
+            var url = (request?.url ?? string.Empty).Trim();
+            var method = (request?.method ?? "http").Trim().ToLowerInvariant();
+
+            if (string.IsNullOrWhiteSpace(url))
+                return BadRequest(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "URL is required." });
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var parsedUri)
+                || (parsedUri.Scheme != "http" && parsedUri.Scheme != "https"))
+                return BadRequest(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "Invalid URL." });
+
+            var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(openAiKey))
+                return Ok(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "OPENAI_API_KEY is not configured on the server." });
+
+            var openAiModel = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o-mini";
+
+            try
+            {
+                // 1. Fetch the page HTML
+                string html;
+                if (method == "playwright")
+                    html = await FetchHtmlWithPlaywrightAsync(url);
+                else
+                    html = await FetchHtmlWithHttpClientAsync(url);
+
+                if (string.IsNullOrWhiteSpace(html) || html.Length < 100)
+                    return Ok(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "Fetched page is empty or too small." });
+
+                // 2. Truncate HTML to stay within token limits (~60k chars ≈ ~15k tokens)
+                const int maxHtmlChars = 60_000;
+                var truncatedHtml = html.Length > maxHtmlChars ? html[..maxHtmlChars] : html;
+
+                // 3. Call OpenAI to extract scrape config
+                var systemPrompt = @"You are an expert web scraping assistant. Given the HTML source of a page from an e-commerce store, analyze the DOM structure and identify CSS selectors for extracting product data.
+
+The page is very likely a product listing page (showing multiple products in a grid or list). Look carefully for repeating product card/item structures even if the class names are unusual or obfuscated.
+
+Your task is to return a JSON object with the following structure:
+{
+  ""price_selectors"": [""<css-selector-1>"", ""<css-selector-2>""],
+  ""listing_selectors"": {
+    ""container"": ""<css-selector>"",
+    ""title"": ""<css-selector or null>"",
+    ""price"": ""<css-selector or null>"",
+    ""url"": ""<css-selector or null>"",
+    ""condition"": ""<css-selector or null>"",
+    ""next_page"": ""<css-selector or null>""
+  }
+}
+
+Rules:
+- price_selectors: Array of 1-5 CSS selectors that target elements containing the product's current/sale price on a single-product page. Prefer selectors using data attributes, IDs, or specific class names. Exclude struck-through/original prices. If the page is clearly a listing page (not a single product page), still provide selectors that would match individual price elements on the page.
+- listing_selectors: Identify the repeating product card structure on the page. This is critical — most pages sent to you WILL be listing pages.
+  - container: CSS selector for each product card/item wrapper. Look for repeating <div>, <li>, <article>, or <a> elements that each represent one product. This is the most important selector.
+  - title: Selector WITHIN the container for the product title/name (usually a heading or link text). Can be null if title is not needed.
+  - price: Selector WITHIN the container for the price
+  - url: Selector WITHIN the container for the product link (usually an <a> tag with an href)
+  - condition: Selector for condition text (New/Used/Mint/Average/Excellent etc.) if present, null if not found
+  - next_page: Selector for the 'next page' pagination link, null if not found
+- Return ONLY the JSON object, no markdown fences, no explanation.
+- Be as specific as possible with selectors to avoid false matches.
+- Set individual listing_selectors fields to null only if truly not present in the HTML.";
+
+                var userPrompt = $"Analyze this HTML and extract the scrape configuration:\n\n{truncatedHtml}";
+
+                var body = new
+                {
+                    model = openAiModel,
+                    max_completion_tokens = 2048,
+                    messages = new object[]
+                    {
+                        new { role = "system", content = systemPrompt },
+                        new { role = "user", content = userPrompt }
+                    }
+                };
+
+                using var httpClient = new HttpClient();
+                httpClient.Timeout = TimeSpan.FromSeconds(60);
+                using var aiReq = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/chat/completions");
+                aiReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", openAiKey);
+                aiReq.Content = JsonContent.Create(body);
+
+                using var aiResp = await httpClient.SendAsync(aiReq);
+                if (!aiResp.IsSuccessStatusCode)
+                {
+                    var errorBody = await aiResp.Content.ReadAsStringAsync();
+                    return Ok(new AutoGenerateScrapeConfigResponseDTO
+                    {
+                        success = false,
+                        error = $"OpenAI API error ({aiResp.StatusCode}): {(errorBody.Length > 300 ? errorBody[..300] : errorBody)}"
+                    });
+                }
+
+                var rawJson = await aiResp.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+
+                // Extract the assistant's reply text
+                string? reply = null;
+                if (doc.RootElement.TryGetProperty("choices", out var choices)
+                    && choices.GetArrayLength() > 0)
+                {
+                    reply = choices[0].GetProperty("message").GetProperty("content").GetString()?.Trim();
+                }
+
+                if (string.IsNullOrWhiteSpace(reply))
+                    return Ok(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "OpenAI returned an empty response." });
+
+                // Strip markdown fences if present
+                reply = reply.Trim();
+                if (reply.StartsWith("```"))
+                {
+                    var firstNewline = reply.IndexOf('\n');
+                    if (firstNewline >= 0) reply = reply[(firstNewline + 1)..];
+                    if (reply.EndsWith("```")) reply = reply[..^3];
+                    reply = reply.Trim();
+                }
+
+                // Validate it's valid JSON
+                try
+                {
+                    using var parsed = System.Text.Json.JsonDocument.Parse(reply);
+                    // Re-serialize to ensure clean formatting
+                    reply = System.Text.Json.JsonSerializer.Serialize(
+                        parsed.RootElement,
+                        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return Ok(new AutoGenerateScrapeConfigResponseDTO
+                    {
+                        success = false,
+                        error = $"OpenAI returned invalid JSON: {(reply.Length > 200 ? reply[..200] + "…" : reply)}"
+                    });
+                }
+
+                return Ok(new AutoGenerateScrapeConfigResponseDTO
+                {
+                    success = true,
+                    scrapeConfig = reply
+                });
+            }
+            catch (TaskCanceledException)
+            {
+                return Ok(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "Request timed out." });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new AutoGenerateScrapeConfigResponseDTO { success = false, error = $"Error: {ex.Message}" });
             }
         }
 
@@ -1109,6 +1275,7 @@ namespace CartSmart.API.Controllers
                 URL = store.URL,
                 AffiliateCode = store.AffiliateCode,
                 AffiliateCodeVar = store.AffiliateCodeVar,
+                AffiliateUrlTemplate = store.AffiliateUrlTemplate,
                 BrandId = store.BrandId,
                 UpfrontCost = store.UpfrontCost,
                 UpfrontCostTermId = store.UpfrontCostTermId,

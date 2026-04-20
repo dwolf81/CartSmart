@@ -18,6 +18,11 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("availableAttributes")]
         [JsonPropertyName("availableAttributes")]
         public List<AdminAttributeCatalogItemDTO> AvailableAttributes { get; set; } = new();
+
+        // Store pages configured for HTML listing scraping.
+        [JsonProperty("storePages")]
+        [JsonPropertyName("storePages")]
+        public List<AdminProductStorePageDTO> StorePages { get; set; } = new();
     }
 
     public class AdminProductDTO
@@ -296,6 +301,77 @@ namespace CartSmart.API.Models.DTOs
         [JsonProperty("synonyms")]
         [JsonPropertyName("synonyms")]
         public List<string> Synonyms { get; set; } = new();
+    }
+
+    // ── Product Store Page DTOs ──────────────────────────────────────────
+
+    public class AdminProductStorePageDTO
+    {
+        [JsonProperty("id")]
+        [JsonPropertyName("id")]
+        public long Id { get; set; }
+
+        [JsonProperty("storeId")]
+        [JsonPropertyName("storeId")]
+        public int StoreId { get; set; }
+
+        [JsonProperty("storeName")]
+        [JsonPropertyName("storeName")]
+        public string? StoreName { get; set; }
+
+        [JsonProperty("url")]
+        [JsonPropertyName("url")]
+        public string Url { get; set; } = string.Empty;
+
+        [JsonProperty("enabled")]
+        [JsonPropertyName("enabled")]
+        public bool Enabled { get; set; } = true;
+
+        [JsonProperty("scrapeIntervalMinutes")]
+        [JsonPropertyName("scrapeIntervalMinutes")]
+        public int ScrapeIntervalMinutes { get; set; } = 120;
+
+        [JsonProperty("lastScrapedAt")]
+        [JsonPropertyName("lastScrapedAt")]
+        public DateTime? LastScrapedAt { get; set; }
+
+        [JsonProperty("createdAt")]
+        [JsonPropertyName("createdAt")]
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class AdminCreateProductStorePageDTO
+    {
+        [JsonProperty("storeId")]
+        [JsonPropertyName("storeId")]
+        public int StoreId { get; set; }
+
+        [JsonProperty("url")]
+        [JsonPropertyName("url")]
+        public string Url { get; set; } = string.Empty;
+
+        [JsonProperty("enabled")]
+        [JsonPropertyName("enabled")]
+        public bool Enabled { get; set; } = true;
+
+        [JsonProperty("scrapeIntervalMinutes")]
+        [JsonPropertyName("scrapeIntervalMinutes")]
+        public int ScrapeIntervalMinutes { get; set; } = 120;
+    }
+
+    public class AdminUpdateProductStorePageDTO
+    {
+        [JsonProperty("url")]
+        [JsonPropertyName("url")]
+        public string Url { get; set; } = string.Empty;
+
+        [JsonProperty("enabled")]
+        [JsonPropertyName("enabled")]
+        public bool Enabled { get; set; } = true;
+
+        [JsonProperty("scrapeIntervalMinutes")]
+        [JsonPropertyName("scrapeIntervalMinutes")]
+        public int ScrapeIntervalMinutes { get; set; } = 120;
     }
 
     public class AdminUpsertProductAttributeRequestDTO

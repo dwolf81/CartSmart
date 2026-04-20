@@ -562,19 +562,23 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
               const affiliate = getAffiliateFields(deal, 'normal');
               const affiliateCodeVar = affiliate.affiliateCodeVar;
               const affiliateCode = affiliate.affiliateCode;
+              const affiliateUrlTemplate = affiliate.affiliateUrlTemplate;
               const externalAffiliate = getAffiliateFields(deal, 'external');
               const externalAffiliateCodeVar = externalAffiliate.affiliateCodeVar;
               const externalAffiliateCode = externalAffiliate.affiliateCode;
+              const externalAffiliateUrlTemplate = externalAffiliate.affiliateUrlTemplate;
 
               const externalOfferUrl = appendAffiliateParam(
                 deal.external_offer_url,
                 externalAffiliateCodeVar,
-                externalAffiliateCode
+                externalAffiliateCode,
+                externalAffiliateUrlTemplate
               );
               const productOrStoreUrl = appendAffiliateParam(
                 (isStoreDeal ? ensureHttps(deal.store_url) : null) || deal.url,
                 affiliateCodeVar,
-                affiliateCode
+                affiliateCode,
+                affiliateUrlTemplate
               );
 
               return (
@@ -773,7 +777,8 @@ const isStoreWideDeal = (d) => !d?.deal_product_id && (d?.store_id || d?.storeId
                                     const stepAffiliate = getAffiliateFields(step, 'normal');
                                     const stepAffiliateCodeVar = stepAffiliate.affiliateCodeVar || affiliateCodeVar;
                                     const stepAffiliateCode = stepAffiliate.affiliateCode || affiliateCode;
-                                    const stepUrl = appendAffiliateParam(step.url, stepAffiliateCodeVar, stepAffiliateCode);
+                                    const stepAffiliateUrlTemplate = stepAffiliate.affiliateUrlTemplate || affiliateUrlTemplate;
+                                    const stepUrl = appendAffiliateParam(step.url, stepAffiliateCodeVar, stepAffiliateCode, stepAffiliateUrlTemplate);
 
                                     return (
                                     <div key={idx} className="relative rounded-xl border bg-gray-50 p-3">

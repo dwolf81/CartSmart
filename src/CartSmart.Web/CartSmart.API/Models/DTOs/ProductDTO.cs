@@ -81,9 +81,11 @@ namespace CartSmart.API.Models.DTOs
 
         public string? affiliate_code { get; set; } // store affiliate code
         public string? affiliate_code_var { get; set; }
+        public string? affiliate_url_template { get; set; }
 
         public string? external_affiliate_code { get; set; } // store affiliate code
         public string? external_affiliate_code_var { get; set; }
+        public string? external_affiliate_url_template { get; set; }
 
         // Product-level count fields (for per-item pricing)
         public bool? count_enabled { get; set; }

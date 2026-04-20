@@ -798,6 +798,44 @@ namespace CartSmart.API.Controllers
                 dto.Product.ProductTypeNegativeKeywords = new List<string>();
             }
 
+            // Include store pages for listing scraping management.
+            try
+            {
+                var spResp = await client.From<ProductStorePage>()
+                    .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                    .Order("created_at", Supabase.Postgrest.Constants.Ordering.Ascending)
+                    .Get();
+
+                var spStoreIds = spResp.Models.Select(p => p.StoreId).Distinct().ToList();
+                var spStoreNames = new Dictionary<int, string>();
+                if (spStoreIds.Count > 0)
+                {
+                    var spStoresResp = await client.From<Store>()
+                        .Filter("id", Supabase.Postgrest.Constants.Operator.In, spStoreIds.Select(id => id.ToString()).ToList())
+                        .Select("id, name")
+                        .Get();
+                    foreach (var s in spStoresResp.Models)
+                        spStoreNames[s.Id] = s.Name ?? string.Empty;
+                }
+
+                dto.StorePages = spResp.Models.Select(p => new AdminProductStorePageDTO
+                {
+                    Id = p.Id,
+                    StoreId = p.StoreId,
+                    StoreName = spStoreNames.GetValueOrDefault(p.StoreId),
+                    Url = p.Url,
+                    Enabled = p.Enabled,
+                    ScrapeIntervalMinutes = p.ScrapeIntervalMinutes,
+                    LastScrapedAt = p.LastScrapedAt,
+                    CreatedAt = p.CreatedAt
+                }).ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[ProductsController] Failed to load product_store_page for productId={productId}: {ex}");
+                dto.StorePages = new List<AdminProductStorePageDTO>();
+            }
+
             return Ok(dto);
         }
 
@@ -1760,6 +1798,157 @@ namespace CartSmart.API.Controllers
                 v.UpdatedAt = DateTime.UtcNow;
                 await client.From<ProductVariant>().Update(v);
             }
+        }
+
+        // ── Product Store Pages ──────────────────────────────────────────
+
+        [HttpGet("{productId}/admin/store-pages")]
+        [Authorize]
+        public async Task<IActionResult> GetProductStorePages(int productId)
+        {
+            var authResult = await EnsureAdminAsync();
+            if (authResult != null) return authResult;
+
+            var client = _supabase.GetServiceRoleClient();
+
+            var pagesResp = await client.From<ProductStorePage>()
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Order("created_at", Supabase.Postgrest.Constants.Ordering.Ascending)
+                .Get();
+
+            // Fetch store names for display
+            var storeIds = pagesResp.Models.Select(p => p.StoreId).Distinct().ToList();
+            var storeNames = new Dictionary<int, string>();
+            if (storeIds.Count > 0)
+            {
+                var storesResp = await client.From<Store>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.In, storeIds.Select(id => id.ToString()).ToList())
+                    .Select("id, name")
+                    .Get();
+                foreach (var s in storesResp.Models)
+                    storeNames[s.Id] = s.Name ?? string.Empty;
+            }
+
+            var result = pagesResp.Models.Select(p => new AdminProductStorePageDTO
+            {
+                Id = p.Id,
+                StoreId = p.StoreId,
+                StoreName = storeNames.GetValueOrDefault(p.StoreId),
+                Url = p.Url,
+                Enabled = p.Enabled,
+                ScrapeIntervalMinutes = p.ScrapeIntervalMinutes,
+                LastScrapedAt = p.LastScrapedAt,
+                CreatedAt = p.CreatedAt
+            }).ToList();
+
+            return Ok(result);
+        }
+
+        [HttpPost("{productId}/admin/store-pages")]
+        [Authorize]
+        public async Task<IActionResult> CreateProductStorePage(int productId, [FromBody] AdminCreateProductStorePageDTO req)
+        {
+            var authResult = await EnsureAdminAsync();
+            if (authResult != null) return authResult;
+
+            if (string.IsNullOrWhiteSpace(req.Url))
+                return BadRequest(new { message = "URL is required" });
+
+            if (!Uri.TryCreate(req.Url, UriKind.Absolute, out var parsed) || (parsed.Scheme != "http" && parsed.Scheme != "https"))
+                return BadRequest(new { message = "URL must be a valid HTTP/HTTPS URL" });
+
+            var client = _supabase.GetServiceRoleClient();
+
+            // Verify product exists
+            var productResp = await client.From<Product>()
+                .Where(p => p.Id == productId && p.Deleted == false)
+                .Limit(1)
+                .Get();
+            if (!productResp.Models.Any())
+                return NotFound(new { message = "Product not found" });
+
+            // Verify store exists
+            var storeResp = await client.From<Store>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, req.StoreId.ToString())
+                .Limit(1)
+                .Get();
+            if (!storeResp.Models.Any())
+                return NotFound(new { message = "Store not found" });
+
+            var insert = new ProductStorePageInsertRow
+            {
+                ProductId = productId,
+                StoreId = req.StoreId,
+                Url = req.Url.Trim(),
+                Enabled = req.Enabled,
+                ScrapeIntervalMinutes = Math.Clamp(req.ScrapeIntervalMinutes, 30, 1440)
+            };
+
+            var insertResp = await client.From<ProductStorePageInsertRow>().Insert(insert);
+            var created = insertResp.Models.FirstOrDefault();
+            if (created == null)
+                return StatusCode(500, new { message = "Failed to create store page" });
+
+            var storeName = storeResp.Models.FirstOrDefault()?.Name;
+            return Ok(new AdminProductStorePageDTO
+            {
+                Id = 0, // Will be set on re-fetch
+                StoreId = req.StoreId,
+                StoreName = storeName,
+                Url = insert.Url,
+                Enabled = insert.Enabled,
+                ScrapeIntervalMinutes = insert.ScrapeIntervalMinutes,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        [HttpPut("{productId}/admin/store-pages/{pageId:long}")]
+        [Authorize]
+        public async Task<IActionResult> UpdateProductStorePage(int productId, long pageId, [FromBody] AdminUpdateProductStorePageDTO req)
+        {
+            var authResult = await EnsureAdminAsync();
+            if (authResult != null) return authResult;
+
+            if (string.IsNullOrWhiteSpace(req.Url))
+                return BadRequest(new { message = "URL is required" });
+
+            if (!Uri.TryCreate(req.Url, UriKind.Absolute, out var parsed) || (parsed.Scheme != "http" && parsed.Scheme != "https"))
+                return BadRequest(new { message = "URL must be a valid HTTP/HTTPS URL" });
+
+            var client = _supabase.GetServiceRoleClient();
+
+            var existingResp = await client.From<ProductStorePage>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, pageId.ToString())
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Limit(1)
+                .Get();
+            var existing = existingResp.Models.FirstOrDefault();
+            if (existing == null) return NotFound(new { message = "Store page not found" });
+
+            existing.Url = req.Url.Trim();
+            existing.Enabled = req.Enabled;
+            existing.ScrapeIntervalMinutes = Math.Clamp(req.ScrapeIntervalMinutes, 30, 1440);
+
+            await client.From<ProductStorePage>().Update(existing);
+
+            return Ok(new { message = "Updated" });
+        }
+
+        [HttpDelete("{productId}/admin/store-pages/{pageId:long}")]
+        [Authorize]
+        public async Task<IActionResult> DeleteProductStorePage(int productId, long pageId)
+        {
+            var authResult = await EnsureAdminAsync();
+            if (authResult != null) return authResult;
+
+            var client = _supabase.GetServiceRoleClient();
+
+            await client.From<ProductStorePage>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, pageId.ToString())
+                .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+                .Delete();
+
+            return Ok(new { message = "Deleted" });
         }
 
     }

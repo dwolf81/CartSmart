@@ -1080,13 +1080,18 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
             var candidateDp = dpResp.Models;
 
-            // 2) Load only their deals (not deleted)
+            // 2) Load only their deals (not deleted/rejected)
             var dealIds = candidateDp.Select(x => x.DealId).Distinct().ToArray();
             var dealsResp = dealIds.Length == 0
                 ? null
                 : await client.From<Deal>()
                     .Filter("id", Supabase.Postgrest.Constants.Operator.In, dealIds)
                     .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                    .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.NotEqual, "3")
+                    .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.NotEqual, "4")
+                    .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.NotEqual, "6")
+                    .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.NotEqual, "7")
+                    .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.NotEqual, "8")
                     .Select("id,deal_type_id,coupon_code,external_offer_url")
                     .Get();
 
@@ -1535,6 +1540,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         var sameProduct = (from x in allDealProducts
                            join d in allDeals on x.DealId equals d.Id
                            where x.ProductId == dto.ProductId && !d.Deleted && d.Id != deal.Id && !x.Deleted
+                                 && d.DealStatusId != 3 && d.DealStatusId != 4
+                                 && d.DealStatusId != 6 && d.DealStatusId != 7 && d.DealStatusId != 8
                            select new { Deal = d, DP = x }).ToList();
 
         var targetNormUrl = NormalizeUrl(dto.Url);

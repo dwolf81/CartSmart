@@ -149,7 +149,7 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
     }
   }, [isOpen, isStoreDeal, productId, productAttributes, formData.url, dealAttributes]);
 
-  // Derive baseline price for coupon/external deals based on existing direct approved deals for this product & domain
+  // Derive baseline price for coupon/external deals based on existing direct approved deals for this product & store
   useEffect(() => {
     // Only relevant for creating or editing coupon/external deals
     if (!productId || !formData.url || (formData.dealType !== 'coupon' && formData.dealType !== 'external')) {
@@ -169,13 +169,30 @@ const SubmitDealModal = ({ isOpen, onClose, productId, msrpPrice, storeId = null
         if (!resp.ok) return;
         const data = await resp.json();
         const arr = data.Deals || data.deals || [];
-        // Filter: domain match, approved status (2), price > 0
+
+        // Resolve store_id: find it from any deal whose URL domain matches the entered URL.
+        let targetStoreId = null;
+        for (const d of arr) {
+          if (!d) continue;
+          const dDomain = extractDomain(d.url || d.external_offer_url || '');
+          if (dDomain === domain && d.store_id) {
+            targetStoreId = Number(d.store_id);
+            break;
+          }
+        }
+
+        // Filter: store_id match (falls back to domain if store_id not resolved), approved status (2), price > 0
         const candidatePrices = arr
           .filter(d => {
             if (!d) return false;
-            const dDomain = extractDomain(d.url || d.external_offer_url || '');
-            if (!dDomain || dDomain !== domain) return false;
             if (Number(d.deal_status_id) !== 2) return false; // Approved
+            // Match by store_id when available; fall back to domain match
+            if (targetStoreId) {
+              if (Number(d.store_id) !== targetStoreId) return false;
+            } else {
+              const dDomain = extractDomain(d.url || d.external_offer_url || '');
+              if (!dDomain || dDomain !== domain) return false;
+            }
             const p = parseFloat(d.price);
             return !isNaN(p) && p > 0;
           })

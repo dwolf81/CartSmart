@@ -725,8 +725,8 @@ const ProductPage = () => {
 
   const handleActivateExternal = (deal) => {
     if (!deal?.external_offer_url) return;
-    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(deal, 'external');
-    window.open(appendAffiliateParam(deal.external_offer_url, affiliateCodeVar, affiliateCode), '_blank', 'noopener,noreferrer');
+    const { affiliateCodeVar, affiliateCode, affiliateUrlTemplate } = getAffiliateFields(deal, 'external');
+    window.open(appendAffiliateParam(deal.external_offer_url, affiliateCodeVar, affiliateCode, affiliateUrlTemplate), '_blank', 'noopener,noreferrer');
     setActivatedExternal(prev => ({ ...prev, [deal.deal_id]: true }));
   };
 
@@ -1017,9 +1017,9 @@ const ProductPage = () => {
     e.preventDefault();
     if (!url) return;
     const dealRow = findDealRowById(dealId);
-    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(dealRow, external ? 'external' : 'normal');
+    const { affiliateCodeVar, affiliateCode, affiliateUrlTemplate } = getAffiliateFields(dealRow, external ? 'external' : 'normal');
     // Open first to avoid popup blockers, then log
-    window.open(appendAffiliateParam(url, affiliateCodeVar, affiliateCode), '_blank', 'noopener,noreferrer');
+    window.open(appendAffiliateParam(url, affiliateCodeVar, affiliateCode, affiliateUrlTemplate), '_blank', 'noopener,noreferrer');
     logDealClick(dealId, external);
   };
 
@@ -1156,8 +1156,8 @@ const ProductPage = () => {
   const openResolvedVariantAction = (resolved) => {
     if (!resolved?.url) return;
     const source = resolved.affiliateSource || resolved.row;
-    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(source, resolved.external ? 'external' : 'normal');
-    window.open(appendAffiliateParam(resolved.url, affiliateCodeVar, affiliateCode), '_blank', 'noopener,noreferrer');
+    const { affiliateCodeVar, affiliateCode, affiliateUrlTemplate } = getAffiliateFields(source, resolved.external ? 'external' : 'normal');
+    window.open(appendAffiliateParam(resolved.url, affiliateCodeVar, affiliateCode, affiliateUrlTemplate), '_blank', 'noopener,noreferrer');
     logDealClick(resolved.dealId, resolved.external);
   };
 
@@ -2263,7 +2263,8 @@ const ProductPage = () => {
                                                         href={appendAffiliateParam(
                                                           step.external_offer_url,
                                                           (step?.affiliate_code_var ?? step?.affiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
-                                                          (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                                          (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode),
+                                                          (step?.affiliate_url_template ?? deal?.affiliate_url_template)
                                                         )}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
@@ -2276,7 +2277,8 @@ const ProductPage = () => {
                                                         href={appendAffiliateParam(
                                                           step.url,
                                                           (step?.affiliate_code_var ?? step?.affiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
-                                                          (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                                          (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode),
+                                                          (step?.affiliate_url_template ?? deal?.affiliate_url_template)
                                                         )}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
@@ -2308,7 +2310,8 @@ const ProductPage = () => {
                                                       href={appendAffiliateParam(
                                                         step.url,
                                                         (step?.affiliate_code_var ?? step?.affiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
-                                                        (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                                        (step?.affiliate_code ?? step?.affiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode),
+                                                        (step?.affiliate_url_template ?? deal?.affiliate_url_template)
                                                       )}
                                                       target="_blank"
                                                       rel="noopener noreferrer"
@@ -2470,7 +2473,8 @@ const ProductPage = () => {
                                   href={appendAffiliateParam(
                                     deal.external_offer_url,
                                     (deal?.external_affiliate_code_var ?? deal?.externalAffiliateCodeVar ?? deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
-                                    (deal?.external_affiliate_code ?? deal?.externalAffiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode)
+                                    (deal?.external_affiliate_code ?? deal?.externalAffiliateCode ?? deal?.affiliate_code ?? deal?.affiliateCode),
+                                    (deal?.external_affiliate_url_template ?? deal?.affiliate_url_template)
                                   )}
                                   target="_blank"
                                   rel="noopener noreferrer"
@@ -2483,7 +2487,8 @@ const ProductPage = () => {
                                   href={appendAffiliateParam(
                                     deal.url,
                                     (deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
-                                    (deal?.affiliate_code ?? deal?.affiliateCode)
+                                    (deal?.affiliate_code ?? deal?.affiliateCode),
+                                    (deal?.affiliate_url_template)
                                   )}
                                   target="_blank"
                                   rel="noopener noreferrer"
@@ -2512,7 +2517,8 @@ const ProductPage = () => {
                                   href={appendAffiliateParam(
                                     deal.url,
                                     (deal?.affiliate_code_var ?? deal?.affiliateCodeVar),
-                                    (deal?.affiliate_code ?? deal?.affiliateCode)
+                                    (deal?.affiliate_code ?? deal?.affiliateCode),
+                                    (deal?.affiliate_url_template)
                                   )}
                                   target="_blank"
                                   rel="noopener noreferrer"

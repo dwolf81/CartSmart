@@ -655,17 +655,19 @@ const StorePage = () => {
                     const meta = DEAL_TYPE_META[dealTypeId] || {};
 
                     const storeHost = deal?.store_url || storeUrl;
-                    const { affiliateCodeVar, affiliateCode } = getAffiliateFields(deal, 'normal');
-                    const { affiliateCodeVar: externalAffiliateCodeVar, affiliateCode: externalAffiliateCode } = getAffiliateFields(deal, 'external');
+                    const { affiliateCodeVar, affiliateCode, affiliateUrlTemplate } = getAffiliateFields(deal, 'normal');
+                    const { affiliateCodeVar: externalAffiliateCodeVar, affiliateCode: externalAffiliateCode, affiliateUrlTemplate: externalAffiliateUrlTemplate } = getAffiliateFields(deal, 'external');
                     const viewUrl = appendAffiliateParam(
                       toAbsoluteUrl(deal?.url) || toAbsoluteUrl(storeHost),
                       affiliateCodeVar,
-                      affiliateCode
+                      affiliateCode,
+                      affiliateUrlTemplate
                     );
                     const externalOfferUrl = appendAffiliateParam(
                       toAbsoluteUrl(deal?.external_offer_url),
                       externalAffiliateCodeVar,
-                      externalAffiliateCode
+                      externalAffiliateCode,
+                      externalAffiliateUrlTemplate
                     );
 
                     const steps = Array.isArray(deal?.steps) ? deal.steps : [];
@@ -890,7 +892,8 @@ const StorePage = () => {
                                                     href={appendAffiliateParam(
                                                       toAbsoluteUrl(step.external_offer_url),
                                                       (step?.external_affiliate_code_var ?? step?.externalAffiliateCodeVar ?? externalAffiliateCodeVar),
-                                                      (step?.external_affiliate_code ?? step?.externalAffiliateCode ?? externalAffiliateCode)
+                                                      (step?.external_affiliate_code ?? step?.externalAffiliateCode ?? externalAffiliateCode),
+                                                      (step?.external_affiliate_url_template ?? step?.affiliate_url_template ?? externalAffiliateUrlTemplate)
                                                     )}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
@@ -900,7 +903,7 @@ const StorePage = () => {
                                                     Activate Offer
                                                   </a>
                                                   <a
-                                                    href={appendAffiliateParam(toAbsoluteUrl(step.url), affiliateCodeVar, affiliateCode)}
+                                                    href={appendAffiliateParam(toAbsoluteUrl(step.url), affiliateCodeVar, affiliateCode, (step?.affiliate_url_template ?? affiliateUrlTemplate))}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}
@@ -914,7 +917,7 @@ const StorePage = () => {
                                               {stepDealTypeId !== 4 && toAbsoluteUrl(step.url) && (
                                                 <div role="group" aria-label="Deal action" className="flex w-full gap-2 justify-end flex-nowrap">
                                                   <a
-                                                    href={appendAffiliateParam(toAbsoluteUrl(step.url), affiliateCodeVar, affiliateCode)}
+                                                    href={appendAffiliateParam(toAbsoluteUrl(step.url), affiliateCodeVar, affiliateCode, (step?.affiliate_url_template ?? affiliateUrlTemplate))}
                                                     target="_blank"
                                                     rel="noopener noreferrer"
                                                     className={`${BUTTON_STYLES.base} ${BUTTON_STYLES.green} whitespace-nowrap`}

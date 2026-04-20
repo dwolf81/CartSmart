@@ -61,6 +61,11 @@ export default function AdminProductModal({
   const [adminNewEnumDrafts, setAdminNewEnumDrafts] = useState({});
   const [adminAttrExpanded, setAdminAttrExpanded] = useState({});
 
+  // Store pages state
+  const [adminStorePages, setAdminStorePages] = useState([]);
+  const [adminStores, setAdminStores] = useState([]);
+  const [adminNewStorePage, setAdminNewStorePage] = useState({ storeId: '', url: '', enabled: true, scrapeIntervalMinutes: 120 });
+
   const canEdit = isAuthenticated && !!user?.admin;
 
   // ---------- image‑zoom helpers ----------
@@ -218,6 +223,10 @@ export default function AdminProductModal({
       };
     });
     setAdminNewEnumDrafts(newDrafts);
+
+    // Seed store pages
+    const storePages = Array.isArray(data?.storePages) ? data.storePages : [];
+    setAdminStorePages(storePages);
   };
 
   const loadEditData = async (id) => {
@@ -253,6 +262,93 @@ export default function AdminProductModal({
     }
   };
 
+  const loadStores = async () => {
+    try {
+      const res = await authFetch(`${API_URL}/api/stores`);
+      if (!res.ok) throw new Error('Failed to load stores');
+      const data = await res.json();
+      setAdminStores(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.error(e);
+      setAdminStores([]);
+    }
+  };
+
+  const handleAddStorePage = async () => {
+    if (!currentProductId || !adminNewStorePage.storeId || !adminNewStorePage.url) return;
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/store-pages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId: Number(adminNewStorePage.storeId),
+          url: adminNewStorePage.url.trim(),
+          enabled: adminNewStorePage.enabled,
+          scrapeIntervalMinutes: Number(adminNewStorePage.scrapeIntervalMinutes) || 120
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || 'Failed to create store page');
+      }
+      // Reload store pages
+      const pagesRes = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/store-pages`);
+      if (pagesRes.ok) {
+        const pages = await pagesRes.json();
+        setAdminStorePages(Array.isArray(pages) ? pages : []);
+      }
+      setAdminNewStorePage({ storeId: '', url: '', enabled: true, scrapeIntervalMinutes: 120 });
+    } catch (e) {
+      console.error(e);
+      setAdminEditError(e.message || 'Failed to add store page');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleDeleteStorePage = async (pageId) => {
+    if (!currentProductId || !pageId) return;
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/store-pages/${pageId}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) throw new Error('Failed to delete store page');
+      setAdminStorePages((prev) => prev.filter((p) => p.id !== pageId));
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to delete store page');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
+  const handleToggleStorePage = async (page) => {
+    if (!currentProductId) return;
+    setAdminEditSaving(true);
+    try {
+      const res = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/store-pages/${page.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: page.url,
+          enabled: !page.enabled,
+          scrapeIntervalMinutes: page.scrapeIntervalMinutes
+        })
+      });
+      if (!res.ok) throw new Error('Failed to update store page');
+      setAdminStorePages((prev) =>
+        prev.map((p) => (p.id === page.id ? { ...p, enabled: !p.enabled } : p))
+      );
+    } catch (e) {
+      console.error(e);
+      setAdminEditError('Failed to toggle store page');
+    } finally {
+      setAdminEditSaving(false);
+    }
+  };
+
   const refreshAdminEditData = async () => {
     if (!currentProductId) return;
     const res = await authFetch(`${API_URL}/api/products/${currentProductId}/admin/edit`);
@@ -271,6 +367,10 @@ export default function AdminProductModal({
     });
 
     setAdminProductImageUrl(data?.product?.imageUrl ?? '');
+
+    // Update store pages
+    const storePages = Array.isArray(data?.storePages) ? data.storePages : [];
+    setAdminStorePages(storePages);
 
     setAdminEnumDrafts((prev) => {
       const next = { ...prev };
@@ -327,6 +427,7 @@ export default function AdminProductModal({
 
     // Load brand catalog for both add and edit modes.
     loadBrands();
+    loadStores();
 
     if (nextInternalMode === 'add') {
       resetToAddDraft();
@@ -1177,6 +1278,122 @@ export default function AdminProductModal({
                   {adminEditSaving ? 'Saving…' : saveLabel}
                 </button>
               </div>
+
+              <hr className="my-6" />
+
+              {/* ── Store Pages Section ── */}
+              {internalMode !== 'add' && currentProductId && (
+                <>
+                  <h4 className="text-md font-semibold mb-3">Store Pages (Listing Scraping)</h4>
+                  <div className="text-xs text-gray-500 mb-3">
+                    Configure store page URLs to scrape for product listings. The scraper auto-detects single product vs. listing pages.
+                  </div>
+
+                  {adminStorePages.length > 0 && (
+                    <div className="border rounded-md overflow-hidden mb-4">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="text-left px-3 py-2 font-medium text-gray-600">Store</th>
+                            <th className="text-left px-3 py-2 font-medium text-gray-600">URL</th>
+                            <th className="text-left px-3 py-2 font-medium text-gray-600">Interval</th>
+                            <th className="text-left px-3 py-2 font-medium text-gray-600">Last Scraped</th>
+                            <th className="text-left px-3 py-2 font-medium text-gray-600">Enabled</th>
+                            <th className="px-3 py-2"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {adminStorePages.map((page) => (
+                            <tr key={page.id} className="hover:bg-gray-50">
+                              <td className="px-3 py-2 text-gray-700">{page.storeName || `Store #${page.storeId}`}</td>
+                              <td className="px-3 py-2 text-gray-600 max-w-xs truncate" title={page.url}>
+                                <a href={page.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                  {page.url.length > 50 ? page.url.slice(0, 50) + '…' : page.url}
+                                </a>
+                              </td>
+                              <td className="px-3 py-2 text-gray-600">{page.scrapeIntervalMinutes}m</td>
+                              <td className="px-3 py-2 text-gray-500 text-xs">
+                                {page.lastScrapedAt ? new Date(page.lastScrapedAt).toLocaleString() : 'Never'}
+                              </td>
+                              <td className="px-3 py-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleStorePage(page)}
+                                  disabled={adminEditSaving}
+                                  className={`px-2 py-1 rounded text-xs font-medium ${
+                                    page.enabled
+                                      ? 'bg-green-100 text-green-800 hover:bg-green-200'
+                                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                  }`}
+                                >
+                                  {page.enabled ? 'On' : 'Off'}
+                                </button>
+                              </td>
+                              <td className="px-3 py-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteStorePage(page.id)}
+                                  disabled={adminEditSaving}
+                                  className="text-red-500 hover:text-red-700 text-xs"
+                                >
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <div className="flex flex-col md:flex-row gap-3 items-start md:items-end mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Store</label>
+                      <select
+                        value={adminNewStorePage.storeId}
+                        onChange={(e) => setAdminNewStorePage((prev) => ({ ...prev, storeId: e.target.value }))}
+                        className="w-full px-3 py-2 border rounded-md text-sm"
+                        disabled={adminEditSaving}
+                      >
+                        <option value="">Select store…</option>
+                        {adminStores.map((s) => (
+                          <option key={s.id} value={String(s.id)}>{s.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Page URL</label>
+                      <input
+                        value={adminNewStorePage.url}
+                        onChange={(e) => setAdminNewStorePage((prev) => ({ ...prev, url: e.target.value }))}
+                        className="w-full px-3 py-2 border rounded-md text-sm"
+                        placeholder="https://store.example.com/product/listings"
+                        disabled={adminEditSaving}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Interval (min)</label>
+                      <input
+                        type="number"
+                        min="30"
+                        max="1440"
+                        value={adminNewStorePage.scrapeIntervalMinutes}
+                        onChange={(e) => setAdminNewStorePage((prev) => ({ ...prev, scrapeIntervalMinutes: e.target.value }))}
+                        className="w-20 px-3 py-2 border rounded-md text-sm"
+                        disabled={adminEditSaving}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAddStorePage}
+                      disabled={adminEditSaving || !adminNewStorePage.storeId || !adminNewStorePage.url}
+                      className="h-10 px-4 rounded-lg bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors disabled:opacity-60"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </>
+              )}
 
               <hr className="my-6" />
 

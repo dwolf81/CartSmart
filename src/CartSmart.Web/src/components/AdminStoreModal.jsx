@@ -116,6 +116,8 @@ export default function AdminStoreModal({
   const [testPlaywrightResult, setTestPlaywrightResult] = useState(null);
   const [testBrowserLoading, setTestBrowserLoading] = useState(false);
   const [testBrowserResult, setTestBrowserResult] = useState(null);
+  const [autoGenLoading, setAutoGenLoading] = useState(false);
+  const [autoGenError, setAutoGenError] = useState(null);
 
   const [slugEdited, setSlugEdited] = useState(false);
 
@@ -128,6 +130,7 @@ export default function AdminStoreModal({
 
     affiliateCode: '',
     affiliateCodeVar: '',
+    affiliateUrlTemplate: '',
     brandId: '',
     upfrontCost: '',
     upfrontCostTermId: '',
@@ -253,6 +256,7 @@ export default function AdminStoreModal({
 
       affiliateCode: s?.affiliateCode ?? '',
       affiliateCodeVar: s?.affiliateCodeVar ?? '',
+      affiliateUrlTemplate: s?.affiliateUrlTemplate ?? '',
       brandId: s?.brandId != null ? String(s.brandId) : '',
       upfrontCost: s?.upfrontCost != null ? String(s.upfrontCost) : '',
       upfrontCostTermId: s?.upfrontCostTermId != null ? String(s.upfrontCostTermId) : '',
@@ -426,6 +430,7 @@ export default function AdminStoreModal({
 
         affiliateCode: (draft.affiliateCode || '').trim() || null,
         affiliateCodeVar: (draft.affiliateCodeVar || '').trim() || null,
+        affiliateUrlTemplate: (draft.affiliateUrlTemplate || '').trim() || null,
         brandId: resolvedBrandId,
         upfrontCost: draft.upfrontCost === '' ? null : Number(draft.upfrontCost),
         upfrontCostTermId: draft.upfrontCostTermId ? Number(draft.upfrontCostTermId) : null,
@@ -723,6 +728,21 @@ export default function AdminStoreModal({
                 </div>
 
                 <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Affiliate URL Template (optional)</label>
+                  <input
+                    value={draft.affiliateUrlTemplate}
+                    onChange={(e) => setDraft((p) => ({ ...p, affiliateUrlTemplate: e.target.value }))}
+                    className="w-full px-3 py-2 border rounded-md text-sm"
+                    placeholder="e.g. ?tag=abc&ref=123  or  https://www.awin1.com/cread.php?awinmid=123&awinaffid=456&ued={url_encoded}"
+                    disabled={saving}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Wrapper URL: use <code>{'{url}'}</code> / <code>{'{url_encoded}'}</code> placeholders.
+                    Extra params: start with <code>?</code> (e.g. <code>?tag=abc&ref=123</code>) to append to the product URL. Overrides Code/Var when set.
+                  </p>
+                </div>
+
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Brand</label>
                   {!addNewBrand && (
                     <select
@@ -834,6 +854,57 @@ export default function AdminStoreModal({
                     placeholder='{"price_selectors":["#price",".offer-price"]}'
                     disabled={saving}
                   />
+
+                  {/* Auto Generate Scrape Config via AI */}
+                  {draft.scrapeModeId !== '0' && (
+                    <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-md space-y-2">
+                      <div className="text-xs font-medium text-gray-700">Auto Generate Scrape Config (AI)</div>
+                      <p className="text-[10px] text-gray-500">Enter a product page URL and click Generate. The page will be fetched and sent to OpenAI to auto-detect CSS selectors.</p>
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={testScrapeUrl}
+                          onChange={(e) => { setTestScrapeUrl(e.target.value); setTestBrowserResult(null); }}
+                          className="flex-1 px-2 py-1.5 border rounded-md text-xs font-mono"
+                          placeholder="https://store.com/product-page"
+                          disabled={saving || autoGenLoading}
+                        />
+                        <button
+                          type="button"
+                          disabled={saving || autoGenLoading || !testScrapeUrl.trim()}
+                          onClick={async () => {
+                            setAutoGenLoading(true);
+                            setAutoGenError(null);
+                            try {
+                              const fetchMethod = draft.scrapeHttpEnabled ? 'http' : 'playwright';
+                              const res = await authFetch(`${API_URL}/api/stores/admin/auto-generate-scrape-config`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ url: testScrapeUrl.trim(), method: fetchMethod })
+                              });
+                              if (!res.ok) throw new Error(`Server returned ${res.status}`);
+                              const data = await res.json();
+                              if (data.success && data.scrapeConfig) {
+                                setDraft((p) => ({ ...p, scrapeConfig: data.scrapeConfig }));
+                                setAutoGenError(null);
+                              } else {
+                                setAutoGenError(data.error || 'Failed to generate scrape config.');
+                              }
+                            } catch (e) {
+                              setAutoGenError(e.message || 'Request failed');
+                            } finally {
+                              setAutoGenLoading(false);
+                            }
+                          }}
+                          className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 whitespace-nowrap"
+                        >
+                          {autoGenLoading ? 'Generating…' : 'Generate'}
+                        </button>
+                      </div>
+                      {autoGenError && (
+                        <div className="text-xs text-red-600 bg-red-50 rounded px-2 py-1">{autoGenError}</div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Test Scrape Config — multi-method diagnostic */}
                   {draft.scrapeConfig && draft.scrapeModeId !== '0' && (

@@ -1026,22 +1026,18 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
                 return price;
             }
 
-            var ordered = combos
-                .OrderBy(c => c.Order ?? int.MaxValue)
-                .ThenBy(c => c.ComboDealId)
-                .ToList();
-
-            foreach (var c in ordered)
+            // Sum all coupon/external component discount percentages.
+            var totalDiscount = 0;
+            foreach (var c in combos)
             {
                 if (!componentDealById.TryGetValue(c.ComboDealId, out var comp))
                     continue;
 
-                // Apply percent-off style steps (coupon/external). Ignore direct steps (they define the base URL/price).
-                if (comp.DealTypeId is 2 or 4)
-                    price = ApplyPercentOff(price, comp.DiscountPercent);
+                if (comp.DealTypeId is 2 or 4 && comp.DiscountPercent.HasValue && comp.DiscountPercent.Value > 0)
+                    totalDiscount += comp.DiscountPercent.Value;
             }
 
-            return price;
+            return ApplyPercentOff(price, totalDiscount > 0 ? totalDiscount : (int?)null);
         }
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
@@ -1058,7 +1054,7 @@ public class SupabaseDealRepository : IDealRepository, IStopWordsProvider
 
             var newPrice = dp.Price;
 
-            if (dealType.Value == 2 || dealType.Value == 4)
+            if (dealType.Value is 2 or 4)
             {
                 newPrice = ApplyPercentOff(newDirectPrice, d.DiscountPercent);
             }

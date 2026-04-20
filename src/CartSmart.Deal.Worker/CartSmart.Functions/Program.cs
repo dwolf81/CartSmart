@@ -140,6 +140,11 @@ var host = new HostBuilder()
             maxParallel: 1,
             aiValidator: sp.GetRequiredService<IAiDealValidator>()));
 
+        // Register listing page scraper for HTML store pages
+        services.AddSingleton<IListingPageScraper>(sp =>
+            new ListingPageScraper(
+                sp.GetRequiredService<ILogger<ListingPageScraper>>()));
+
         // ── Deal Ingestion Pipeline ──────────────────────────────────────────
         services.AddSingleton<SupabaseIngestionRepository>();
         services.AddSingleton<IIngestionRepository>(sp => sp.GetRequiredService<SupabaseIngestionRepository>());

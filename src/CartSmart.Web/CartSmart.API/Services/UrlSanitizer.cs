@@ -36,6 +36,18 @@ namespace CartSmart.API.Services
 
         public string? CleanForStore(string? raw, Store store, bool injectAffiliate = true)
         {
+            // If the store uses a URL template (e.g. Awin wrapper), clean the URL
+            // without legacy affiliate injection, then wrap it in the template.
+            var tpl = (store.AffiliateUrlTemplate ?? "").Trim();
+            var hasWrapperTemplate = injectAffiliate &&
+                              !string.IsNullOrEmpty(tpl) &&
+                              (tpl.Contains("{url}") ||
+                               tpl.Contains("{url_encoded}"));
+            var hasParamsTemplate = injectAffiliate &&
+                              !string.IsNullOrEmpty(tpl) &&
+                              !hasWrapperTemplate &&
+                              (tpl.StartsWith("?") || tpl.StartsWith("&"));
+
             // Determine mode based on required_query_vars
             RequiredMode mode;
             HashSet<string>? list = null;
@@ -55,13 +67,39 @@ namespace CartSmart.API.Services
                 mode = list.Count == 0 ? RequiredMode.All : RequiredMode.List;
             }
 
-            return CleanInternal(
+            var cleaned = CleanInternal(
                 raw,
-                injectAffiliate,
+                injectAffiliate: injectAffiliate && !hasWrapperTemplate && !hasParamsTemplate,
                 affiliateParamOverride: store.AffiliateCodeVar,
                 affiliateValueOverride: store.AffiliateCode,
                 requiredList: list,
                 mode: mode);
+
+            if (hasWrapperTemplate && cleaned != null)
+            {
+                return tpl
+                    .Replace("{url_encoded}", Uri.EscapeDataString(cleaned))
+                    .Replace("{url}", cleaned);
+            }
+
+            if (hasParamsTemplate && cleaned != null)
+            {
+                // Parse the template as extra query params and append them to the cleaned URL.
+                var paramStr = tpl.StartsWith("?") ? tpl[1..] : tpl;
+                if (Uri.TryCreate(cleaned, UriKind.Absolute, out var parsedUri))
+                {
+                    var qs = System.Web.HttpUtility.ParseQueryString(parsedUri.Query);
+                    var extra = System.Web.HttpUtility.ParseQueryString(paramStr);
+                    foreach (string? key in extra.AllKeys)
+                    {
+                        if (key != null) qs[key] = extra[key];
+                    }
+                    var builder = new UriBuilder(parsedUri) { Query = qs.ToString() };
+                    return builder.Uri.ToString();
+                }
+            }
+
+            return cleaned;
         }
 
         private HashSet<string> ParseRequired(string? csv)

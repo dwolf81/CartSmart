@@ -7,6 +7,7 @@ namespace CartSmart.API.Models.DTOs
         public string? url { get; set; }
         public string? affiliateCode { get; set; }
         public string? affiliateCodeVar { get; set; }
+        public string? affiliateUrlTemplate { get; set; }
         public int? brandId { get; set; }
         public float? upfrontCost { get; set; }
         public int? upfrontCostTermId { get; set; }
@@ -33,6 +34,7 @@ namespace CartSmart.API.Models.DTOs
         public string? url { get; set; }
         public string? affiliateCode { get; set; }
         public string? affiliateCodeVar { get; set; }
+        public string? affiliateUrlTemplate { get; set; }
         public int? brandId { get; set; }
         public float? upfrontCost { get; set; }
         public int? upfrontCostTermId { get; set; }
@@ -91,6 +93,20 @@ namespace CartSmart.API.Models.DTOs
     public class TestScrapeScreenshotRequestDTO
     {
         public string url { get; set; } = string.Empty;
+    }
+
+    public class AutoGenerateScrapeConfigRequestDTO
+    {
+        public string url { get; set; } = string.Empty;
+        /// <summary>"http" (default) or "playwright"</summary>
+        public string method { get; set; } = "http";
+    }
+
+    public class AutoGenerateScrapeConfigResponseDTO
+    {
+        public bool success { get; set; }
+        public string? error { get; set; }
+        public string? scrapeConfig { get; set; }
     }
 
     // ── Scrape Report DTOs ───────────────────────────────────────────────

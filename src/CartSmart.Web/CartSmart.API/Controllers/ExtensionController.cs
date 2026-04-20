@@ -288,7 +288,9 @@ namespace CartSmart.API.Controllers
                     }
                 }
 
-                // Compute the final price after applying deal discounts
+                // Compute the final price after applying deal discounts.
+                // Base price = direct deal price for the URL (= scraped listing price
+                // when a linked direct deal product exists), otherwise MSRP.
                 dealsMap.TryGetValue(dp.DealId, out var parentDeal);
                 var finalPrice = scrapedPrice;
 
@@ -296,15 +298,26 @@ namespace CartSmart.API.Controllers
                 {
                     var dealType = parentDeal.DealTypeId ?? 1;
 
-                    if (dealType is 2 or 4) // Coupon or External
+                    if (dealType is 2 or 3 or 4) // Coupon, Stacked, or External
                     {
-                        finalPrice = ApplyPercentOff(scrapedPrice, parentDeal.DiscountPercent);
-                        Console.WriteLine($"[Extension] dp.Id={dp.Id}: applying {parentDeal.DiscountPercent}% off to ${scrapedPrice} → ${finalPrice} (deal_type={dealType})");
-                    }
-                    else if (dealType == 3) // Stacked
-                    {
-                        finalPrice = ComputeStackedPrice(scrapedPrice, parentDeal.Id, combosByDeal, componentDealsMap);
-                        Console.WriteLine($"[Extension] dp.Id={dp.Id}: stacked price from ${scrapedPrice} → ${finalPrice}");
+                        // Use scraped price (= direct deal price) when a linked direct
+                        // deal product exists; fall back to MSRP otherwise.
+                        decimal basePrice = scrapedPrice;
+                        if (!dp.OriginalDealProductId.HasValue
+                            && productsMap.TryGetValue(dp.ProductId, out var msrpProd)
+                            && msrpProd.MSRP is > 0)
+                        {
+                            basePrice = (decimal)msrpProd.MSRP.Value;
+                        }
+
+                        if (dealType is 2 or 4)
+                        {
+                            finalPrice = ApplyPercentOff(basePrice, parentDeal.DiscountPercent);
+                        }
+                        else // Stacked
+                        {
+                            finalPrice = ComputeStackedPrice(basePrice, parentDeal.Id, combosByDeal, componentDealsMap);
+                        }
                     }
                 }
 
@@ -555,7 +568,7 @@ namespace CartSmart.API.Controllers
             return Math.Round(basePrice * (1m - percentOff.Value / 100m), 2, MidpointRounding.AwayFromZero);
         }
 
-        /// <summary>Compute the final price for a stacked deal by applying each combo component's discount in order.</summary>
+        /// <summary>Compute the final price for a stacked deal by summing all component discount percentages.</summary>
         private static decimal ComputeStackedPrice(
             decimal listingPrice,
             int stackedDealId,
@@ -565,23 +578,18 @@ namespace CartSmart.API.Controllers
             if (!combosByDeal.TryGetValue(stackedDealId, out var combos) || combos.Count == 0)
                 return listingPrice;
 
-            var price = listingPrice;
-            var ordered = combos
-                .OrderBy(c => c.Order ?? int.MaxValue)
-                .ThenBy(c => c.ComboDealId)
-                .ToList();
-
-            foreach (var combo in ordered)
+            var totalDiscount = 0;
+            foreach (var combo in combos)
             {
                 if (!componentDealsMap.TryGetValue(combo.ComboDealId, out var comp))
                     continue;
 
-                // Apply percent-off for coupon/external components; skip direct components (they define the base)
-                if (comp.DealTypeId is 2 or 4)
-                    price = ApplyPercentOff(price, comp.DiscountPercent);
+                // Sum discount percentages for coupon/external components; skip direct components
+                if (comp.DealTypeId is 2 or 4 && comp.DiscountPercent.HasValue && comp.DiscountPercent.Value > 0)
+                    totalDiscount += comp.DiscountPercent.Value;
             }
 
-            return price;
+            return ApplyPercentOff(listingPrice, totalDiscount > 0 ? totalDiscount : (int?)null);
         }
 
         /// <summary>
