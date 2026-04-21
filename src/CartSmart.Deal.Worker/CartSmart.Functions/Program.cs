@@ -20,9 +20,9 @@ var host = new HostBuilder()
         // When not running via the Functions host, local.settings.json is NOT loaded automatically.
         // To make F5 debugging work, load local.settings.json manually and hydrate environment if needed.
         var supabaseUrl = config["SUPABASE_URL"] ?? Environment.GetEnvironmentVariable("SUPABASE_URL");
-        var supabaseKey = config["SUPABASE_KEY"] ?? Environment.GetEnvironmentVariable("SUPABASE_KEY");
+        var supabaseServiceRoleKey = config["SUPABASE_SERVICE_ROLE_KEY"] ?? Environment.GetEnvironmentVariable("SUPABASE_SERVICE_ROLE_KEY");
 
-        if (string.IsNullOrEmpty(supabaseUrl) || string.IsNullOrEmpty(supabaseKey))
+        if (string.IsNullOrEmpty(supabaseUrl) || string.IsNullOrEmpty(supabaseServiceRoleKey))
         {
             var localSettingsPath = Path.Combine(AppContext.BaseDirectory, "local.settings.json");
             if (File.Exists(localSettingsPath))
@@ -39,11 +39,11 @@ var host = new HostBuilder()
                             if (!string.IsNullOrEmpty(supabaseUrl))
                                 Environment.SetEnvironmentVariable("SUPABASE_URL", supabaseUrl);
                         }
-                        if (string.IsNullOrEmpty(supabaseKey) && values.TryGetProperty("SUPABASE_KEY", out var keyEl))
+                        if (string.IsNullOrEmpty(supabaseServiceRoleKey) && values.TryGetProperty("SUPABASE_SERVICE_ROLE_KEY", out var keyEl))
                         {
-                            supabaseKey = keyEl.GetString();
-                            if (!string.IsNullOrEmpty(supabaseKey))
-                                Environment.SetEnvironmentVariable("SUPABASE_KEY", supabaseKey);
+                            supabaseServiceRoleKey = keyEl.GetString();
+                            if (!string.IsNullOrEmpty(supabaseServiceRoleKey))
+                                Environment.SetEnvironmentVariable("SUPABASE_SERVICE_ROLE_KEY", supabaseServiceRoleKey);
                         }
                     }
                 }
@@ -52,9 +52,13 @@ var host = new HostBuilder()
         }
 
         supabaseUrl ??= string.Empty;
-        supabaseKey ??= string.Empty;
+        supabaseServiceRoleKey ??= string.Empty;
 
-        services.AddSingleton(_ => new Client(supabaseUrl, supabaseKey, new SupabaseOptions
+        if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(supabaseServiceRoleKey))
+            throw new InvalidOperationException("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for worker startup.");
+
+        // Worker always uses service-role so it keeps working when anon/authenticated are fully locked down.
+        services.AddSingleton(_ => new Client(supabaseUrl, supabaseServiceRoleKey, new SupabaseOptions
         {
             AutoConnectRealtime = false
         }));

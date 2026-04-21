@@ -10,46 +10,39 @@ namespace CartSmart.API.Services;
 public class SupabaseService : ISupabaseService
 {
     private readonly Client _supabaseClient;
-    private Client? _serviceRoleClient;
     private readonly string _serviceRoleKey;
     private readonly string _url;
 
     public SupabaseService(IConfiguration configuration)
     {
-        _url = configuration["Supabase:Url"];
-        var apiKey = configuration["Supabase:ApiKey"];
-        _serviceRoleKey = configuration["Supabase:ServiceRole"];
+        _url = configuration["Supabase:Url"]
+            ?? Environment.GetEnvironmentVariable("SUPABASE_URL")
+            ?? string.Empty;
+
+        _serviceRoleKey = configuration["Supabase:ServiceRole"]
+            ?? Environment.GetEnvironmentVariable("SUPABASE_SERVICE_ROLE_KEY")
+            ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(_url))
+            throw new InvalidOperationException("Supabase URL is missing. Configure Supabase:Url or SUPABASE_URL.");
+
+        if (string.IsNullOrWhiteSpace(_serviceRoleKey))
+            throw new InvalidOperationException("Supabase service-role key is missing. Configure Supabase:ServiceRole or SUPABASE_SERVICE_ROLE_KEY.");
 
         var options = new SupabaseOptions
         {
             AutoConnectRealtime = false, // Disable real-time updates
         };
 
-        _supabaseClient = new Client(_url, apiKey, options);
+        // Backend must use service-role so DB access remains valid when anon/authenticated are locked down.
+        _supabaseClient = new Client(_url, _serviceRoleKey, options);
     }
 
     public Client GetClient() => _supabaseClient;
 
     public Client GetServiceRoleClient()
     {
-        if (_serviceRoleClient != null) return _serviceRoleClient;
-
-        // If no service role key is configured, fall back to the normal client.
-        // (Admin endpoints may then be subject to RLS and appear to "not save".)
-        if (string.IsNullOrWhiteSpace(_serviceRoleKey))
-            return _supabaseClient;
-
-        _serviceRoleClient = new Supabase.Client(
-            _url,
-            _serviceRoleKey,
-            new Supabase.SupabaseOptions
-            {
-                AutoRefreshToken = true,
-                AutoConnectRealtime = false
-            }
-        );
-
-        return _serviceRoleClient;
+        return _supabaseClient;
     }
 
     // Fetch all rows from a table (Generic method)
