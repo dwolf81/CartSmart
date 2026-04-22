@@ -93,11 +93,52 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to App Service
+      - name: Wait before deploy
+        run: sleep 20
+
+      - name: Deploy to App Service (attempt 1)
+        id: deploy1
+        continue-on-error: true
         uses: azure/webapps-deploy@v3
         with:
           app-name: cartsmart-site
           package: ./publish
+
+      - name: Retry delay
+        if: steps.deploy1.outcome == 'failure'
+        run: |
+          echo "First deployment attempt failed; waiting before retry..."
+          sleep 45
+
+      - name: Deploy to App Service (attempt 2)
+        id: deploy2
+        if: steps.deploy1.outcome == 'failure'
+        continue-on-error: true
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: cartsmart-site
+          package: ./publish
+
+      - name: Retry delay (final)
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        run: |
+          echo "Second deployment attempt failed; waiting before final retry..."
+          sleep 60
+
+      - name: Deploy to App Service (attempt 3)
+        id: deploy3
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        continue-on-error: true
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: cartsmart-site
+          package: ./publish
+
+      - name: Fail if all deploy attempts failed
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure' && steps.deploy3.outcome == 'failure'
+        run: |
+          echo "❌ Deployment failed after 3 attempts."
+          exit 1
 
       - name: Done
         run: echo "Deployment complete"
