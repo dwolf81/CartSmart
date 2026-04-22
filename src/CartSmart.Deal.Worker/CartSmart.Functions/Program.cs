@@ -12,6 +12,21 @@ var host = new HostBuilder()
     .ConfigureServices((context, services) =>
     {
         var config = context.Configuration;
+        static string? FirstNonEmpty(params string?[] values) =>
+            values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+
+        static string GetLocalSettingsPath(HostBuilderContext hostContext)
+        {
+            var contentRootPath = Path.Combine(hostContext.HostingEnvironment.ContentRootPath, "local.settings.json");
+            if (File.Exists(contentRootPath)) return contentRootPath;
+
+            var cwdPath = Path.Combine(Directory.GetCurrentDirectory(), "local.settings.json");
+            if (File.Exists(cwdPath)) return cwdPath;
+
+            var baseDirPath = Path.Combine(AppContext.BaseDirectory, "local.settings.json");
+            return baseDirPath;
+        }
+
         // Register HTML scraper for price checks (HTTP/AngleSharp only — no Playwright in Functions).
         services.AddSingleton<IHtmlScraper>(sp =>
             new GenericHtmlScraper(
@@ -19,12 +34,18 @@ var host = new HostBuilder()
         // Prefer Functions configuration (local.settings.json Values) over raw environment.
         // When not running via the Functions host, local.settings.json is NOT loaded automatically.
         // To make F5 debugging work, load local.settings.json manually and hydrate environment if needed.
-        var supabaseUrl = config["SUPABASE_URL"] ?? Environment.GetEnvironmentVariable("SUPABASE_URL");
-        var supabaseServiceRoleKey = config["SUPABASE_SERVICE_ROLE_KEY"] ?? Environment.GetEnvironmentVariable("SUPABASE_SERVICE_ROLE_KEY");
+        var supabaseUrl = FirstNonEmpty(
+            Environment.GetEnvironmentVariable("SUPABASE_URL"),
+            config["Values:SUPABASE_URL"],
+            config["SUPABASE_URL"]);
+        var supabaseServiceRoleKey = FirstNonEmpty(
+            Environment.GetEnvironmentVariable("SUPABASE_SERVICE_ROLE_KEY"),
+            config["Values:SUPABASE_SERVICE_ROLE_KEY"],
+            config["SUPABASE_SERVICE_ROLE_KEY"]);
 
         if (string.IsNullOrEmpty(supabaseUrl) || string.IsNullOrEmpty(supabaseServiceRoleKey))
         {
-            var localSettingsPath = Path.Combine(AppContext.BaseDirectory, "local.settings.json");
+            var localSettingsPath = GetLocalSettingsPath(context);
             if (File.Exists(localSettingsPath))
             {
                 try
@@ -53,9 +74,25 @@ var host = new HostBuilder()
 
         supabaseUrl ??= string.Empty;
         supabaseServiceRoleKey ??= string.Empty;
+        supabaseUrl = supabaseUrl.Trim();
+        supabaseServiceRoleKey = supabaseServiceRoleKey.Trim();
 
         if (string.IsNullOrWhiteSpace(supabaseUrl) || string.IsNullOrWhiteSpace(supabaseServiceRoleKey))
             throw new InvalidOperationException("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for worker startup.");
+
+        // Safe startup diagnostics to identify config/source mismatches without logging full secrets.
+        var keyPrefix = supabaseServiceRoleKey.Length >= 12
+            ? supabaseServiceRoleKey[..12]
+            : supabaseServiceRoleKey;
+        var keyKind = supabaseServiceRoleKey.StartsWith("sb_secret_", StringComparison.OrdinalIgnoreCase)
+            ? "secret"
+            : supabaseServiceRoleKey.StartsWith("eyJ", StringComparison.Ordinal)
+                ? "legacy-jwt"
+                : "unknown";
+        var urlHost = Uri.TryCreate(supabaseUrl, UriKind.Absolute, out var supabaseUri)
+            ? supabaseUri.Host
+            : "invalid-url";
+        Console.WriteLine($"[Startup] Supabase URL host={urlHost}, keyKind={keyKind}, keyPrefix={keyPrefix}, keyLength={supabaseServiceRoleKey.Length}");
 
         // Worker always uses service-role so it keeps working when anon/authenticated are fully locked down.
         services.AddSingleton(_ => new Client(supabaseUrl, supabaseServiceRoleKey, new SupabaseOptions
@@ -77,7 +114,7 @@ var host = new HostBuilder()
         // Fallback to local.settings.json Values for dev
         if (string.IsNullOrEmpty(ebayClientId) || string.IsNullOrEmpty(ebayClientSecret))
         {
-            var localSettingsPath = Path.Combine(AppContext.BaseDirectory, "local.settings.json");
+            var localSettingsPath = GetLocalSettingsPath(context);
             if (File.Exists(localSettingsPath))
             {
                 try

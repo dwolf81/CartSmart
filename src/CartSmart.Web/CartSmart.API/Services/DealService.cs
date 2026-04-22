@@ -436,6 +436,7 @@ public class DealService : IDealService
         // You may need a new RPC or query to get deals submitted by this user
         var allSubmittedDeals = await client
             .Rpc<List<DealDisplayDTO>>("f_get_deals_review", new { p_user_id = userId, p_mode = "Submitted" });
+        allSubmittedDeals ??= new List<DealDisplayDTO>();
 
         var totalCount = allSubmittedDeals.Count;
         var pagedDeals = allSubmittedDeals
@@ -535,7 +536,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
 
     return clone;
 }
-    public async Task<PagedDealsResultDTO<DealDisplayDTO>> GetDealsByProductAsync(int productId, int? conditionId = null, List<int> dealTypeId = null, int? userId = null, int page = 1, int pageSize = 5)
+    public async Task<PagedDealsResultDTO<DealDisplayDTO>> GetDealsByProductAsync(int productId, int? conditionId = null, List<int>? dealTypeId = null, int? userId = null, int page = 1, int pageSize = 5)
     {
         var currentUserId = _authService.GetCurrentUserId();
 
@@ -547,6 +548,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                 p_product_id = productId,
                 p_user_id = userId,
             });
+        productDeals ??= new List<DealDisplayDTO>();
 
         if (conditionId.HasValue)
         {
@@ -932,7 +934,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
                 p_user_id = userId,
             });
 
-        return dealsWithUsers;
+        return dealsWithUsers ?? Enumerable.Empty<DealDisplayDTO>();
     }
 
 
@@ -988,6 +990,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         // Get all deals not reviewed by user (could be optimized with a paged RPC)
         var allDeals = await client
             .Rpc<List<DealDisplayDTO>>("f_get_deals_review", new { p_user_id = userId, p_mode = "Not Reviewed" });
+        allDeals ??= new List<DealDisplayDTO>();
 
         var totalCount = allDeals.Count;
         var pagedDeals = allDeals
@@ -1009,6 +1012,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         // You may need a new RPC or query to get deals reviewed by this user
         var allReviewedDeals = await client
              .Rpc<List<DealDisplayDTO>>("f_get_deals_review", new { p_user_id = userId, p_mode = "Reviewed" });
+        allReviewedDeals ??= new List<DealDisplayDTO>();
 
         var totalCount = allReviewedDeals.Count;
         var pagedDeals = allReviewedDeals
@@ -1040,7 +1044,8 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
     public async Task<Deal> CreateDealAsync(DealProductDTO dto)
     {
         var userId = _authService.GetCurrentUserId();
-        if (userId == null) return null;
+        if (userId == null)
+            throw new UnauthorizedAccessException("Authentication required to create a deal.");
        
 
         await EnforceDailySubmissionLimitAsync(Convert.ToInt32(userId));
@@ -1981,7 +1986,7 @@ private static DealDisplayDTO SanitizeDealForAnonymous(DealDisplayDTO d)
         if (user?.Admin == true) return;
 
         // Get user trust-based limit
-        var score = user.Level;
+        var score = user?.Level ?? 0;
         var limit = GetDailyLimitForScore(score);
 
         // Count today's submissions (UTC)

@@ -27,16 +27,16 @@ namespace CartSmart.API.Models.DTOs
 
     public class DealDisplayDTO
     {
-        public string url { get; set; }
-        public string additional_details { get; set; }
-        public string condition_name { get; set; }
+        public string? url { get; set; }
+        public string? additional_details { get; set; }
+        public string? condition_name { get; set; }
         public long? condition_id { get; set; }
         public float? price { get; set; }
         public int? level { get; set; } // User level
-        public string user_name { get; set; } // User name
-        public string display_name { get; set; } // Display name
-        public string slug { get; set; } // Product slug
-        public string product_name { get; set; } // Product name
+        public string? user_name { get; set; } // User name
+        public string? display_name { get; set; } // Display name
+        public string? slug { get; set; } // Product slug
+        public string? product_name { get; set; } // Product name
         public long deal_id { get; set; } // Deal ID
         public long? product_id { get; set; } // Product ID (null for store-wide deals)
         public long? store_id { get; set; } // Store ID
@@ -51,13 +51,13 @@ namespace CartSmart.API.Models.DTOs
         public float? discount_percent { get; set; } // Calculated discount percent
         public string? product_image_url { get; set; } // Product name
         public float? msrp { get; set; } // msrp amount
-        public string brand_name { get; set; } // Brand name
+        public string? brand_name { get; set; } // Brand name
         public string? user_image_url { get; set; } // User image URL
         public string? deal_type_name { get; set; } // deal type name
         public string? coupon_code { get; set; } // deal type name
         public bool? free_shipping { get; set; } // Free Shipping
         public int? deal_status_id { get; set; }
-        public string deal_status_name { get; set; } // deal status name
+        public string? deal_status_name { get; set; } // deal status name
         public int? deal_type_id { get; set; }
         public DateTime created_at { get; set; }
         public DateTime? expiration_date { get; set; }

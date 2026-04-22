@@ -56,14 +56,14 @@ public class SupabaseService : ISupabaseService
     public async Task<T> InsertAsync<T>(T model) where T : BaseModel, new()
     {
         var response = await _supabaseClient.From<T>().Insert(model);
-        return response.Models.FirstOrDefault();
+        return response.Models.FirstOrDefault()!;
     }
 
     // Update an existing row
     public async Task<T> UpdateAsync<T>(T model) where T : BaseModel, new()
     {
         var response = await _supabaseClient.From<T>().Update(model);
-        return response.Models.FirstOrDefault();
+        return response.Models.FirstOrDefault()!;
     }
     
     // Delete a row from a table

@@ -34,7 +34,7 @@ namespace CartSmart.API.Controllers
 
         [HttpGet("product/{productId}")]
         [AllowAnonymous]
-        public async Task<ActionResult<IEnumerable<DealNav>>> GetProductDeals(int productId, [FromQuery] int? conditionId = null, [FromQuery] List<int> dealTypeId = null, [FromQuery] int? userId = null,[FromQuery] int page = 1, [FromQuery] int pageSize = 5)
+        public async Task<ActionResult<IEnumerable<DealNav>>> GetProductDeals(int productId, [FromQuery] int? conditionId = null, [FromQuery] List<int>? dealTypeId = null, [FromQuery] int? userId = null,[FromQuery] int page = 1, [FromQuery] int pageSize = 5)
         {
             return Ok(await _dealService.GetDealsByProductAsync(productId, conditionId, dealTypeId, userId, page, pageSize));
         }
@@ -148,6 +148,9 @@ namespace CartSmart.API.Controllers
                     }
                     await _dealService.CreateDealComboAsync(dealCombos);
                 }
+
+                if (createdDeal == null)
+                    return StatusCode(500, new { message = "Deal creation returned null." });
 
                 return CreatedAtAction(nameof(GetDealProduct), new { id = createdDeal.Id }, createdDeal);
             }
@@ -286,7 +289,7 @@ namespace CartSmart.API.Controllers
                     .Filter("id", Operator.In, productIds.Select(id => (object)id.ToString()).ToArray())
                     .Get();
                 foreach (var p in prodResp.Models)
-                    products[p.Id] = p.Name;
+                    products[p.Id] = p.Name ?? string.Empty;
             }
             if (storeIds.Count > 0)
             {
@@ -294,7 +297,7 @@ namespace CartSmart.API.Controllers
                     .Filter("id", Operator.In, storeIds.Select(id => (object)id.ToString()).ToArray())
                     .Get();
                 foreach (var s in storeResp.Models)
-                    stores[s.Id] = s.Name;
+                    stores[s.Id] = s.Name ?? string.Empty;
             }
 
             var items = page_items.Select(d =>
