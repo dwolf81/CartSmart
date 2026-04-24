@@ -86,7 +86,7 @@ public class EmailSignalSourceProvider : ISignalSourceProvider
             // Exchange refresh token for access token
             var accessToken = await GetGmailAccessTokenAsync(config, ct);
             if (string.IsNullOrWhiteSpace(accessToken))
-                return [];
+                throw new InvalidOperationException($"Gmail source {source.Id} token exchange returned no access token.");
 
             // Build Gmail list query
             var labelIds = config.LabelIds ?? ["INBOX"];
@@ -107,8 +107,9 @@ public class EmailSignalSourceProvider : ISignalSourceProvider
             using var listResp = await _http.SendAsync(listReq, ct);
             if (!listResp.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Gmail list for source {SourceId} returned {Status}", source.Id, listResp.StatusCode);
-                return [];
+                var errBody = await listResp.Content.ReadAsStringAsync(ct);
+                throw new InvalidOperationException(
+                    $"Gmail list failed for source {source.Id}: {(int)listResp.StatusCode} {listResp.StatusCode}. Body: {errBody}");
             }
 
             var listJson = await listResp.Content.ReadAsStringAsync(ct);
@@ -179,7 +180,7 @@ public class EmailSignalSourceProvider : ISignalSourceProvider
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to collect Gmail for source {SourceId}", source.Id);
-            return [];
+            throw;
         }
     }
 
@@ -280,8 +281,9 @@ public class EmailSignalSourceProvider : ISignalSourceProvider
             using var tokenResp = await _http.PostAsync("https://oauth2.googleapis.com/token", tokenBody, ct);
             if (!tokenResp.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Gmail token exchange failed: {Status}", tokenResp.StatusCode);
-                return null;
+                var errBody = await tokenResp.Content.ReadAsStringAsync(ct);
+                throw new InvalidOperationException(
+                    $"Gmail token exchange failed: {(int)tokenResp.StatusCode} {tokenResp.StatusCode}. Body: {errBody}");
             }
 
             var tokenJson = await tokenResp.Content.ReadAsStringAsync(ct);

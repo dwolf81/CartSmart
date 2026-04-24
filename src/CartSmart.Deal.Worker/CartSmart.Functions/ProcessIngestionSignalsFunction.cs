@@ -26,7 +26,7 @@ public class ProcessIngestionSignalsFunction
     }
 
     [Function("ProcessIngestionSignals")]
-    public async Task Run([TimerTrigger("0 */5 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
+    public async Task Run([TimerTrigger("0 */60 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
     {
         var batchSize = int.TryParse(_config["Values:IngestionProcessBatchSize"] ?? _config["IngestionProcessBatchSize"], out var b) ? b : 20;
 

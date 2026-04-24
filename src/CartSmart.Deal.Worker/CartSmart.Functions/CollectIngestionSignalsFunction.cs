@@ -21,7 +21,7 @@ public class CollectIngestionSignalsFunction
     }
 
     [Function("CollectIngestionSignals")]
-    public async Task Run([TimerTrigger("0 */5 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
+    public async Task Run([TimerTrigger("0 */60 * * * *", UseMonitor = true)] TimerInfo timerInfo, CancellationToken ct)
     {
         _logger.LogInformation("CollectIngestionSignals started at {Time}", DateTime.UtcNow);
         var result = await _orchestrator.CollectSignalsAsync(ct);
