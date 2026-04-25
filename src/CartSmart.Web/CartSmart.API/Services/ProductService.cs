@@ -13,6 +13,7 @@ public class ProductService : IProductService
     private readonly IMemoryCache _cache;
     private static readonly TimeSpan BestDealsTtl = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan ProductTtl = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan PriceHistoryTtl = TimeSpan.FromMinutes(10);
 
     [Table("product")]
     private class ProductIdBrandRow : BaseModel
@@ -282,6 +283,260 @@ public class ProductService : IProductService
             rating = r.Rating
         });
         return filtered;
+    }
+
+    public async Task<ProductPriceHistoryDTO> GetProductPriceHistoryAsync(
+        int productId,
+        int? storeId = null,
+        int? dealTypeId = null,
+        int? conditionId = null,
+        List<ProductAttributeFilterDTO>? attributeFilters = null)
+    {
+        var normalizedAttributeFilters = (attributeFilters ?? new List<ProductAttributeFilterDTO>())
+            .Where(f => f != null && f.AttributeId > 0 && f.EnumValueIds != null && f.EnumValueIds.Count > 0)
+            .Select(f => new ProductAttributeFilterDTO
+            {
+                AttributeId = f.AttributeId,
+                EnumValueIds = f.EnumValueIds.Where(v => v > 0).Distinct().OrderBy(v => v).ToList()
+            })
+            .Where(f => f.EnumValueIds.Count > 0)
+            .OrderBy(f => f.AttributeId)
+            .ToList();
+
+        var attributeFilterKey = normalizedAttributeFilters.Count == 0
+            ? "none"
+            : string.Join(";", normalizedAttributeFilters.Select(f => $"{f.AttributeId}:{string.Join(",", f.EnumValueIds)}"));
+
+        var cacheKey = $"product:price-history:v3:{productId}:store:{storeId?.ToString() ?? "all"}:dealType:{dealTypeId?.ToString() ?? "all"}:condition:{conditionId?.ToString() ?? "all"}:attrs:{attributeFilterKey}";
+        if (_cache.TryGetValue(cacheKey, out ProductPriceHistoryDTO cached)) return cached;
+
+        var historyStatusIds = new HashSet<int> { 2, 6, 7, 8 };
+        const int currentStatusId = 2;
+
+        var client = _supabase.GetServiceRoleClient();
+        var dealProductsQuery = client
+            .From<DealProduct>()
+            .Select("id, product_id, price, deleted, condition_id, deal_status_id, deal_id, product_variant_id, item_count")
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString());
+
+        if (conditionId.HasValue)
+            dealProductsQuery = dealProductsQuery.Filter("condition_id", Supabase.Postgrest.Constants.Operator.Equals, conditionId.Value.ToString());
+
+        var dealProductsResp = await dealProductsQuery.Get();
+
+        var dealProducts = dealProductsResp.Models ?? new List<DealProduct>();
+
+        if (normalizedAttributeFilters.Count > 0)
+        {
+            var attributeIdObjects = normalizedAttributeFilters
+                .Select(f => (object)f.AttributeId)
+                .Distinct()
+                .ToList();
+
+            var variantAttrResp = await client
+                .From<ProductVariantAttribute>()
+                .Select("product_variant_id,attribute_id,enum_value_id")
+                .Filter("attribute_id", Supabase.Postgrest.Constants.Operator.In, attributeIdObjects)
+                .Get();
+
+            var variantRows = variantAttrResp.Models ?? new List<ProductVariantAttribute>();
+            var rowsByVariant = variantRows
+                .Where(row => row.EnumValueId.HasValue && row.EnumValueId.Value > 0)
+                .GroupBy(row => row.ProductVariantId)
+                .ToDictionary(group => group.Key, group => group.ToList());
+
+            var matchingVariantIds = rowsByVariant
+                .Where(kvp =>
+                {
+                    var rows = kvp.Value;
+                    return normalizedAttributeFilters.All(filter =>
+                        rows.Any(row => row.AttributeId == filter.AttributeId && row.EnumValueId.HasValue && filter.EnumValueIds.Contains(row.EnumValueId.Value)));
+                })
+                .Select(kvp => kvp.Key)
+                .ToHashSet();
+
+            dealProducts = dealProducts
+                .Where(dp => dp.ProductVariantId.HasValue && matchingVariantIds.Contains(dp.ProductVariantId.Value))
+                .ToList();
+        }
+
+        if (storeId.HasValue || dealTypeId.HasValue)
+        {
+            var dealIds = dealProducts
+                .Select(dp => dp.DealId)
+                .Where(id => id > 0)
+                .Distinct()
+                .Cast<object>()
+                .ToList();
+
+            if (dealIds.Count == 0)
+            {
+                var empty = new ProductPriceHistoryDTO();
+                _cache.Set(cacheKey, empty, PriceHistoryTtl);
+                return empty;
+            }
+
+            var dealsResp = await client
+                .From<Deal>()
+                .Select("id, store_id, deal_type_id")
+                .Filter("id", Supabase.Postgrest.Constants.Operator.In, dealIds)
+                .Get();
+
+            var matchingDealIds = (dealsResp.Models ?? new List<Deal>())
+                .Where(d => (!storeId.HasValue || d.StoreId == storeId.Value)
+                    && (!dealTypeId.HasValue || d.DealTypeId == dealTypeId.Value))
+                .Select(d => d.Id)
+                .ToHashSet();
+
+            dealProducts = dealProducts
+                .Where(dp => matchingDealIds.Contains(dp.DealId))
+                .ToList();
+        }
+
+        // History series includes approved + review/hold-like statuses.
+        dealProducts = dealProducts
+            .Where(dp => historyStatusIds.Contains(dp.DealStatusId))
+            .ToList();
+
+        // Include all deal_products (even inactive) for mapping history buckets,
+        // but only use active, non-deleted ones for today's current price.
+        var bucketByDealProductId = dealProducts
+            .Select(dp => new { DealProductId = dp.Id, Bucket = MapPriceHistoryBucket(dp.ConditionId) })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Bucket))
+            .ToDictionary(x => x.DealProductId, x => x.Bucket!);
+
+        // Per-item count for each deal_product — used to normalize prices to per-item
+        var itemCountById = dealProducts
+            .ToDictionary(dp => dp.Id, dp => Math.Max(dp.ItemCount, 1));
+
+        if (bucketByDealProductId.Count == 0)
+        {
+            var empty = new ProductPriceHistoryDTO();
+            _cache.Set(cacheKey, empty, PriceHistoryTtl);
+            return empty;
+        }
+
+        var historyResp = await client
+            .From<DealProductPriceHistory>()
+            .Select("deal_product_id, price, changed_at")
+            .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.In, bucketByDealProductId.Keys.Cast<object>().ToList())
+            .Order("changed_at", Supabase.Postgrest.Constants.Ordering.Ascending)
+            .Get();
+
+        var histories = historyResp.Models ?? new List<DealProductPriceHistory>();
+        var dailyPriceByBucket = new Dictionary<string, SortedDictionary<DateTime, decimal>>(StringComparer.OrdinalIgnoreCase);
+
+        // Carry forward last known per-item price for each deal_product so daily minima are
+        // computed across all tracked rows, not only those that changed on that day.
+        var latestByBucketDealProduct = new Dictionary<string, Dictionary<int, decimal>>(StringComparer.OrdinalIgnoreCase);
+
+        var normalizedEvents = histories
+            .Where(h => h.Price > 0 && bucketByDealProductId.ContainsKey(h.DealProductId))
+            .Select(h =>
+            {
+                var itemCount = itemCountById.TryGetValue(h.DealProductId, out var ic) ? Math.Max(ic, 1) : 1;
+                return new
+                {
+                    DealProductId = h.DealProductId,
+                    Bucket = bucketByDealProductId[h.DealProductId],
+                    ChangedAt = DateTime.SpecifyKind(h.ChangedAt, DateTimeKind.Utc),
+                    NormalizedPrice = h.Price / itemCount
+                };
+            })
+            .OrderBy(h => h.ChangedAt)
+            .ToList();
+
+        foreach (var dateGroup in normalizedEvents.GroupBy(e => e.ChangedAt.Date))
+        {
+            foreach (var ev in dateGroup)
+            {
+                if (!latestByBucketDealProduct.TryGetValue(ev.Bucket, out var latestForBucket))
+                {
+                    latestForBucket = new Dictionary<int, decimal>();
+                    latestByBucketDealProduct[ev.Bucket] = latestForBucket;
+                }
+
+                latestForBucket[ev.DealProductId] = ev.NormalizedPrice;
+            }
+
+            foreach (var bucketEntry in latestByBucketDealProduct)
+            {
+                var bucket = bucketEntry.Key;
+                var latestForBucket = bucketEntry.Value;
+                if (latestForBucket.Count == 0) continue;
+
+                if (!dailyPriceByBucket.TryGetValue(bucket, out var bucketPoints))
+                {
+                    bucketPoints = new SortedDictionary<DateTime, decimal>();
+                    dailyPriceByBucket[bucket] = bucketPoints;
+                }
+
+                bucketPoints[dateGroup.Key] = latestForBucket.Values.Min();
+            }
+        }
+
+        var today = DateTime.UtcNow.Date;
+        foreach (var currentGroup in dealProducts
+            .Where(dp => !dp.Deleted && dp.DealStatusId == currentStatusId && dp.Price > 0)
+            .Select(dp => new { DealProduct = dp, Bucket = MapPriceHistoryBucket(dp.ConditionId) })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Bucket))
+            .GroupBy(x => x.Bucket!, StringComparer.OrdinalIgnoreCase))
+        {
+            var currentLow = currentGroup.Min(x => x.DealProduct.Price / Math.Max(x.DealProduct.ItemCount, 1));
+            if (!dailyPriceByBucket.TryGetValue(currentGroup.Key, out var bucketPoints))
+            {
+                bucketPoints = new SortedDictionary<DateTime, decimal>();
+                dailyPriceByBucket[currentGroup.Key] = bucketPoints;
+            }
+
+            // Today's point should reflect the live active deals aggregate, not whichever history row happened to exist today.
+            bucketPoints[today] = currentLow;
+        }
+
+        var dto = new ProductPriceHistoryDTO();
+        foreach (var bucket in new[] { "new", "used" })
+        {
+            if (!dailyPriceByBucket.TryGetValue(bucket, out var bucketPoints) || bucketPoints.Count == 0)
+                continue;
+
+            var trimmedPoints = bucketPoints
+                .TakeLast(120)
+                .Select(point => new ProductPriceHistoryPointDTO
+                {
+                    Date = point.Key,
+                    Price = decimal.Round(point.Value, 2)
+                })
+                .ToList();
+
+            dto.Series.Add(new ProductPriceHistorySeriesDTO
+            {
+                Key = bucket,
+                Label = bucket.Equals("new", StringComparison.OrdinalIgnoreCase) ? "New" : "Used",
+                CurrentPrice = trimmedPoints.Last().Price,
+                LowestPrice = trimmedPoints.Min(point => point.Price),
+                Points = trimmedPoints
+            });
+        }
+
+        if (dto.Series.Count > 0)
+        {
+            dto.StartDate = dto.Series.SelectMany(series => series.Points).Min(point => point.Date);
+            dto.EndDate = dto.Series.SelectMany(series => series.Points).Max(point => point.Date);
+        }
+
+        _cache.Set(cacheKey, dto, PriceHistoryTtl);
+        return dto;
+    }
+
+    private static string? MapPriceHistoryBucket(int? conditionId)
+    {
+        return conditionId switch
+        {
+            1 => "new",
+            2 => "used",
+            3 => "used",
+            _ => null
+        };
     }
 
     public async Task<VariantFilterOptionsDTO> GetVariantFilterOptionsAsync(int productId)

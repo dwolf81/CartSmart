@@ -16,6 +16,12 @@ namespace CartSmart.API.Services
         Task<IEnumerable<CategoryProductCardDTO>> GetCategoryProductsAsync(string productType, int? brandId = null);
         Task<IEnumerable<BrandDTO>> GetCategoryBrandsAsync(string productType);
         Task<IEnumerable<object>> GetProductRatingsAsync(int productId);
+        Task<ProductPriceHistoryDTO> GetProductPriceHistoryAsync(
+            int productId,
+            int? storeId = null,
+            int? dealTypeId = null,
+            int? conditionId = null,
+            List<ProductAttributeFilterDTO>? attributeFilters = null);
 
         Task<VariantFilterOptionsDTO> GetVariantFilterOptionsAsync(int productId);
     }

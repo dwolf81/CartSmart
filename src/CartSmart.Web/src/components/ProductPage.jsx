@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 // import { useTermsConsent } from '../context/TermsConsentContext';
 import LoadingSpinner from './LoadingSpinner';
 import RatingSourcesModal from './RatingSourcesModal';
+import ProductPriceHistoryCard from './ProductPriceHistoryCard';
 import { FaTag, FaTicketAlt, FaLink, FaLayerGroup, FaFlag, FaPlus, FaQuestionCircle } from 'react-icons/fa';
 import { Flag } from "lucide-react";
 import { useScrollLock } from '../hooks/useScrollLock';
@@ -77,6 +78,7 @@ const ProductPage = () => {
   const { getProductBySlug } = useProducts();
   const { isAuthenticated, user, authFetch } = useAuth();
   const isAdmin = isAuthenticated && !!user?.admin;
+  const canStackDeals = isAdmin || (isAuthenticated && !!user?.allow_review);
   // Terms consent gating removed; actions proceed directly
 
   const storeIdFromQuery = useMemo(() => {
@@ -119,6 +121,10 @@ const ProductPage = () => {
   const [dealsLoading, setDealsLoading] = useState(true);
   const [isRatingModalOpen, setIsRatingModalOpen] = useState(false);
   const [ratingSources, setRatingSources] = useState([]);
+  const [priceHistory, setPriceHistory] = useState(null);
+  const [priceHistoryLoading, setPriceHistoryLoading] = useState(false);
+  const [priceHistoryError, setPriceHistoryError] = useState(null);
+  const [priceHistoryExpanded, setPriceHistoryExpanded] = useState(false);
   const [isImageOpen, setIsImageOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [isFlagModalOpen, setIsFlagModalOpen] = useState(false);
@@ -527,6 +533,57 @@ const ProductPage = () => {
     };
     fetchRatings();
   }, [product]);
+
+  useEffect(() => {
+    setPriceHistoryExpanded(false);
+  }, [product?.id]);
+
+  useEffect(() => {
+    if (!product?.id) {
+      setPriceHistory(null);
+      setPriceHistoryLoading(false);
+      setPriceHistoryError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const fetchPriceHistory = async () => {
+      try {
+        setPriceHistoryLoading(true);
+        setPriceHistoryError(null);
+        const body = {
+          storeId: dealFilters.storeId ?? null,
+          dealTypeId: dealFilters.dealTypeId ?? null,
+          conditionId: dealFilters.conditionId ?? null,
+          attributeFilters: buildAttributeFiltersPayload(appliedVariantFilterSelections)
+        };
+
+        const response = await fetch(`${API_URL}/api/products/${product.id}/price-history`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) throw new Error('Failed to fetch price history');
+        const data = await response.json();
+        if (cancelled) return;
+        setPriceHistory(data);
+      } catch (err) {
+        console.error('Error fetching price history:', err);
+        if (cancelled) return;
+        setPriceHistory(null);
+        setPriceHistoryError(err.message || 'Failed to load price history');
+      } finally {
+        if (cancelled) return;
+        setPriceHistoryLoading(false);
+      }
+    };
+
+    fetchPriceHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [product?.id, dealFilters.storeId, dealFilters.dealTypeId, dealFilters.conditionId, appliedAttributeFiltersKey]);
 
   // (Removed old placeholder "dynamic product attribute filters" test data in favor of variant-based More panel.)
 
@@ -1049,7 +1106,7 @@ const ProductPage = () => {
       const effectivePrice = (r) => {
         const p = Number(r?.price);
         if (!Number.isFinite(p)) return Infinity;
-        const countEnabled = !!r?.count_enabled;
+        const countEnabled = !!r?.count_enabled || !!product?.countEnabled;
         const itemCount = Number(r?.item_count) || 1;
         return countEnabled && itemCount > 0 ? p / itemCount : p;
       };
@@ -1194,7 +1251,7 @@ const ProductPage = () => {
     if (row?.condition_name) parts.push(row.condition_name);
     if (row?.price != null) {
       const rowItemCount = Number(row?.item_count) || 1;
-      const rowCountEnabled = !!row?.count_enabled;
+      const rowCountEnabled = !!row?.count_enabled || !!product?.countEnabled;
       if (rowCountEnabled && rowItemCount > 1) {
         parts.push(`${formatPrice(Number(row.price) / rowItemCount)}/ea (${formatPrice(row.price)} for ${rowItemCount})`);
       } else {
@@ -1554,14 +1611,9 @@ const ProductPage = () => {
                 <span>Beat the Price</span>
                 <span className="hidden md:inline-flex text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
               </button>
+              {canStackDeals && (
               <button
-                onClick={() => {
-                  if (!isAuthenticated) {
-                    navigate(`/login?redirect=${encodeURIComponent(window.location.pathname)}`);
-                    return;
-                  }
-                  setIsComboModalOpen(true);
-                }}
+                onClick={() => setIsComboModalOpen(true)}
                 className="flex-1 bg-blue-600 text-white px-4 py-3 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center space-x-2"
                 title="Stack multiple deals (coupon + sale + external, etc.) to unlock an even lower final price and earn points."
               >
@@ -1569,6 +1621,7 @@ const ProductPage = () => {
                 <span>Stack Deals</span>
                 <span className="hidden md:inline-flex text-xs bg-white/15 px-2 py-0.5 rounded-full">Earn rewards</span>
               </button>
+              )}
               </div>
             </div>
 
@@ -1895,6 +1948,20 @@ const ProductPage = () => {
               </div>
             )}
 
+            {!initialLoading && collapsedStoreDeals.length > 0 && (
+              <ProductPriceHistoryCard
+                history={priceHistory}
+                loading={priceHistoryLoading}
+                error={priceHistoryError}
+                countEnabled={!!product?.countEnabled}
+                defaultCount={product?.defaultCount ?? 1}
+                msrp={product?.msrp}
+                collapsible
+                expanded={priceHistoryExpanded}
+                onExpandedChange={setPriceHistoryExpanded}
+              />
+            )}
+
             {/* Deals List */}
             <h2 className="text-xl font-bold mb-6">Lowest Price Possible</h2>
             {initialLoading ? (
@@ -1984,7 +2051,7 @@ const ProductPage = () => {
                               const ENABLE_ANON_OBFUSCATION = false;
                               const shouldObfuscate = ENABLE_ANON_OBFUSCATION && !isAuthenticated && isExpanded && rawIndex > 0;
                               // Per-item pricing
-                              const dealCountEnabled = !!deal.count_enabled;
+                              const dealCountEnabled = !!deal.count_enabled || !!product?.countEnabled;
                               const dealItemCount = Number(deal.item_count) || 1;
                               // For count-enabled products, use the representative's price (best per-item)
                               // rather than lowestPrice (lowest total) to keep item_count consistent.

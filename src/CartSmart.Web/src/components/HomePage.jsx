@@ -96,7 +96,8 @@ useEffect(() => {
               The Lowest Price Possible on Golf Equipment.
             </h1>
             <p className="text-xl md:text-2xl mb-8">
-           CartSmart evaluates every legitimate way to save — retail pricing, pre-owned, coupons and third party offers — and shows golfers the lowest real cost.
+              Stop checking five different sites. We track retail, used, and deals to show you the best price in one place.
+           {/*CartSmart evaluates every legitimate way to save — retail pricing, pre-owned, coupons and third party offers — and shows golfers the lowest real cost.
                 {/*Deal hunters compete to find you the cheapest way to get your favorite products.*/}
                  {/*Don’t hunt deals — CartSmart builds the deal for you.*/}
             </p>

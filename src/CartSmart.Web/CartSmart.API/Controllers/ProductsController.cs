@@ -573,6 +573,34 @@ namespace CartSmart.API.Controllers
             return Ok(ratings);
         }
 
+        [HttpGet("{productId}/price-history")]
+        [AllowAnonymous]
+        public async Task<ActionResult<ProductPriceHistoryDTO>> GetProductPriceHistory(
+            int productId,
+            [FromQuery] int? storeId = null,
+            [FromQuery] int? dealTypeId = null,
+            [FromQuery] int? conditionId = null)
+        {
+            var dto = await _productService.GetProductPriceHistoryAsync(productId, storeId, dealTypeId, conditionId);
+            return Ok(dto);
+        }
+
+        [HttpPost("{productId}/price-history")]
+        [AllowAnonymous]
+        public async Task<ActionResult<ProductPriceHistoryDTO>> GetProductPriceHistoryPost(
+            int productId,
+            [FromBody] GetProductDeals2RequestDTO? request)
+        {
+            request ??= new GetProductDeals2RequestDTO();
+            var dto = await _productService.GetProductPriceHistoryAsync(
+                productId,
+                request.StoreId.HasValue ? (int?)request.StoreId.Value : null,
+                request.DealTypeId,
+                request.ConditionId,
+                request.AttributeFilters);
+            return Ok(dto);
+        }
+
         [HttpGet("{productId}/variant-filters")]
         [AllowAnonymous]
         public async Task<ActionResult<VariantFilterOptionsDTO>> GetVariantFilters(int productId)
