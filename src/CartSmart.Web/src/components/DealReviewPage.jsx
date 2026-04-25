@@ -131,7 +131,8 @@ const DealReviewPage = () => {
   const [rejectReasonId, setRejectReasonId] = useState(null);
   const itemsPerPage = 10;
 
-  const { isAuthenticated, loading } = useAuth();
+  const { user, isAuthenticated, loading } = useAuth();
+  const isAdmin = isAuthenticated && !!user?.admin;
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -142,7 +143,15 @@ const DealReviewPage = () => {
     if (!isAuthenticated) return;
     fetchPagedDeals();
     fetchCounts();
-  }, [isAuthenticated, activeTab, currentPage]);
+  }, [isAuthenticated, activeTab, currentPage, isAdmin]);
+
+  useEffect(() => {
+    // Keep non-admin users out of the ingested queue view.
+    if (activeTab === 'ingested' && !isAdmin) {
+      setActiveTab('1');
+      setCurrentPage(1);
+    }
+  }, [activeTab, isAdmin]);
 
   if (loading) return <LoadingSpinner />;
 
@@ -180,7 +189,7 @@ const DealReviewPage = () => {
       else if (activeTab === '5') {
         endpoint = `/api/deals/reviewed?page=${currentPage}&pageSize=${itemsPerPage}`;
       }
-      else if (activeTab === 'ingested') {
+      else if (activeTab === 'ingested' && isAdmin) {
         endpoint = `/api/deals/ingested-queue?page=${currentPage}&pageSize=${itemsPerPage}`;
       }
       else {
@@ -211,9 +220,13 @@ const DealReviewPage = () => {
       const reviewedData = await reviewedRes.json();
       setReviewedCount(reviewedData.totalCount || 0);
 
-      const ingestedRes = await fetch(`${API_URL}/api/deals/ingested-queue?page=1&pageSize=1`, { credentials: 'include' });
-      const ingestedData = await ingestedRes.json();
-      setIngestedCount(ingestedData.totalCount || 0);
+      if (isAdmin) {
+        const ingestedRes = await fetch(`${API_URL}/api/deals/ingested-queue?page=1&pageSize=1`, { credentials: 'include' });
+        const ingestedData = await ingestedRes.json();
+        setIngestedCount(ingestedData.totalCount || 0);
+      } else {
+        setIngestedCount(0);
+      }
     } catch (err) {
       setPendingCount(0);
       setReviewedCount(0);
@@ -945,16 +958,18 @@ const ConfidenceBadge = ({ score }) => {
         >
           Deals I Reviewed ({reviewedCount})
         </button>
-        <button
-          className={`px-6 py-3 text-lg font-medium ${
-            activeTab === 'ingested'
-              ? 'border-b-2 border-blue-500 text-blue-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => { setActiveTab('ingested'); setCurrentPage(1); }}
-        >
-          Ingested Deals ({ingestedCount})
-        </button>
+        {isAdmin && (
+          <button
+            className={`px-6 py-3 text-lg font-medium ${
+              activeTab === 'ingested'
+                ? 'border-b-2 border-blue-500 text-blue-600'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+            onClick={() => { setActiveTab('ingested'); setCurrentPage(1); }}
+          >
+            Ingested Deals ({ingestedCount})
+          </button>
+        )}
       </div>
 
       {/* Deal Lists */}

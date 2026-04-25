@@ -166,12 +166,41 @@ namespace CartSmart.API.Controllers
                 Console.WriteLine($"[Extension]   dp.Id={dp.Id}, dp.Url={dp.Url}, norm={NormaliseUrl(dp.Url)}, match={UrlsMatch(dp.Url, normUrl)}");
             }
 
-            // Match by URL
-            var matched = allDealProducts
+            // Match by URL first (these are the rows directly tied to the scraped listing URL).
+            var matchedByUrl = allDealProducts
                 .Where(dp => UrlsMatch(dp.Url, normUrl))
                 .ToList();
 
-            Console.WriteLine($"[Extension] Matched {matched.Count} deal product(s) for URL {normUrl}");
+            // Also include derived rows linked to the matched originals, even when their URL differs.
+            // Walk the link graph transitively because some stacked rows can be chained through
+            // intermediate derived rows depending on historical backfills.
+            var matchedIds = matchedByUrl.Select(dp => dp.Id).ToHashSet();
+            var linkedDerived = new List<DealProduct>();
+            var expanded = true;
+            while (expanded)
+            {
+                expanded = false;
+                var nextLinked = allDealProducts
+                    .Where(dp => dp.OriginalDealProductId.HasValue && matchedIds.Contains(dp.OriginalDealProductId.Value))
+                    .Where(dp => !matchedIds.Contains(dp.Id))
+                    .ToList();
+
+                if (nextLinked.Count > 0)
+                {
+                    linkedDerived.AddRange(nextLinked);
+                    foreach (var dp in nextLinked)
+                        matchedIds.Add(dp.Id);
+                    expanded = true;
+                }
+            }
+
+            var matched = matchedByUrl
+                .Concat(linkedDerived)
+                .GroupBy(dp => dp.Id)
+                .Select(g => g.First())
+                .ToList();
+
+            Console.WriteLine($"[Extension] Matched {matched.Count} deal product(s) for URL {normUrl} ({matchedByUrl.Count} URL match + {linkedDerived.Count} linked)");
 
             if (matched.Count == 0)
             {
@@ -232,6 +261,13 @@ namespace CartSmart.API.Controllers
             var combosByDeal = new Dictionary<int, List<DealCombo>>();
             var componentDealsMap = new Dictionary<int, Deal>();
 
+            // Seed component lookup with already-loaded parent deals so stacked combo lookup
+            // can resolve components that are part of the current matched set.
+            foreach (var kv in dealsMap)
+            {
+                componentDealsMap[kv.Key] = kv.Value;
+            }
+
             if (stackedDealIds.Count > 0)
             {
                 foreach (var sdid in stackedDealIds)
@@ -246,7 +282,7 @@ namespace CartSmart.API.Controllers
                     .SelectMany(c => c)
                     .Select(c => c.ComboDealId)
                     .Distinct()
-                    .Where(id => !dealsMap.ContainsKey(id))
+                    .Where(id => !componentDealsMap.ContainsKey(id))
                     .ToList();
 
                 foreach (var cid in componentIds)
@@ -300,15 +336,10 @@ namespace CartSmart.API.Controllers
 
                     if (dealType is 2 or 3 or 4) // Coupon, Stacked, or External
                     {
-                        // Use scraped price (= direct deal price) when a linked direct
-                        // deal product exists; fall back to MSRP otherwise.
+                        // Use scraped price as the direct listing baseline for all derived deal types.
+                        // Falling back to MSRP can make derived coupon/external/stacked rows appear
+                        // more expensive than the freshly-updated direct row.
                         decimal basePrice = scrapedPrice;
-                        if (!dp.OriginalDealProductId.HasValue
-                            && productsMap.TryGetValue(dp.ProductId, out var msrpProd)
-                            && msrpProd.MSRP is > 0)
-                        {
-                            basePrice = (decimal)msrpProd.MSRP.Value;
-                        }
 
                         if (dealType is 2 or 4)
                         {
