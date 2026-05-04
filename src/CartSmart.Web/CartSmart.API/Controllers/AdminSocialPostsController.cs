@@ -431,11 +431,28 @@ public sealed class AdminSocialPostsController : ControllerBase
         var auth = await EnsureAdminAsync();
         if (auth != null) return auth;
 
-        var bytes = await _socialPostService.GenerateCardImageAsync(id, ct);
-        if (bytes == null || bytes.Length == 0)
-            return StatusCode(500, new { message = "Card image generation failed" });
+        try
+        {
+            var bytes = await _socialPostService.GenerateCardImageAsync(id, ct);
+            if (bytes == null || bytes.Length == 0)
+            {
+                // Most common production cause is missing Playwright browser/runtime deps.
+                return StatusCode(500, new
+                {
+                    message = "Card image generation failed. The rendering engine may be unavailable on this server (Playwright/browser dependency issue)."
+                });
+            }
 
-        return File(bytes, "image/png");
+            return File(bytes, "image/png");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GenerateCard endpoint failed for post {PostId}", id);
+            return StatusCode(500, new
+            {
+                message = "Card image generation failed due to a server error. Check API logs for 'GenerateCard endpoint failed'."
+            });
+        }
     }
 
     // ── Request models ────────────────────────────────────────────────────

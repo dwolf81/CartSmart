@@ -1516,47 +1516,65 @@ public class SocialPostService : ISocialPostService
 
     public async Task<byte[]?> GenerateCardImageAsync(long postId, CancellationToken ct = default)
     {
-        var client = _supabase.GetServiceRoleClient();
-
-        var postResp = await client.From<SocialPost>()
-            .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, postId.ToString())
-            .Single();
-        if (postResp == null) return null;
-
-        var captionsResp = await client.From<SocialPostCaption>()
-            .Filter("social_post_id", Supabase.Postgrest.Constants.Operator.Equals, postId.ToString())
-            .Filter("selected", Supabase.Postgrest.Constants.Operator.Equals, "true")
-            .Limit(1)
-            .Get();
-
-        // Get deal details for badge/coupon info
-        var detailsByPostId = await BuildDealDetailsByPostIdAsync([postResp], ct);
-        var details = detailsByPostId.GetValueOrDefault(postResp.Id);
-
-        var cardData = new SocialCardData(
-            ProductName:     postResp.ProductName ?? string.Empty,
-            ProductImageUrl: postResp.ProductImage,
-            CurrentPrice:    postResp.CurrentPrice,
-            OriginalPrice:   postResp.OriginalPrice,
-            DealTypeId:      details?.DealTypeId,
-            DealTypeName:    details?.DealTypeName,
-            CouponCode:      details?.CouponCode,
-            StoreName:       details?.StoreName,
-            StoreImageUrl:   details?.StoreImageUrl,
-            ConditionName:   details?.ConditionName,
-            VariantDetails:  details?.VariantDetails,
-            ItemCount:       details?.ItemCount,
-            FreeShipping:    details?.FreeShipping ?? false);
-
-        var cardBytes = await _cardImageService.GenerateAsync(cardData, ct);
-        if (cardBytes is { Length: > 0 })
+        try
         {
-            var dataUri = "data:image/png;base64," + Convert.ToBase64String(cardBytes);
-            postResp.ImageUrl = dataUri;
-            await client.From<SocialPost>().Upsert(postResp);
-            _logger.LogInformation("GenerateCardImageAsync: card image updated for post {PostId}", postId);
-        }
+            var client = _supabase.GetServiceRoleClient();
 
-        return cardBytes;
+            var postResp = await client.From<SocialPost>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, postId.ToString())
+                .Single();
+            if (postResp == null) return null;
+
+            SocialDealDetailsDto? details = null;
+            try
+            {
+                // Deal details enrich the card but should not hard-fail generation.
+                var detailsByPostId = await BuildDealDetailsByPostIdAsync([postResp], ct);
+                details = detailsByPostId.GetValueOrDefault(postResp.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "GenerateCardImageAsync: failed to load optional deal details for post {PostId}; generating basic card",
+                    postId);
+            }
+
+            var cardData = new SocialCardData(
+                ProductName:     postResp.ProductName ?? string.Empty,
+                ProductImageUrl: postResp.ProductImage,
+                CurrentPrice:    postResp.CurrentPrice,
+                OriginalPrice:   postResp.OriginalPrice,
+                DealTypeId:      details?.DealTypeId,
+                DealTypeName:    details?.DealTypeName,
+                CouponCode:      details?.CouponCode,
+                StoreName:       details?.StoreName,
+                StoreImageUrl:   details?.StoreImageUrl,
+                ConditionName:   details?.ConditionName,
+                VariantDetails:  details?.VariantDetails,
+                ItemCount:       details?.ItemCount,
+                FreeShipping:    details?.FreeShipping ?? false);
+
+            var cardBytes = await _cardImageService.GenerateAsync(cardData, ct);
+            if (cardBytes is { Length: > 0 })
+            {
+                var dataUri = "data:image/png;base64," + Convert.ToBase64String(cardBytes);
+                postResp.ImageUrl = dataUri;
+                await client.From<SocialPost>().Upsert(postResp);
+                _logger.LogInformation("GenerateCardImageAsync: card image updated for post {PostId}", postId);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "GenerateCardImageAsync: renderer returned no image bytes for post {PostId} (Playwright may be unavailable on this host)",
+                    postId);
+            }
+
+            return cardBytes;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "GenerateCardImageAsync: unhandled exception for post {PostId}", postId);
+            return null;
+        }
     }
 }
