@@ -267,6 +267,19 @@ const Header = () => {
                                                     )}
                                                 </Menu.Item>
                                             )}
+
+                                            {Boolean(user?.admin) && (
+                                                <Menu.Item>
+                                                    {({ active }) => (
+                                                        <Link
+                                                            to="/admin/social-posts"
+                                                            className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                        >
+                                                            Social Posts
+                                                        </Link>
+                                                    )}
+                                                </Menu.Item>
+                                            )}
                                             <Menu.Item>
                                                 {({ active }) => (
                                                     <button
@@ -456,6 +469,15 @@ const Header = () => {
                                             className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
                                         >
                                             Scrape Report
+                                        </Link>
+                                    )}
+                                    {Boolean(user?.admin) && (
+                                        <Link
+                                            to="/admin/social-posts"
+                                            onClick={() => setMobileOpen(false)}
+                                            className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                        >
+                                            Social Posts
                                         </Link>
                                     )}
                                     <button

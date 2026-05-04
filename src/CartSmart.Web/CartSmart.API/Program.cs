@@ -11,6 +11,24 @@ using System.Threading.RateLimiting;
 // Load environment variables
 Env.Load();
 
+// Also load the web workspace .env (one level above CartSmart.API) for local runs.
+var webEnvPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", ".env"));
+if (File.Exists(webEnvPath))
+{
+    Env.Load(webEnvPath);
+}
+
+// Back-compat: allow server code to consume REACT_APP_OPENAI_API_KEY from .env.
+var openAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+if (string.IsNullOrWhiteSpace(openAiApiKey))
+{
+    var reactOpenAiKey = Environment.GetEnvironmentVariable("REACT_APP_OPENAI_API_KEY");
+    if (!string.IsNullOrWhiteSpace(reactOpenAiKey))
+    {
+        Environment.SetEnvironmentVariable("OPENAI_API_KEY", reactOpenAiKey);
+    }
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMemoryCache();
@@ -165,6 +183,54 @@ builder.Services.AddScoped<IUserReputationService, UserReputationService>();
 builder.Services.AddScoped<IEmailService, SendGridEmailService>();
 builder.Services.AddScoped<IUserTokenService, UserTokenService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
+
+// ── Social Media Posting ──
+// Platform posters — registered only when credentials are present
+builder.Services.AddHttpClient<TwitterPosterService>();
+if (!string.IsNullOrEmpty(builder.Configuration["Twitter:ApiKey"]))
+{
+    builder.Services.AddScoped<ISocialMediaPoster>(sp =>
+        new TwitterPosterService(
+            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient(nameof(TwitterPosterService)),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<TwitterPosterService>>(),
+            builder.Configuration["Twitter:ApiKey"] ?? string.Empty,
+            builder.Configuration["Twitter:ApiSecret"] ?? string.Empty,
+            builder.Configuration["Twitter:AccessToken"] ?? string.Empty,
+            builder.Configuration["Twitter:AccessTokenSecret"] ?? string.Empty));
+}
+
+builder.Services.AddHttpClient<FacebookPosterService>();
+if (!string.IsNullOrEmpty(builder.Configuration["Facebook:PageId"]))
+{
+    builder.Services.AddScoped<ISocialMediaPoster>(sp =>
+        new FacebookPosterService(
+            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient(nameof(FacebookPosterService)),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<FacebookPosterService>>(),
+            builder.Configuration["Facebook:PageId"] ?? string.Empty,
+            builder.Configuration["Facebook:PageAccessToken"] ?? string.Empty));
+}
+
+builder.Services.AddHttpClient<InstagramPosterService>();
+if (!string.IsNullOrEmpty(builder.Configuration["Instagram:UserId"]))
+{
+    builder.Services.AddScoped<ISocialMediaPoster>(sp =>
+        new InstagramPosterService(
+            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient(nameof(InstagramPosterService)),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<InstagramPosterService>>(),
+            builder.Configuration["Instagram:UserId"] ?? string.Empty,
+            builder.Configuration["Instagram:AccessToken"] ?? string.Empty));
+}
+
+builder.Services.AddHttpClient<SocialPostService>();
+builder.Services.AddSingleton<ISocialCardImageService, SocialCardImageService>();
+builder.Services.AddScoped<ISocialPostService>(sp =>
+    new SocialPostService(
+        sp.GetRequiredService<ISupabaseService>(),
+        sp.GetServices<ISocialMediaPoster>(),
+        sp.GetRequiredService<IUrlSanitizer>(),
+        sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient(nameof(SocialPostService)),
+        sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<SocialPostService>>(),
+        sp.GetRequiredService<ISocialCardImageService>()));
 
 // Add Social Login Services
 if (!string.IsNullOrEmpty(builder.Configuration["Authentication:Google:ClientId"]))

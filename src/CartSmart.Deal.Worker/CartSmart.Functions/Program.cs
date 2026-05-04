@@ -1,3 +1,4 @@
+using CartSmart.API.Services;
 using CartSmart.Core.Worker;
 using CartSmart.Providers;
 using CartSmart.Scraping;
@@ -31,6 +32,12 @@ var host = new HostBuilder()
         services.AddSingleton<IHtmlScraper>(sp =>
             new GenericHtmlScraper(
                 sp.GetRequiredService<ILogger<GenericHtmlScraper>>()));
+
+        // Register social card image service for generating social media card images via Playwright
+        services.AddSingleton<ISocialCardImageService>(sp =>
+            new SocialCardImageService(
+                sp.GetRequiredService<ILogger<SocialCardImageService>>()));
+
         // Prefer Functions configuration (local.settings.json Values) over raw environment.
         // When not running via the Functions host, local.settings.json is NOT loaded automatically.
         // To make F5 debugging work, load local.settings.json manually and hydrate environment if needed.
@@ -181,6 +188,9 @@ var host = new HostBuilder()
             maxParallel: 1,
             aiValidator: sp.GetRequiredService<IAiDealValidator>()));
 
+        // Social post daily generation — uses Supabase client + OpenAI HTTP client
+        services.AddHttpClient(nameof(CartSmart.Functions.GenerateDailyPostsFunction));
+
         // Register listing page scraper for HTML store pages
         services.AddSingleton<IListingPageScraper>(sp =>
             new ListingPageScraper(
@@ -254,6 +264,13 @@ var host = new HostBuilder()
             sp.GetRequiredService<IAiDealExtractor>(),
             sp.GetRequiredService<ILogger<IngestionPipelineOrchestrator>>(),
             autoImportMinConfidence));
+
+        // ── Social Card Generation Orchestrator ──────────────────────────────
+        // Handles async queue-based social card image generation for social posts
+        services.AddSingleton<ISocialCardOrchestrator>(sp => new SocialCardOrchestrator(
+            sp.GetRequiredService<ISocialCardImageService>(),
+            sp.GetRequiredService<ISupabaseService>(),
+            sp.GetRequiredService<ILogger<SocialCardOrchestrator>>()));
     })
     .Build();
 

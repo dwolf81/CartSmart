@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="1.22.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http" Version="3.3.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Storage" Version="6.0.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Timer" Version="4.3.1" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="1.17.4" OutputItemType="Analyzer" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
@@ -19,8 +20,10 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\libs\CartSmart.Core\CartSmart.Core.csproj" />
+    <ProjectReference Include="..\CartSmart.Models\CartSmart.Models.csproj" />
     <ProjectReference Include="..\CartSmart.Providers\CartSmart.Providers.csproj" />
     <ProjectReference Include="..\CartSmart.Scraping\CartSmart.Scraping.csproj" />
+    <ProjectReference Include="..\..\CartSmart.Web\CartSmart.API\CartSmart.API.csproj" />
   </ItemGroup>
 
   <!-- Remove Playwright driver from publish output — Functions uses HTTP-only scraping -->
