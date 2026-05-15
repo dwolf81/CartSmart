@@ -57,21 +57,26 @@ public sealed class SocialCardOrchestrator : ISocialCardOrchestrator
                 "SocialCardOrchestrator: generating card for post {PostId}, product '{ProductName}'",
                 socialPostId, productName);
 
-            // Build card data from parameters
+            // Build card data from parameters. This entry point only knows about a single deal,
+            // so we render a one-deal card; the multi-condition flow lives in SocialPostService.
             var cardData = new SocialCardData(
                 ProductName: productName,
                 ProductImageUrl: productImageUrl,
-                CurrentPrice: currentPrice,
-                OriginalPrice: originalPrice,
-                DealTypeId: dealTypeId,
-                DealTypeName: dealTypeName,
-                CouponCode: couponCode,
-                StoreName: storeName,
-                StoreImageUrl: storeImageUrl,
-                ConditionName: conditionName,
-                VariantDetails: variantDetails,
-                ItemCount: itemCount,
-                FreeShipping: freeShipping);
+                Deals: new[]
+                {
+                    new SocialCardDeal(
+                        Price:          currentPrice,
+                        OriginalPrice:  originalPrice,
+                        DealTypeId:     dealTypeId,
+                        DealTypeName:   dealTypeName,
+                        CouponCode:     couponCode,
+                        StoreName:      storeName,
+                        StoreImageUrl:  storeImageUrl,
+                        ConditionName:  conditionName,
+                        FreeShipping:   freeShipping,
+                        ItemCount:      itemCount,
+                        VariantDetails: variantDetails)
+                });
 
             // Generate card image (PNG bytes)
             var cardBytes = await _cardImageService.GenerateAsync(cardData, ct);

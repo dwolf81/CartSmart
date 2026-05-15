@@ -41,7 +41,6 @@ const CategoryProductsPage = () => {
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
 
-  const [displayCount, setDisplayCount] = useState(6);
   const [deals, setDeals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -68,7 +67,6 @@ const CategoryProductsPage = () => {
       try {
         setLoading(true);
         setError(null);
-        setDisplayCount(6);
 
         let resolvedName = '';
 
@@ -162,9 +160,6 @@ const CategoryProductsPage = () => {
     }).format(parseFloat(price));
   };
 
-  const visibleDeals = deals.slice(0, displayCount);
-  const hasMoreDeals = displayCount < deals.length;
-
   if (loading) return <LoadingSpinner />;
 
   const pageTitle = categoryName ? `${categoryName} — Lowest Price & Deals | CartSmart` : 'Category Deals | CartSmart';
@@ -214,7 +209,6 @@ const CategoryProductsPage = () => {
                       onClick={() => {
                         setBrandId(null);
                         setOpenDropdown(null);
-                        setDisplayCount(6);
                       }}
                       className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${!brandId ? 'bg-[#e8f5e9] text-[#4CAF50]' : ''}`}
                     >
@@ -228,7 +222,6 @@ const CategoryProductsPage = () => {
                         onClick={() => {
                           setBrandId(b.id);
                           setOpenDropdown(null);
-                          setDisplayCount(6);
                         }}
                         className={`block w-full text-left px-4 py-2 hover:bg-gray-100 ${Number(brandId) === Number(b.id) ? 'bg-[#e8f5e9] text-[#4CAF50]' : ''}`}
                       >
@@ -264,7 +257,7 @@ const CategoryProductsPage = () => {
             ) : (
               <>
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-                  {visibleDeals.map((bestDeal) => (
+                  {deals.map((bestDeal) => (
                     <div key={bestDeal.product_id ?? bestDeal.slug} className="bg-white rounded-lg shadow-lg overflow-hidden">
                       <Link to={`/products/${bestDeal.slug}`} className="block hover:opacity-90 transition-opacity">
                         <img
@@ -358,16 +351,7 @@ const CategoryProductsPage = () => {
                   ))}
                 </div>
 
-                {hasMoreDeals && (
-                  <div className="text-center mt-12">
-                    <button
-                      onClick={() => setDisplayCount((c) => Math.min(c + 6, deals.length))}
-                      className="inline-block bg-gray-900 text-white px-8 py-3 rounded-lg font-semibold hover:bg-gray-800 transition-colors"
-                    >
-                      View More Deals
-                    </button>
-                  </div>
-                )}
+
               </>
             )}
           </>

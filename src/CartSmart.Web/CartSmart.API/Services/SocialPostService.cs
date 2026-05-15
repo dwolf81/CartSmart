@@ -374,34 +374,62 @@ public class SocialPostService : ISocialPostService
 
             var msrp = c.Product.MSRP;
             var originalPrice = msrp.HasValue ? (decimal)msrp.Value : (decimal?)null;
-            var rawUrl = c.DealProduct.Url ?? string.Empty;
-            var dealUrl = rawUrl;
-            if (c.Deal.StoreId.HasValue && storeById.TryGetValue(c.Deal.StoreId.Value, out var store))
-                dealUrl = _urlSanitizer.CleanForStore(rawUrl, store, injectAffiliate: true) ?? rawUrl;
-            else
-                dealUrl = _urlSanitizer.Clean(rawUrl, injectAffiliate: true) ?? rawUrl;
+
+            // Look up cheapest "new" + cheapest "used" deal for this product (each rendered as its own card).
+            var (cardDeals, primaryDealProduct) = await BuildDealCardsForProductAsync(c.DealProduct.ProductId, originalPrice, ct);
+
+            // Fall back to the candidate if the helper returned nothing (e.g., race with deal deletion).
+            primaryDealProduct ??= c.DealProduct;
+
+            if (alreadyPostedDealIds.Contains(primaryDealProduct.DealId))
+                continue;
+
+            // Resolve the deal record + details for the primary (which may differ from the candidate).
+            if (!dealById.TryGetValue(primaryDealProduct.DealId, out var primaryDeal))
+            {
+                var primaryDealResp = await client.From<Deal>()
+                    .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, primaryDealProduct.DealId.ToString())
+                    .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                    .Single();
+                if (primaryDealResp == null) continue;
+                primaryDeal = primaryDealResp;
+                dealById[primaryDeal.Id] = primaryDeal;
+            }
+
+            if (!dealDetailsByDealId.TryGetValue(primaryDeal.Id, out var dealDetails))
+            {
+                var freshDetails = await BuildDealDetailsForGenerationAsync(new[] { primaryDeal }, ct);
+                dealDetails = freshDetails.GetValueOrDefault(primaryDeal.Id);
+                if (dealDetails != null)
+                    dealDetailsByDealId[primaryDeal.Id] = dealDetails;
+            }
+
+            // The deal link goes to the CartSmart product page (without a dealId filter), so even
+            // if this specific deal vanishes, visitors still see whatever deals exist for the product.
+            var shareUrl = BuildCartSmartProductUrl(c.Product.Slug);
+
+            var (priceHistoryNote, isAllTimeLow) = await BuildPriceHistoryNoteAsync(
+                primaryDealProduct.Id, primaryDealProduct.Price, ct);
 
             // Generate captions via OpenAI
-            var dealDetails = dealDetailsByDealId.GetValueOrDefault(c.Deal.Id);
-            var shareUrl = BuildShareUrl(c.Deal.DealTypeId, dealUrl, c.Product.Slug, c.Deal.Id);
             var captions = await GenerateCaptionsAsync(
                 c.Product.Name ?? "Golf Gear",
-                c.DealProduct.Price,
+                primaryDealProduct.Price,
                 originalPrice,
                 shareUrl,
                 dealDetails,
+                cardDeals,
                 ct);
 
-            // Insert social_post
             var post = new SocialPost
             {
-                DealId = c.DealProduct.DealId,
-                ProductId = c.DealProduct.ProductId,
+                DealId = primaryDealProduct.DealId,
+                ProductId = primaryDealProduct.ProductId,
                 ProductName = c.Product.Name ?? "Golf Gear",
                 ProductImage = c.Product.ImageUrl,
-                CurrentPrice = c.DealProduct.Price,
+                CurrentPrice = primaryDealProduct.Price,
                 OriginalPrice = originalPrice,
-                DealUrl = dealUrl,
+                DealUrl = shareUrl,
                 Status = "pending_approval",
                 ScheduledDate = today,
                 IsWeekly = false
@@ -417,17 +445,17 @@ public class SocialPostService : ISocialPostService
                 || ex.Message.Contains("23505", StringComparison.Ordinal))
             {
                 // Concurrent or repeated generation can race on the unique index; skip safely.
-                alreadyPostedDealIds.Add(c.DealProduct.DealId);
+                alreadyPostedDealIds.Add(primaryDealProduct.DealId);
                 _logger.LogInformation(
                     "GenerateDailyPosts: duplicate (deal_id, scheduled_date) for deal {DealId} on {ScheduledDate}; skipping.",
-                    c.DealProduct.DealId,
+                    primaryDealProduct.DealId,
                     scheduledDateStr);
                 continue;
             }
 
             if (inserted == null)
             {
-                _logger.LogWarning("GenerateDailyPosts: failed to insert post for deal {DealId}", c.Deal.Id);
+                _logger.LogWarning("GenerateDailyPosts: failed to insert post for deal {DealId}", primaryDeal.Id);
                 continue;
             }
 
@@ -444,21 +472,33 @@ public class SocialPostService : ISocialPostService
                 await client.From<SocialPostCaption>().Insert(caption);
             }
 
-            // Generate deal card image and persist the base64 data-URI
+            // Generate deal card image and persist the base64 data-URI.
+            // If the helper somehow returned no deals (rare race), fall back to a single-deal card
+            // synthesised from the post + enriched deal details so we still produce something useful.
+            var dealsForCard = cardDeals.Count > 0
+                ? cardDeals
+                : new List<SocialCardDeal>
+                {
+                    new SocialCardDeal(
+                        Price:          post.CurrentPrice,
+                        OriginalPrice:  post.OriginalPrice,
+                        DealTypeId:     dealDetails?.DealTypeId,
+                        DealTypeName:   dealDetails?.DealTypeName,
+                        CouponCode:     dealDetails?.CouponCode,
+                        StoreName:      dealDetails?.StoreName,
+                        StoreImageUrl:  dealDetails?.StoreImageUrl,
+                        ConditionName:  dealDetails?.ConditionName,
+                        FreeShipping:   dealDetails?.FreeShipping ?? false,
+                        ItemCount:      dealDetails?.ItemCount,
+                        VariantDetails: dealDetails?.VariantDetails)
+                };
+
             var cardData = new SocialCardData(
-                ProductName:    post.ProductName ?? string.Empty,
-                ProductImageUrl: post.ProductImage,
-                CurrentPrice:   post.CurrentPrice,
-                OriginalPrice:  post.OriginalPrice,
-                DealTypeId:     dealDetails?.DealTypeId,
-                DealTypeName:   dealDetails?.DealTypeName,
-                CouponCode:     dealDetails?.CouponCode,
-                StoreName:      dealDetails?.StoreName,
-                StoreImageUrl:  dealDetails?.StoreImageUrl,
-                ConditionName:  dealDetails?.ConditionName,
-                VariantDetails: dealDetails?.VariantDetails,
-                ItemCount:      dealDetails?.ItemCount,
-                FreeShipping:   dealDetails?.FreeShipping ?? false);
+                ProductName:      post.ProductName ?? string.Empty,
+                ProductImageUrl:  post.ProductImage,
+                Deals:            dealsForCard,
+                PriceHistoryNote: priceHistoryNote,
+                IsAllTimeLow:     isAllTimeLow);
 
             var cardBytes = await _cardImageService.GenerateAsync(cardData, ct);
             if (cardBytes is { Length: > 0 })
@@ -470,7 +510,8 @@ public class SocialPostService : ISocialPostService
             }
 
             created++;
-            productPostCountToday[c.DealProduct.ProductId] = currentProductCount + 1;
+            alreadyPostedDealIds.Add(primaryDealProduct.DealId);
+            productPostCountToday[primaryDealProduct.ProductId] = currentProductCount + 1;
             _logger.LogInformation("GenerateDailyPosts: created post {PostId} for product '{Name}'",
                 inserted.Id, post.ProductName);
         }
@@ -581,15 +622,18 @@ public class SocialPostService : ISocialPostService
         decimal? originalPrice,
         string dealUrl,
         SocialDealDetailsDto? dealDetails,
+        IReadOnlyList<SocialCardDeal>? cardDeals,
         CancellationToken ct)
     {
+        var hasMultipleConditions = cardDeals is { Count: >= 2 };
+
         if (string.IsNullOrWhiteSpace(_openAiApiKey))
         {
             _logger.LogWarning("OPENAI_API_KEY not configured — using fallback captions");
-            return BuildFallbackCaptions(productName, currentPrice, originalPrice, dealDetails, dealUrl);
+            return BuildFallbackCaptions(productName, currentPrice, originalPrice, dealDetails, dealUrl, hasMultipleConditions);
         }
 
-        var pricingContext = BuildPricingContext(currentPrice, originalPrice);
+        var pricingContext = BuildPricingContext(currentPrice, originalPrice, hasMultipleConditions);
         var flavor = GetProductFlavor(productName);
         var dealKind = GetDealKindLabel(dealDetails?.DealTypeId);
         var linkLabel = dealDetails?.DealTypeId is null or 1 ? "Product link" : "More details";
@@ -653,7 +697,7 @@ public class SocialPostService : ISocialPostService
             {
                 var err = await resp.Content.ReadAsStringAsync(ct);
                 _logger.LogWarning("OpenAI caption API error {Status}: {Body}", resp.StatusCode, err);
-                return BuildFallbackCaptions(productName, currentPrice, originalPrice, dealDetails, dealUrl);
+                return BuildFallbackCaptions(productName, currentPrice, originalPrice, dealDetails, dealUrl, hasMultipleConditions);
             }
 
             var rawJson = await resp.Content.ReadAsStringAsync(ct);
@@ -688,13 +732,13 @@ public class SocialPostService : ISocialPostService
             _logger.LogError(ex, "Exception generating captions from OpenAI");
         }
 
-        return BuildFallbackCaptions(productName, currentPrice, originalPrice, dealDetails, dealUrl);
+        return BuildFallbackCaptions(productName, currentPrice, originalPrice, dealDetails, dealUrl, hasMultipleConditions);
     }
 
     private static IReadOnlyList<string> BuildFallbackCaptions(
-        string productName, decimal currentPrice, decimal? originalPrice, SocialDealDetailsDto? dealDetails, string dealUrl)
+        string productName, decimal currentPrice, decimal? originalPrice, SocialDealDetailsDto? dealDetails, string dealUrl, bool hasMultipleConditions)
     {
-        var priceHeader = BuildPriceHeader(productName, currentPrice, originalPrice);
+        var priceHeader = BuildPriceHeader(productName, currentPrice, originalPrice, hasMultipleConditions);
         var linkLabel = dealDetails?.DealTypeId is null or 1 ? "Product link" : "More details";
         var linkLine = $"{linkLabel}: {dealUrl}";
 
@@ -749,15 +793,7 @@ public class SocialPostService : ISocialPostService
         _ => "Deal"
     };
 
-    private static string BuildShareUrl(int? dealTypeId, string directDealUrl, string? productSlug, int dealId)
-    {
-        if (dealTypeId is null or 1)
-            return directDealUrl;
-
-        return BuildCartSmartDealUrl(productSlug, dealId);
-    }
-
-    private static string BuildCartSmartDealUrl(string? productSlug, int dealId)
+    private static string BuildCartSmartProductUrl(string? productSlug)
     {
         var baseUrl = Environment.GetEnvironmentVariable("CARTSMART_SITE_URL")
             ?? Environment.GetEnvironmentVariable("REACT_APP_SITE_URL")
@@ -765,9 +801,9 @@ public class SocialPostService : ISocialPostService
         baseUrl = baseUrl.TrimEnd('/');
 
         if (string.IsNullOrWhiteSpace(productSlug))
-            return $"{baseUrl}/?dealId={dealId}";
+            return baseUrl;
 
-        return $"{baseUrl}/products/{Uri.EscapeDataString(productSlug)}?dealId={dealId}";
+        return $"{baseUrl}/products/{Uri.EscapeDataString(productSlug)}";
     }
 
     private static string BuildDealStepsContext(SocialDealDetailsDto? details, string primaryDealUrl)
@@ -874,9 +910,12 @@ public class SocialPostService : ISocialPostService
             && !string.IsNullOrWhiteSpace(primaryDealUrl);
     }
 
-    private static string BuildPriceHeader(string productName, decimal currentPrice, decimal? originalPrice)
+    private static string BuildPriceHeader(string productName, decimal currentPrice, decimal? originalPrice, bool hasMultipleConditions)
     {
-        var priceBits = new List<string> { $"{productName} — ${currentPrice:F2}" };
+        var priceLabel = hasMultipleConditions
+            ? $"from ${currentPrice:F2}"
+            : $"${currentPrice:F2}";
+        var priceBits = new List<string> { $"{productName} — {priceLabel}" };
         if (originalPrice.HasValue && originalPrice.Value > currentPrice)
         {
             var savingsAmount = originalPrice.Value - currentPrice;
@@ -891,17 +930,21 @@ public class SocialPostService : ISocialPostService
         return string.Join(" | ", priceBits);
     }
 
-    private static string BuildPricingContext(decimal currentPrice, decimal? originalPrice)
+    private static string BuildPricingContext(decimal currentPrice, decimal? originalPrice, bool hasMultipleConditions)
     {
+        var priceLabel = hasMultipleConditions
+            ? $"prices start at ${currentPrice:F2} (multiple conditions available — caption should say \"from\" this price)"
+            : $"${currentPrice:F2}";
+
         if (!originalPrice.HasValue || originalPrice.Value <= currentPrice)
-            return $"Current price ${currentPrice:F2}. MSRP unavailable.";
+            return $"Current price {priceLabel}. MSRP unavailable.";
 
         var savingsAmount = originalPrice.Value - currentPrice;
         var savingsPercent = originalPrice.Value > 0
             ? Math.Round((savingsAmount / originalPrice.Value) * 100m)
             : 0m;
 
-        return $"Current price ${currentPrice:F2}. MSRP ${originalPrice.Value:F2}. Savings ${savingsAmount:F2} ({savingsPercent:F0}%).";
+        return $"Current price {priceLabel}. MSRP ${originalPrice.Value:F2}. Savings ${savingsAmount:F2} ({savingsPercent:F0}%).";
     }
 
     private static string ResolveStepActionUrl(
@@ -1069,6 +1112,172 @@ public class SocialPostService : ISocialPostService
     }
 
     // ── Mapping ───────────────────────────────────────────────────────────
+
+    private async Task<(IReadOnlyList<SocialCardDeal> Deals, DealProduct? CheapestPrimary)> BuildDealCardsForProductAsync(
+        int productId,
+        decimal? originalPrice,
+        CancellationToken ct)
+    {
+        _ = ct;
+        if (productId <= 0)
+            return ([], null);
+
+        var client = _supabase.GetServiceRoleClient();
+
+        var dpResp = await client.From<DealProduct>()
+            .Filter("product_id", Supabase.Postgrest.Constants.Operator.Equals, productId.ToString())
+            .Filter("deal_status_id", Supabase.Postgrest.Constants.Operator.Equals, DealStatusActive.ToString())
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Filter("price", Supabase.Postgrest.Constants.Operator.GreaterThan, "0")
+            .Get();
+
+        var dealProducts = dpResp.Models ?? [];
+        if (dealProducts.Count == 0)
+            return ([], null);
+
+        var dealIdObjects = dealProducts.Select(dp => (object)dp.DealId).Distinct().ToArray();
+        var dealsResp = await client.From<Deal>()
+            .Filter("id", Supabase.Postgrest.Constants.Operator.In, dealIdObjects)
+            .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+            .Get();
+        var dealById = (dealsResp.Models ?? []).ToDictionary(d => d.Id);
+
+        // Drop deal products whose deal is missing or soft-deleted.
+        dealProducts = dealProducts.Where(dp => dealById.ContainsKey(dp.DealId)).ToList();
+        if (dealProducts.Count == 0)
+            return ([], null);
+
+        var storeIds = dealById.Values
+            .Select(d => d.StoreId)
+            .Concat(dealById.Values.Select(d => d.ExternalOfferStoreId))
+            .Where(id => id.HasValue)
+            .Select(id => (object)id!.Value)
+            .Distinct()
+            .ToArray();
+        var storeById = new Dictionary<int, Store>();
+        if (storeIds.Length > 0)
+        {
+            var storesResp = await client.From<Store>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.In, storeIds)
+                .Get();
+            storeById = (storesResp.Models ?? []).ToDictionary(s => s.Id);
+        }
+
+        var conditionIdObjects = dealProducts
+            .Where(dp => dp.ConditionId.HasValue)
+            .Select(dp => (object)dp.ConditionId!.Value)
+            .Distinct()
+            .ToArray();
+        var conditionNameById = new Dictionary<int, string>();
+        if (conditionIdObjects.Length > 0)
+        {
+            var conditionsResp = await client.From<Condition>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.In, conditionIdObjects)
+                .Get();
+            conditionNameById = (conditionsResp.Models ?? [])
+                .Where(c => !string.IsNullOrWhiteSpace(c.Name))
+                .ToDictionary(c => c.Id, c => c.Name!.Trim());
+        }
+
+        var dealTypeIdObjects = dealById.Values
+            .Where(d => d.DealTypeId.HasValue)
+            .Select(d => (object)d.DealTypeId!.Value)
+            .Distinct()
+            .ToArray();
+        var dealTypeNameById = new Dictionary<int, string>();
+        if (dealTypeIdObjects.Length > 0)
+        {
+            var dtResp = await client.From<DealType>()
+                .Filter("id", Supabase.Postgrest.Constants.Operator.In, dealTypeIdObjects)
+                .Get();
+            dealTypeNameById = (dtResp.Models ?? [])
+                .Where(dt => !string.IsNullOrWhiteSpace(dt.Name))
+                .ToDictionary(dt => dt.Id, dt => dt.Name!.Trim());
+        }
+
+        // condition_id == 1 is "New"; everything else (Used/Refurbished/etc.) gets bucketed
+        // together so the card shows at most one "non-new" row.
+        static bool IsNew(DealProduct dp) => dp.ConditionId == 1;
+
+        var cheapestNew = dealProducts.Where(IsNew).OrderBy(dp => dp.Price).FirstOrDefault();
+        var cheapestUsed = dealProducts.Where(dp => !IsNew(dp)).OrderBy(dp => dp.Price).FirstOrDefault();
+
+        var picked = new List<DealProduct>();
+        if (cheapestNew != null) picked.Add(cheapestNew);
+        if (cheapestUsed != null) picked.Add(cheapestUsed);
+
+        // Cheaper one first so the card renders the better headline price up top.
+        picked = picked.OrderBy(dp => dp.Price).ToList();
+
+        // Variant labels can require attribute joins; fetch them lazily for the picked products only.
+        var variantDetailsById = await BuildVariantDetailsByVariantIdAsync(picked.Select(dp => dp.ProductVariantId));
+
+        var deals = picked.Select(dp =>
+        {
+            var deal = dealById[dp.DealId];
+            var store = deal.StoreId.HasValue ? storeById.GetValueOrDefault(deal.StoreId.Value) : null;
+            store ??= deal.ExternalOfferStoreId.HasValue ? storeById.GetValueOrDefault(deal.ExternalOfferStoreId.Value) : null;
+            var conditionName = dp.ConditionId.HasValue
+                ? conditionNameById.GetValueOrDefault(dp.ConditionId.Value)
+                : null;
+            conditionName ??= dp.ConditionId == 1 ? "New" : "Used";
+            var dealTypeName = deal.DealTypeId.HasValue
+                ? dealTypeNameById.GetValueOrDefault(deal.DealTypeId.Value)
+                : null;
+            var variantDetails = dp.ProductVariantId is long vid
+                ? variantDetailsById.GetValueOrDefault(vid)
+                : null;
+
+            return new SocialCardDeal(
+                Price:          dp.Price,
+                OriginalPrice:  originalPrice,
+                DealTypeId:     deal.DealTypeId,
+                DealTypeName:   dealTypeName,
+                CouponCode:     deal.CouponCode,
+                StoreName:      store?.Name,
+                StoreImageUrl:  store?.ImageUrl,
+                ConditionName:  conditionName,
+                FreeShipping:   dp.FreeShipping,
+                ItemCount:      dp.ItemCount > 1 ? dp.ItemCount : (int?)null,
+                VariantDetails: variantDetails);
+        }).ToList();
+
+        return (deals, picked.FirstOrDefault());
+    }
+
+    private async Task<(string? Note, bool IsAllTimeLow)> BuildPriceHistoryNoteAsync(
+        int dealProductId, decimal currentPrice, CancellationToken ct)
+    {
+        _ = ct;
+        if (dealProductId <= 0 || currentPrice <= 0)
+            return (null, false);
+
+        var client = _supabase.GetServiceRoleClient();
+        var historyResp = await client.From<DealProductPriceHistory>()
+            .Select("price, changed_at")
+            .Filter("deal_product_id", Supabase.Postgrest.Constants.Operator.Equals, dealProductId.ToString())
+            .Get();
+
+        var history = (historyResp.Models ?? []).Where(h => h.Price > 0).ToList();
+        // Need at least a couple of historical observations before a "near low" claim is meaningful.
+        if (history.Count < 2)
+            return (null, false);
+
+        var allTimeLow = history.Min(h => h.Price);
+        if (allTimeLow <= 0)
+            return (null, false);
+
+        if (currentPrice <= allTimeLow)
+            return ("All-time low!", true);
+
+        // "Near" = within 5% of the all-time low or $5, whichever is greater. Anything beyond that
+        // would feel misleading to call out.
+        var threshold = Math.Max(allTimeLow * 0.05m, 5m);
+        if (currentPrice - allTimeLow <= threshold)
+            return ($"Near all-time low (was ${allTimeLow:F2})", false);
+
+        return (null, false);
+    }
 
     private async Task<Dictionary<int, SocialDealDetailsDto>> BuildDealDetailsForGenerationAsync(
         IReadOnlyList<Deal> deals,
@@ -1470,7 +1679,7 @@ public class SocialPostService : ISocialPostService
                     : null,
                 ItemCount: parentDealProduct?.ItemCount > 1 ? parentDealProduct.ItemCount : null,
                 FreeShipping: parentDealProduct?.FreeShipping ?? false,
-                CartSmartDealUrl: BuildCartSmartDealUrl(productSlugById.GetValueOrDefault(post.ProductId), parentDeal.Id),
+                CartSmartDealUrl: BuildCartSmartProductUrl(productSlugById.GetValueOrDefault(post.ProductId)),
                 AdditionalDetails: parentDeal.AdditionalDetails,
                 ExternalOfferUrl: parentDeal.ExternalOfferUrl,
                 ExternalStoreName: parentStore?.Name,
@@ -1539,20 +1748,62 @@ public class SocialPostService : ISocialPostService
                     postId);
             }
 
+            // Build the per-condition deal cards (cheapest_new + cheapest_used for the product).
+            // Recomputing on every render lets the card stay accurate as deals change after the post is created.
+            IReadOnlyList<SocialCardDeal> cardDeals = [];
+            DealProduct? primaryDealProduct = null;
+            try
+            {
+                (cardDeals, primaryDealProduct) = await BuildDealCardsForProductAsync(postResp.ProductId, postResp.OriginalPrice, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "GenerateCardImageAsync: failed to load deal cards for post {PostId}", postId);
+            }
+
+            string? priceHistoryNote = null;
+            var isAllTimeLow = false;
+            if (primaryDealProduct != null)
+            {
+                try
+                {
+                    (priceHistoryNote, isAllTimeLow) = await BuildPriceHistoryNoteAsync(
+                        primaryDealProduct.Id, primaryDealProduct.Price, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "GenerateCardImageAsync: failed to compute price history for post {PostId}", postId);
+                }
+            }
+
+            // Fall back to a single deal synthesised from post + enriched deal details when the helper
+            // returned nothing (e.g., all deal_products were just deactivated). The card still renders.
+            var dealsForCard = cardDeals.Count > 0
+                ? cardDeals
+                : new List<SocialCardDeal>
+                {
+                    new SocialCardDeal(
+                        Price:          postResp.CurrentPrice,
+                        OriginalPrice:  postResp.OriginalPrice,
+                        DealTypeId:     details?.DealTypeId,
+                        DealTypeName:   details?.DealTypeName,
+                        CouponCode:     details?.CouponCode,
+                        StoreName:      details?.StoreName,
+                        StoreImageUrl:  details?.StoreImageUrl,
+                        ConditionName:  details?.ConditionName,
+                        FreeShipping:   details?.FreeShipping ?? false,
+                        ItemCount:      details?.ItemCount,
+                        VariantDetails: details?.VariantDetails)
+                };
+
             var cardData = new SocialCardData(
-                ProductName:     postResp.ProductName ?? string.Empty,
-                ProductImageUrl: postResp.ProductImage,
-                CurrentPrice:    postResp.CurrentPrice,
-                OriginalPrice:   postResp.OriginalPrice,
-                DealTypeId:      details?.DealTypeId,
-                DealTypeName:    details?.DealTypeName,
-                CouponCode:      details?.CouponCode,
-                StoreName:       details?.StoreName,
-                StoreImageUrl:   details?.StoreImageUrl,
-                ConditionName:   details?.ConditionName,
-                VariantDetails:  details?.VariantDetails,
-                ItemCount:       details?.ItemCount,
-                FreeShipping:    details?.FreeShipping ?? false);
+                ProductName:      postResp.ProductName ?? string.Empty,
+                ProductImageUrl:  postResp.ProductImage,
+                Deals:            dealsForCard,
+                PriceHistoryNote: priceHistoryNote,
+                IsAllTimeLow:     isAllTimeLow);
 
             var cardBytes = await _cardImageService.GenerateAsync(cardData, ct);
             if (cardBytes is { Length: > 0 })

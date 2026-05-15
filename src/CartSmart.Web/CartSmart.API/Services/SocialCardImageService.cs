@@ -18,10 +18,8 @@ public interface ISocialCardImageService
     Task<byte[]?> GenerateAsync(SocialCardData data, CancellationToken ct = default);
 }
 
-public sealed record SocialCardData(
-    string ProductName,
-    string? ProductImageUrl,
-    decimal CurrentPrice,
+public sealed record SocialCardDeal(
+    decimal Price,
     decimal? OriginalPrice,
     int? DealTypeId,
     string? DealTypeName,
@@ -29,14 +27,21 @@ public sealed record SocialCardData(
     string? StoreName,
     string? StoreImageUrl,
     string? ConditionName,
-    string? VariantDetails,
+    bool FreeShipping,
     int? ItemCount,
-    bool FreeShipping);
+    string? VariantDetails);
+
+public sealed record SocialCardData(
+    string ProductName,
+    string? ProductImageUrl,
+    IReadOnlyList<SocialCardDeal> Deals,
+    string? PriceHistoryNote = null,
+    bool IsAllTimeLow = false);
 
 public sealed class SocialCardImageService : ISocialCardImageService
 {
-  private const int CardWidth = 900;
-  private const int CardHeight = 800;
+    private const int CardWidth = 900;
+    private const int CardHeight = 800;
 
     private readonly ILogger<SocialCardImageService> _logger;
 
@@ -91,17 +96,10 @@ public sealed class SocialCardImageService : ISocialCardImageService
 
     private static string BuildCardHtml(SocialCardData d)
     {
-        var dealBadgeHtml = BuildDealBadgeHtml(d.DealTypeId, d.DealTypeName);
-        var discountBadgeHtml = BuildDiscountBadgeHtml(d.CurrentPrice, d.OriginalPrice);
-        var storeHtml = BuildStoreHtml(d.StoreName, d.StoreImageUrl);
-        var detailsHtml = BuildDetailsHtml(d);
-        var savingsHtml = BuildSavingsHtml(d.CurrentPrice, d.OriginalPrice);
         var imageHtml = BuildImageHtml(d.ProductImageUrl);
         var productName = HtmlEncode(d.ProductName);
-        var currentPrice = d.CurrentPrice.ToString("F2", CultureInfo.InvariantCulture);
-        var couponCodeHtml = !string.IsNullOrWhiteSpace(d.CouponCode)
-            ? $"<div class=\"detail-row\"><span class=\"detail-label\">Coupon Code:</span><code>{HtmlEncode(d.CouponCode)}</code></div>"
-            : string.Empty;
+        var priceHistoryHtml = BuildPriceHistoryHtml(d.PriceHistoryNote, d.IsAllTimeLow);
+        var dealRowsHtml = BuildDealRowsHtml(d.Deals);
 
         return $$"""
 <!DOCTYPE html>
@@ -111,7 +109,7 @@ public sealed class SocialCardImageService : ISocialCardImageService
 <meta name="viewport" content="width={{CardWidth}},height={{CardHeight}}">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  
+
   body {
     width: {{CardWidth}}px;
     height: {{CardHeight}}px;
@@ -135,12 +133,12 @@ public sealed class SocialCardImageService : ISocialCardImageService
   }
 
   .image-section {
-    flex: 0 0 320px;
+    flex: 0 0 290px;
     position: relative;
     overflow: hidden;
     background: #f8fafc;
     border-bottom: 1px solid #e5e7eb;
-    padding: 30px;
+    padding: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -173,167 +171,226 @@ public sealed class SocialCardImageService : ISocialCardImageService
     flex: 1;
     display: flex;
     flex-direction: column;
-    padding: 18px 32px 16px;
-    justify-content: flex-start;
+    padding: 18px 28px 14px;
     gap: 10px;
+    min-height: 0;
   }
 
-  .store-header {
-    display: flex;
+  .product-name {
+    font-size: 28px;
+    font-weight: 800;
+    color: #0f172a;
+    line-height: 1.18;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .price-history-badge {
+    align-self: flex-start;
+    display: inline-flex;
     align-items: center;
-    gap: 14px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid #edf2f7;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
   }
 
-  .store-logo {
-    width: 48px;
-    height: 48px;
-    border-radius: 10px;
+  .price-history-badge.all-time-low {
+    background: #fee2e2;
+    color: #991b1b;
+    border-color: #fecaca;
+  }
+
+  .deals-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .deal-row {
+    display: flex;
+    align-items: stretch;
+    gap: 16px;
+    padding: 12px 16px;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    background: #ffffff;
+    box-shadow: 0 6px 18px rgba(15,23,42,0.06);
+  }
+
+  .deal-store {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 84px;
+    width: 84px;
+    text-align: center;
+  }
+
+  .deal-store-logo {
+    width: 56px;
+    height: 56px;
+    border-radius: 12px;
     border: 1px solid #e5e7eb;
     background: white;
     object-fit: contain;
+    padding: 4px;
+    flex-shrink: 0;
   }
 
-  .store-logo-fallback {
-    width: 48px;
-    height: 48px;
-    border-radius: 10px;
-    background: #ecfdf5;
-    color: #15803d;
+  .deal-store-logo-fallback {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 24px;
+    background: #ecfdf5;
+    color: #15803d;
+    font-size: 26px;
     font-weight: 900;
+    padding: 0;
   }
 
-  .store-kicker {
-    color: #64748b;
-    font-size: 15px;
-    font-weight: 600;
-  }
-
-  .store-name {
+  .deal-store-name {
     color: #0f172a;
-    font-size: 25px;
+    font-size: 14px;
     font-weight: 800;
-    line-height: 1.1;
+    line-height: 1.15;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    width: 100%;
   }
 
-  .deal-card {
-    border: 1px solid #e5e7eb;
-    border-radius: 18px;
-    padding: 16px 18px;
-    box-shadow: 0 10px 30px rgba(15,23,42,0.08);
-  }
-
-  .deal-top-row {
+  .deal-mid {
+    flex: 1;
     display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 18px;
-    margin-bottom: 8px;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+    align-self: flex-start;
   }
 
-  .deal-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    border: 1px solid #cbd5e1;
-    font-size: 17px;
-    font-weight: 600;
-    white-space: nowrap;
-    background: #ffffff;
+  .deal-detail {
+    display: grid;
+    gap: 3px;
+  }
+
+  .deal-detail-row {
+    font-size: 14px;
     color: #334155;
-    box-shadow: 0 1px 5px rgba(15,23,42,0.06);
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
 
-  .deal-badge.coupon {
-    border-color: #a7f3d0;
-    color: #047857;
+  .deal-detail-label {
+    color: #64748b;
+    font-weight: 700;
+    margin-right: 4px;
   }
 
-  .deal-badge.stacked {
-    border-color: #fde68a;
-    color: #b45309;
+  .deal-detail-row strong {
+    color: #0f172a;
+    font-weight: 800;
   }
 
-  .deal-badge.external {
-    border-color: #c7d2fe;
-    color: #4338ca;
+  .deal-detail-row code {
+    font-family: 'Monaco', 'Courier New', monospace;
+    font-weight: 700;
+    color: #111827;
+    background: #f8fafc;
+    border: 1px dashed #cbd5e1;
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 13px;
   }
 
-  .price-discount-row {
+  .deal-pricing {
     display: flex;
+    flex-direction: column;
     align-items: flex-end;
-    gap: 10px;
-    text-align: right;
+    gap: 4px;
+    flex: 0 0 auto;
+    align-self: flex-start;
   }
 
-  .price {
-    font-size: 44px;
+  .deal-price {
+    font-size: 32px;
     font-weight: 900;
     color: #16a34a;
     letter-spacing: -0.02em;
     line-height: 1;
   }
 
+  .deal-savings {
+    font-size: 12px;
+    color: #dc2626;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .deal-msrp {
+    font-size: 12px;
+    color: #94a3b8;
+    text-decoration: line-through;
+    line-height: 1;
+  }
+
+  .deal-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    font-size: 13px;
+    font-weight: 700;
+    white-space: nowrap;
+    background: #ffffff;
+    color: #334155;
+    align-self: flex-start;
+  }
+
+  .deal-badge.coupon {
+    border-color: #a7f3d0;
+    color: #047857;
+    background: #ecfdf5;
+  }
+
+  .deal-badge.stacked {
+    border-color: #fde68a;
+    color: #b45309;
+    background: #fffbeb;
+  }
+
+  .deal-badge.external {
+    border-color: #c7d2fe;
+    color: #4338ca;
+    background: #eef2ff;
+  }
+
   .discount-badge {
     background: #dcfce7;
     color: #166534;
-    padding: 7px 12px;
+    padding: 4px 10px;
     border-radius: 999px;
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 700;
     white-space: nowrap;
-  }
-
-  .product-name {
-    font-size: 31px;
-    font-weight: 800;
-    color: #0f172a;
-    line-height: 1.18;
-    margin-bottom: 10px;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  .details {
-    display: grid;
-    gap: 8px;
-  }
-
-  .detail-row {
-    font-size: 17px;
-    color: #334155;
-    line-height: 1.28;
-  }
-
-  .detail-row.attributes {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-
-  .detail-label {
-    color: #64748b;
-    font-weight: 700;
-  }
-
-  code {
-    font-family: 'Monaco', 'Courier New', monospace;
-    font-weight: 700;
-    color: #111827;
-    background: #f8fafc;
-    border: 1px dashed #cbd5e1;
-    border-radius: 7px;
-    padding: 4px 9px;
   }
 
   .footer {
@@ -341,16 +398,9 @@ public sealed class SocialCardImageService : ISocialCardImageService
     justify-content: center;
     align-items: center;
     text-align: center;
-    padding-top: 0;
-    margin-top: 4px;
-    font-size: 18px;
+    padding-top: 4px;
+    font-size: 15px;
     color: #64748b;
-  }
-
-  .branding {
-    color: #16a34a;
-    font-weight: 900;
-    letter-spacing: -0.02em;
   }
 
   .site {
@@ -369,24 +419,11 @@ public sealed class SocialCardImageService : ISocialCardImageService
 
   <!-- Content -->
   <div class="content-section">
-    {{storeHtml}}
+    <div class="product-name">{{productName}}</div>
+    {{priceHistoryHtml}}
 
-    <div class="deal-card">
-      <div class="deal-top-row">
-        <div>{{dealBadgeHtml}}</div>
-        <div class="price-discount-row">
-          {{discountBadgeHtml}}
-          <div class="price">${{currentPrice}}</div>
-        </div>
-      </div>
-
-      <div class="product-name">{{productName}}</div>
-
-      <div class="details">
-        {{detailsHtml}}
-        {{savingsHtml}}
-        {{couponCodeHtml}}
-      </div>
+    <div class="deals-stack">
+      {{dealRowsHtml}}
     </div>
 
     <div class="footer">
@@ -417,75 +454,103 @@ public sealed class SocialCardImageService : ISocialCardImageService
 """;
     }
 
-    private static string BuildStoreHtml(string? storeName, string? storeImageUrl)
+    private static string BuildDealRowsHtml(IReadOnlyList<SocialCardDeal> deals)
     {
-        var safeStoreName = string.IsNullOrWhiteSpace(storeName) ? "Featured Store" : HtmlEncode(storeName.Trim());
-        var logoHtml = !string.IsNullOrWhiteSpace(storeImageUrl)
-            ? $"""<img class="store-logo" src="{HtmlEncode(storeImageUrl)}" alt="{safeStoreName}" loading="eager">"""
-            : $"""<div class="store-logo-fallback">{HtmlEncode(safeStoreName[..1].ToUpperInvariant())}</div>""";
+        if (deals is null || deals.Count == 0)
+            return string.Empty;
+
+        return string.Join("\n", deals.Select(BuildDealRowHtml));
+    }
+
+    private static string BuildDealRowHtml(SocialCardDeal d)
+    {
+        var dealBadgeHtml = BuildDealBadgeHtml(d.DealTypeId, d.DealTypeName);
+        var discountBadgeHtml = BuildDiscountBadgeHtml(d.Price, d.OriginalPrice);
+        var price = d.Price.ToString("F2", CultureInfo.InvariantCulture);
+        var displayStoreName = string.IsNullOrWhiteSpace(d.StoreName) ? "Store" : d.StoreName.Trim();
+        var encodedStoreName = HtmlEncode(displayStoreName);
+
+        var logoHtml = !string.IsNullOrWhiteSpace(d.StoreImageUrl)
+            ? $"""<img class="deal-store-logo" src="{HtmlEncode(d.StoreImageUrl)}" alt="{encodedStoreName}" loading="eager">"""
+            : $"""<div class="deal-store-logo deal-store-logo-fallback">{HtmlEncode(displayStoreName[..1].ToUpperInvariant())}</div>""";
+
+        var detailRows = new List<string>();
+
+        // Condition (+ optional Qty) — keeps the headline of the row to one tight line.
+        var conditionBits = new List<string>();
+        if (!string.IsNullOrWhiteSpace(d.ConditionName))
+            conditionBits.Add($"<strong>{HtmlEncode(d.ConditionName)}</strong>");
+        if (d.ItemCount.HasValue && d.ItemCount.Value > 1)
+            conditionBits.Add($"Qty: {d.ItemCount.Value}");
+        if (conditionBits.Count > 0)
+            detailRows.Add($"""<div class="deal-detail-row"><span class="deal-detail-label">Condition:</span>{string.Join(" • ", conditionBits)}</div>""");
+
+        if (!string.IsNullOrWhiteSpace(d.VariantDetails))
+            detailRows.Add($"""<div class="deal-detail-row"><span class="deal-detail-label">Attributes:</span>{HtmlEncode(d.VariantDetails!)}</div>""");
+
+        if (d.FreeShipping)
+            detailRows.Add("""<div class="deal-detail-row"><span class="deal-detail-label">Shipping:</span><span style="color:#16a34a;font-weight:700;">Free</span></div>""");
+
+        if (!string.IsNullOrWhiteSpace(d.CouponCode))
+            detailRows.Add($"""<div class="deal-detail-row"><span class="deal-detail-label">Coupon:</span><code>{HtmlEncode(d.CouponCode)}</code></div>""");
+        else if (d.DealTypeId == 2)
+            detailRows.Add("""<div class="deal-detail-row"><span class="deal-detail-label">Coupon:</span>No code required</div>""");
+
+        if (d.DealTypeId == 3)
+            detailRows.Add("""<div class="deal-detail-row"><span class="deal-detail-label">How it works:</span>Stack multiple offers for the final price, see details</div>""");
+        else if (d.DealTypeId == 4)
+            detailRows.Add("""<div class="deal-detail-row"><span class="deal-detail-label">How it works:</span>Activate the offer, then shop the deal, see details</div>""");
+
+        var detailHtml = detailRows.Count > 0
+            ? $"""<div class="deal-detail">{string.Join("\n", detailRows)}</div>"""
+            : string.Empty;
+
+        string savingsHtml = string.Empty;
+        string msrpHtml = string.Empty;
+        if (d.OriginalPrice.HasValue && d.OriginalPrice.Value > d.Price)
+        {
+            var savings = d.OriginalPrice.Value - d.Price;
+            savingsHtml = $"""<div class="deal-savings">Save ${savings.ToString("F2", CultureInfo.InvariantCulture)}</div>""";
+            msrpHtml = $"""<div class="deal-msrp">MSRP ${d.OriginalPrice.Value.ToString("F2", CultureInfo.InvariantCulture)}</div>""";
+        }
 
         return $$"""
-<div class="store-header">
-  {{logoHtml}}
-  <div>
-  <div class="store-kicker">Store</div>
-  <div class="store-name">{{safeStoreName}}</div>
+<div class="deal-row">
+  <div class="deal-store">
+    {{logoHtml}}
+    <div class="deal-store-name">{{encodedStoreName}}</div>
+  </div>
+  <div class="deal-mid">
+    {{dealBadgeHtml}}
+    {{detailHtml}}
+  </div>
+  <div class="deal-pricing">
+    {{discountBadgeHtml}}
+    <div class="deal-price">${{price}}</div>
+    {{savingsHtml}}
+    {{msrpHtml}}
   </div>
 </div>
 """;
     }
 
-    private static string BuildDetailsHtml(SocialCardData d)
+    private static string BuildPriceHistoryHtml(string? note, bool isAllTimeLow)
     {
-        var rows = new List<string>();
-
-        var summaryParts = new List<string>();
-        if (!string.IsNullOrWhiteSpace(d.ConditionName))
-            summaryParts.Add(HtmlEncode(d.ConditionName));
-        if (d.ItemCount.HasValue && d.ItemCount.Value > 1)
-            summaryParts.Add($"Qty: {d.ItemCount.Value}");
-
-        if (summaryParts.Count > 0)
-            rows.Add($"""<div class="detail-row"><span class="detail-label">Details:</span> {string.Join(" • ", summaryParts)}</div>""");
-
-        if (!string.IsNullOrWhiteSpace(d.VariantDetails))
-            rows.Add($"""<div class="detail-row attributes"><span class="detail-label">Attributes:</span> {HtmlEncode(d.VariantDetails)}</div>""");
-
-        if (d.FreeShipping)
-            rows.Add("""<div class="detail-row"><span class="detail-label">Shipping:</span> <span style="color:#16a34a;font-weight:700;">Free</span></div>""");
-
-        if (d.DealTypeId == 2 && string.IsNullOrWhiteSpace(d.CouponCode))
-            rows.Add("""<div class="detail-row"><span class="detail-label">Coupon:</span> No code required</div>""");
-
-        if (d.DealTypeId == 3)
-          rows.Add("""<div class="detail-row"><span class="detail-label">How it works:</span> Stack multiple offers for the final price, see details</div>""");
-
-        if (d.DealTypeId == 4)
-          rows.Add("""<div class="detail-row"><span class="detail-label">How it works:</span> Activate the offer, then shop the deal, see details</div>""");
-
-        return rows.Count == 0
-            ? """<div class="detail-row"><span class="detail-label">Deal:</span> Verified shopping offer</div>"""
-            : string.Join("\n", rows);
+        if (string.IsNullOrWhiteSpace(note))
+            return string.Empty;
+        var cls = isAllTimeLow ? "price-history-badge all-time-low" : "price-history-badge";
+        return $"""<div class="{cls}">{HtmlEncode(note)}</div>""";
     }
-
-  private static string BuildSavingsHtml(decimal currentPrice, decimal? originalPrice)
-  {
-    if (!originalPrice.HasValue || originalPrice.Value <= currentPrice)
-      return string.Empty;
-
-    var savings = originalPrice.Value - currentPrice;
-    return $"""<div class="detail-row"><span class="detail-label">You save:</span> <span style="color:#dc2626;font-weight:700;">${savings:F2}</span> <span style="color:#64748b;text-decoration:line-through;">MSRP ${originalPrice.Value:F2}</span></div>""";
-  }
 
     private static string BuildDealBadgeHtml(int? dealTypeId, string? dealTypeName)
     {
-        var (label, className) = (dealTypeId) switch
+        var (label, className) = dealTypeId switch
         {
-      1 => ("Direct Deal", "direct"),
-            2 => ("Coupon Deal", "coupon"),
-            3 => ("Stacked Deal", "stacked"),
+            1 => ("Direct Deal",   "direct"),
+            2 => ("Coupon Deal",   "coupon"),
+            3 => ("Stacked Deal",  "stacked"),
             4 => ("External Deal", "external"),
-      _ => (string.IsNullOrWhiteSpace(dealTypeName) ? "Deal" : $"{dealTypeName} Deal", "direct")
+            _ => (string.IsNullOrWhiteSpace(dealTypeName) ? "Deal" : $"{dealTypeName} Deal", "direct")
         };
 
         return $"""<span class="deal-badge {className}">{HtmlEncode(label)}</span>""";
