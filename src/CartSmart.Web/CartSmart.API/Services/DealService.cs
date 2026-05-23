@@ -79,6 +79,35 @@ public class DealService : IDealService
         return Math.Abs(da.Value - db.Value) < 0.005m; // ~1/2 cent tolerance
     }
 
+    /// <summary>
+    /// Public entry point used by the candidate-approval flows. Bypasses the
+    /// admin/dealTypeId gates of the private helpers (those exist to skip
+    /// derived rows for non-admin user submissions and for non-direct types)
+    /// because the caller is already an admin promoting a direct deal.
+    /// </summary>
+    public async Task ApplyDerivedDealProductsForDirectDealAsync(int directDealId)
+    {
+        if (directDealId <= 0) return;
+        try
+        {
+            var svc = _supabase.GetServiceRoleClient();
+            await svc.Rpc<int>(
+                "f_upsert_storewide_deal_products_for_direct_deal",
+                new { p_direct_deal_id = directDealId }
+            );
+            await svc.Rpc<int>(
+                "f_upsert_stacked_deal_products_for_store",
+                new { p_stacked_deal_id = (int?)null, p_direct_deal_id = directDealId }
+            );
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: don't roll back the just-promoted direct deal if the
+            // derived rows fail. Admin can re-trigger via a manual re-save.
+            Console.Error.WriteLine($"[DealService] ApplyDerivedDealProductsForDirectDealAsync failed. directDealId={directDealId}: {ex}");
+        }
+    }
+
     private async Task TryApplyStoreWideDealProductsForDirectDealAsync(bool isAdmin, int? dealTypeId, int directDealId)
     {
         if (!isAdmin) return;

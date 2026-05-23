@@ -26,6 +26,14 @@ namespace CartSmart.API.Services
         Task<IEnumerable<DealNav>> GetFeedDealsAsync(int userId);
         Task<Deal> CreateDealAsync(DealProductDTO dto);
 
+        /// <summary>
+        /// Apply any existing store-wide coupon/external + stacked deals for the
+        /// store to the newly-attached direct deal_product. Mirrors the trigger
+        /// fired by the normal CreateDeal flow so admin-approved candidates also
+        /// get their derived deal_product rows.
+        /// </summary>
+        Task ApplyDerivedDealProductsForDirectDealAsync(int directDealId);
+
         Task<Deal> CreateStoreWideDealAsync(StoreWideDealDTO dto);
 
         Task<List<DealCombo>> CreateDealComboAsync(List<DealCombo> dealCombos, bool? deleteExisting = false);

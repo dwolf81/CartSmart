@@ -87,5 +87,10 @@ namespace CartSmart.API.Models.DTOs
         public bool HasPassword { get; set; }   // NEW
 
         public bool Active { get; set; } = false;
+
+        // Surfaced so the React app and the Chrome extension can decide
+        // whether to render admin-only affordances (e.g. the "Add Product"
+        // button in the extension popup).
+        public bool Admin { get; set; } = false;
     }
 }

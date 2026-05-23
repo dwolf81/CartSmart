@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build *)",
+      "Bash(dir /B)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\admin\\\\source\\\\repos\\\\CartSmart\\\\src\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(findstr /E \"\\(DbContext|Migration\\)\")",
+      "Read(//c/Users/admin/source/repos/**)",
+      "Bash(dir \"C:\\\\Users\\\\admin\\\\source\\\\repos\\\\CartSmart\\\\src\\\\CartSmart.Web\\\\src\\\\pages\" /b)",
+      "Bash(grep -E \"\\(Product|Deal|Store\\)\\\\.cs$\")",
+      "Bash(dir \"C:\\\\Users\\\\admin\\\\source\\\\repos\\\\CartSmart\\\\src\\\\CartSmart.Web\\\\src\\\\components\" /b)",
+      "Bash(findstr Admin)",
+      "Bash(dir \"C:\\\\Users\\\\admin\\\\source\\\\repos\\\\CartSmart\\\\src\\\\CartSmart.Web\\\\CartSmart.API\" /b /s)",
+      "Bash(findstr -i \"migration\")",
+      "Bash(dir /b/s \"C:\\\\Users\\\\admin\\\\source\\\\repos\\\\CartSmart\\\\src\\\\CartSmart.Web\\\\CartSmart.API\")",
+      "Bash(findstr migration *)",
+      "Bash(xargs grep -l \"OpenAI\\\\|ChatGPT\\\\|GPT\")",
+      "Bash(xargs grep -l -i \"scrape\\\\|selector\")",
+      "Bash(dir \"C:\\\\Users\\\\admin\\\\source\\\\repos\\\\CartSmart\\\\src\\\\CartSmart.Web\\\\src\\\\components\\\\\" | findstr Admin)",
+      "Read(//c/Users/admin/.claude/plans/**)",
+      "Read(//c/Users/admin/.claude/**)",
+      "Bash(curl -s http://localhost:5000/api/extension/stores)",
+      "Bash(curl -s http://localhost:5000/api/products?limit=1)",
+      "Bash(curl -s \"http://localhost:5000/api/products?limit=1\")",
+      "Bash(curl -s \"http://localhost:5000/api/products/1\")",
+      "Bash(curl -s -i \"http://localhost:5000/api/extension/stores\")"
+    ]
+  }
+}

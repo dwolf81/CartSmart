@@ -49,4 +49,45 @@ namespace CartSmart.API.Models.DTOs
         public string? errorMessage { get; set; }
         public int candidateCount { get; set; }
     }
+
+    /// <summary>
+    /// "Add Product" payload submitted by the Chrome extension when an admin
+    /// clicks the button on an approved retailer page. Carries both product
+    /// and deal data — they're promoted together on admin approval.
+    /// </summary>
+    public class ExtensionProductCandidateDTO
+    {
+        public int storeId { get; set; }
+        public string? url { get; set; }
+
+        // Product metadata
+        public string? name { get; set; }
+        public string? brand { get; set; }
+        public decimal? msrp { get; set; }
+        public string? imageUrl { get; set; }
+        public string? description { get; set; }
+
+        // Deal metadata (paired)
+        public decimal? dealPrice { get; set; }
+        public string? currency { get; set; }
+        public int? conditionCategoryId { get; set; }
+        public bool? inStock { get; set; }
+        public string? rawTitle { get; set; }
+    }
+
+    /// <summary>
+    /// Response from POST /api/extension/product-candidate.
+    /// </summary>
+    public class ExtensionProductCandidateResponseDTO
+    {
+        /// <summary>
+        /// One of: created | duplicate_candidate | duplicate_live_product | suggested_merge
+        /// </summary>
+        public string status { get; set; } = string.Empty;
+        public long? candidateId { get; set; }
+        public int? productId { get; set; }
+        public int? suggestedMergeProductId { get; set; }
+        public int submissionCount { get; set; }
+        public string? message { get; set; }
+    }
 }

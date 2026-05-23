@@ -1,10 +1,12 @@
 using CartSmart.API.Models;
 using CartSmart.Core.Worker;
+using CartSmart.Providers;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Supabase;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 using Op = Supabase.Postgrest.Constants.Operator;
 using Ord = Supabase.Postgrest.Constants.Ordering;
@@ -15,19 +17,32 @@ public class IngestStoreListingsFunction
 {
     private readonly IDealUpdateOrchestrator _orchestrator;
     private readonly IListingPageScraper _listingPageScraper;
+    private readonly IOpenAiProductMatcher _productMatcher;
+    private readonly IListingSelectorInferrer _selectorInferrer;
     private readonly ILogger<IngestStoreListingsFunction> _logger;
     private readonly IConfiguration _config;
     private readonly Client _supabase;
 
+    // Hard cap on AI matcher calls per run, to keep cost bounded
+    private const int MaxAiCallsPerRun = 200;
+    // Fuzzy thresholds — must match the extension submit endpoint's logic
+    private const double FuzzyAutoMatchScore = 0.85;
+    private const double FuzzyAiFloorScore = 0.50;
+    private const decimal AiConfidenceThreshold = 0.85m;
+
     public IngestStoreListingsFunction(
         IDealUpdateOrchestrator orchestrator,
         IListingPageScraper listingPageScraper,
+        IOpenAiProductMatcher productMatcher,
+        IListingSelectorInferrer selectorInferrer,
         ILogger<IngestStoreListingsFunction> logger,
         IConfiguration config,
         Client supabase)
     {
         _orchestrator = orchestrator;
         _listingPageScraper = listingPageScraper;
+        _productMatcher = productMatcher;
+        _selectorInferrer = selectorInferrer;
         _logger = logger;
         _config = config;
         _supabase = supabase;
@@ -48,10 +63,11 @@ public class IngestStoreListingsFunction
         if (duePages.Count == 0)
         {
             _logger.LogInformation("No product store pages are due for scraping");
-            return;
         }
 
-        _logger.LogInformation("Found {Count} product store page(s) due for scraping", duePages.Count);
+        if (duePages.Count > 0)
+        {
+            _logger.LogInformation("Found {Count} product store page(s) due for scraping", duePages.Count);
 
         // Group by store_id so we process all pages for a store together
         var byStore = duePages.GroupBy(p => p.StoreId);
@@ -225,8 +241,474 @@ public class IngestStoreListingsFunction
                 _logger.LogError(ex, "Failed to ingest pre-fetched listings for store {StoreId}", storeId);
             }
         }
+        } // end if (duePages.Count > 0)
+
+        // ── Store-level discovery pass ───────────────────────────────────────
+        // Hits admin-curated store_scan_endpoint URLs and emits deal_candidate
+        // rows. Bounded traffic: only URLs explicitly added by an admin are
+        // crawled; per-store query is scoped by endpoint.product_type_id so
+        // the fuzzy/AI candidate set stays small.
+        try
+        {
+            await RunDiscoveryPassAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Discovery pass failed");
+        }
 
         _logger.LogInformation("IngestStoreListings completed at {Time}", DateTime.UtcNow);
+    }
+
+    private async Task RunDiscoveryPassAsync(CancellationToken ct)
+    {
+        var endpointsResp = await _supabase.From<StoreScanEndpoint>()
+            .Filter("is_active", Op.Equals, "true")
+            .Get(ct);
+        var endpoints = endpointsResp.Models ?? new List<StoreScanEndpoint>();
+        if (endpoints.Count == 0)
+        {
+            _logger.LogInformation("Discovery pass: no active scan endpoints");
+            return;
+        }
+
+        int aiCallsThisRun = 0;
+        var endpointsByStore = endpoints.GroupBy(e => e.StoreId);
+
+        foreach (var storeGroup in endpointsByStore)
+        {
+            if (ct.IsCancellationRequested) break;
+            var storeId = storeGroup.Key;
+
+            var storeResp = await _supabase.From<Store>()
+                .Filter("id", Op.Equals, storeId.ToString())
+                .Limit(1)
+                .Get(ct);
+            var store = storeResp.Models.FirstOrDefault();
+            if (store == null || !store.Approved)
+            {
+                _logger.LogInformation("Discovery pass: store {StoreId} not approved or missing, skipping", storeId);
+                continue;
+            }
+            if (store.ScrapeModeId is null or 0)
+            {
+                _logger.LogInformation("Discovery pass: store {StoreId} has scrape_mode_id=0, skipping", storeId);
+                continue;
+            }
+
+            var selectors = ParseListingSelectors(store.ScrapeConfig);
+            if (selectors == null || string.IsNullOrWhiteSpace(selectors.Container))
+            {
+                _logger.LogInformation(
+                    "Discovery pass: store {StoreId} has no listing_selectors — attempting AI inference from first endpoint",
+                    storeId);
+
+                // Use the first active endpoint URL as sample input for the AI
+                var sampleEndpoint = storeGroup.FirstOrDefault();
+                if (sampleEndpoint != null)
+                {
+                    selectors = await TryInferAndPersistSelectorsAsync(store, sampleEndpoint.Url, ct);
+                }
+
+                if (selectors == null || string.IsNullOrWhiteSpace(selectors.Container))
+                {
+                    _logger.LogWarning(
+                        "Discovery pass: store {StoreId} has no listing_selectors and AI inference failed, skipping",
+                        storeId);
+                    continue;
+                }
+            }
+
+            // Products this store already has active deals for — used to skip
+            // emitting duplicate candidates per the user's "skip on existing
+            // active deal at this store" requirement.
+            var existingDealProductIds = await GetProductIdsWithActiveDealAtStoreAsync(storeId, ct);
+            var existingDealUrls = await GetActiveDealProductUrlsForStoreAsync(storeId, ct);
+            var existingCandidateUrls = await GetPendingCandidateUrlsForStoreAsync(storeId, ct);
+
+            foreach (var endpoint in storeGroup)
+            {
+                if (ct.IsCancellationRequested) break;
+                _logger.LogInformation(
+                    "Discovery pass: scanning store={StoreId} endpoint={Url} (productType={Type})",
+                    storeId, endpoint.Url, endpoint.ProductTypeId);
+
+                List<ScrapedListing> listings;
+                try
+                {
+                    var scraped = await _listingPageScraper.ScrapeListingsAsync(
+                        endpoint.Url,
+                        selectors,
+                        store.ScrapeHttpEnabled,
+                        store.ScrapePlaywrightEnabled,
+                        maxPages: 3,                  // small cap on per-endpoint pagination
+                        delayBetweenPagesMs: 2000,
+                        ct: ct);
+                    listings = scraped.ToList();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Discovery pass: scrape failed for endpoint {Url}", endpoint.Url);
+                    listings = new List<ScrapedListing>();
+                }
+
+                // Update endpoint observability fields
+                try
+                {
+                    await _supabase.From<StoreScanEndpoint>()
+                        .Filter("id", Op.Equals, endpoint.Id.ToString())
+                        .Set(x => x.LastCrawledAt!, DateTime.UtcNow)
+                        .Set(x => x.LastResultCount!, listings.Count)
+                        .Update(cancellationToken: ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Discovery pass: failed to update endpoint {Id} observability", endpoint.Id);
+                }
+
+                if (listings.Count == 0) continue;
+
+                // Candidate product set, scoped by endpoint.product_type_id when set
+                var candidateProducts = await GetCandidateProductsAsync(endpoint.ProductTypeId, ct);
+                if (candidateProducts.Count == 0)
+                {
+                    _logger.LogInformation("Discovery pass: no candidate products for endpoint {Url}", endpoint.Url);
+                    continue;
+                }
+
+                foreach (var listing in listings)
+                {
+                    if (string.IsNullOrWhiteSpace(listing.Url) || string.IsNullOrWhiteSpace(listing.Title))
+                        continue;
+                    if (!listing.Price.HasValue || listing.Price.Value <= 0)
+                        continue;
+
+                    var canonical = NormalizeUrl(listing.Url);
+                    if (string.IsNullOrWhiteSpace(canonical)) continue;
+
+                    if (existingDealUrls.Contains(canonical))
+                        continue; // already a live deal_product at this store
+
+                    if (existingCandidateUrls.Contains(canonical))
+                    {
+                        // bump last_seen_at and skip
+                        try
+                        {
+                            await _supabase.From<DealCandidate>()
+                                .Filter("deal_url_canonical", Op.Equals, canonical)
+                                .Filter("status", Op.Equals, "pending_review")
+                                .Set(x => x.LastSeenAt, DateTime.UtcNow)
+                                .Update(cancellationToken: ct);
+                        }
+                        catch { /* best-effort */ }
+                        continue;
+                    }
+
+                    // ── Match the listing to a known product ─────────────
+                    var (matchedId, matchScore) = BestFuzzyMatch(listing.Title, candidateProducts);
+                    int? finalProductId = null;
+                    decimal? aiConfidence = null;
+                    string source = "crawler";
+
+                    if (matchScore >= FuzzyAutoMatchScore)
+                    {
+                        finalProductId = matchedId;
+                    }
+                    else if (matchScore >= FuzzyAiFloorScore && aiCallsThisRun < MaxAiCallsPerRun)
+                    {
+                        aiCallsThisRun++;
+                        var aiInput = candidateProducts
+                            .Select(p => new ProductMatchCandidate(p.Id, p.Name ?? string.Empty, null))
+                            .Take(25)
+                            .ToList();
+                        var aiResult = await _productMatcher.MatchAsync(listing.Title, brandHint: null, aiInput, ct);
+                        if (aiResult?.ProductId.HasValue == true && aiResult.Confidence >= AiConfidenceThreshold)
+                        {
+                            finalProductId = aiResult.ProductId.Value;
+                            aiConfidence = aiResult.Confidence;
+                            source = "ai";
+                        }
+                    }
+
+                    if (!finalProductId.HasValue) continue;
+
+                    // ── Skip-on-existing-deal check ──────────────────────
+                    if (existingDealProductIds.Contains(finalProductId.Value))
+                    {
+                        try
+                        {
+                            await _supabase.From<ScrapeLogInsert>().Insert(new ScrapeLogInsert
+                            {
+                                StoreId = storeId,
+                                Url = listing.Url,
+                                Method = "discovery_skip",
+                                Success = false,
+                                ErrorMessage = "duplicate_active_deal"
+                            }, cancellationToken: ct);
+                        }
+                        catch { /* best-effort */ }
+                        continue;
+                    }
+
+                    var insert = new DealCandidateInsertRow
+                    {
+                        Source = source,
+                        StoreId = storeId,
+                        ProductId = finalProductId,
+                        DealUrlCanonical = canonical,
+                        ListingPrice = listing.Price,
+                        ListingCurrency = listing.Currency ?? "USD",
+                        ConditionCategoryId = listing.ConditionCategoryId,
+                        RawTitle = listing.Title,
+                        AiConfidence = aiConfidence
+                    };
+                    try
+                    {
+                        await _supabase.From<DealCandidateInsertRow>().Insert(insert, cancellationToken: ct);
+                        existingCandidateUrls.Add(canonical);
+                        _logger.LogInformation(
+                            "Discovery pass: created deal_candidate productId={ProductId} url={Url} source={Source} conf={Conf}",
+                            finalProductId, canonical, source, aiConfidence);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Unique index on (deal_url_canonical) WHERE status='pending_review'
+                        // makes this idempotent — log and continue.
+                        _logger.LogWarning(ex, "Discovery pass: insert failed for url={Url}", canonical);
+                    }
+                }
+            }
+        }
+
+        if (aiCallsThisRun > 0)
+            _logger.LogInformation("Discovery pass: {Calls} AI matcher call(s) this run", aiCallsThisRun);
+    }
+
+    // ── Discovery-pass helpers ───────────────────────────────────────────
+
+    /// <summary>
+    /// Fetches the page at <paramref name="sampleUrl"/>, sends the HTML to the AI to
+    /// infer CSS listing selectors, and — on success — persists the result back into
+    /// the store's <c>scrape_config</c> so inference only runs once.
+    /// </summary>
+    private async Task<ListingScrapeConfig?> TryInferAndPersistSelectorsAsync(
+        Store store, string sampleUrl, CancellationToken ct)
+    {
+        // Fetch raw HTML using the store's configured scrape method
+        string? html = null;
+        try
+        {
+            using var httpClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            html = await httpClient.GetStringAsync(sampleUrl, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Discovery pass: failed to fetch sample page {Url} for selector inference", sampleUrl);
+        }
+
+        if (string.IsNullOrWhiteSpace(html)) return null;
+
+        var inferred = await _selectorInferrer.InferSelectorsAsync(html, sampleUrl, ct);
+        if (inferred == null || string.IsNullOrWhiteSpace(inferred.Container)) return null;
+
+        // Persist selectors back to the store's scrape_config so we don't call AI again
+        try
+        {
+            var existingConfig = string.IsNullOrWhiteSpace(store.ScrapeConfig)
+                ? new System.Text.Json.Nodes.JsonObject()
+                : System.Text.Json.Nodes.JsonNode.Parse(store.ScrapeConfig)?.AsObject()
+                  ?? new System.Text.Json.Nodes.JsonObject();
+
+            existingConfig["listing_selectors"] = System.Text.Json.Nodes.JsonNode.Parse(
+                JsonSerializer.Serialize(inferred));
+
+            var updatedJson = existingConfig.ToJsonString();
+
+            await _supabase.From<Store>()
+                .Filter("id", Op.Equals, store.Id.ToString())
+                .Set(x => x.ScrapeConfig!, updatedJson)
+                .Update(cancellationToken: ct);
+
+            _logger.LogInformation(
+                "Discovery pass: AI-inferred listing_selectors saved for store {StoreId} (container={Container})",
+                store.Id, inferred.Container);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Discovery pass: failed to persist inferred selectors for store {StoreId}", store.Id);
+            // Non-fatal — still use the inferred selectors for this run
+        }
+
+        return inferred;
+    }
+
+    private async Task<HashSet<int>> GetProductIdsWithActiveDealAtStoreAsync(int storeId, CancellationToken ct)
+    {
+        var dealResp = await _supabase.From<Deal>()
+            .Select("id")
+            .Filter("store_id", Op.Equals, storeId.ToString())
+            .Filter("deleted", Op.Equals, "false")
+            .Filter("deal_status_id", Op.Equals, "2")
+            .Get(ct);
+        var dealIds = (dealResp.Models ?? new List<Deal>()).Select(d => d.Id).ToList();
+        if (dealIds.Count == 0) return new HashSet<int>();
+
+        var result = new HashSet<int>();
+        // Postgrest `in` filter accepts a comma-separated list — batch in chunks
+        foreach (var chunk in dealIds.Chunk(50))
+        {
+            var dpResp = await _supabase.From<DealProduct>()
+                .Select("product_id, deal_id, deleted")
+                .Filter("deal_id", Op.In, chunk.Select(id => id.ToString()).ToList())
+                .Filter("deleted", Op.Equals, "false")
+                .Get(ct);
+            foreach (var dp in dpResp.Models ?? new List<DealProduct>())
+                result.Add(dp.ProductId);
+        }
+        return result;
+    }
+
+    private async Task<HashSet<string>> GetActiveDealProductUrlsForStoreAsync(int storeId, CancellationToken ct)
+    {
+        var dealResp = await _supabase.From<Deal>()
+            .Select("id")
+            .Filter("store_id", Op.Equals, storeId.ToString())
+            .Filter("deleted", Op.Equals, "false")
+            .Get(ct);
+        var dealIds = (dealResp.Models ?? new List<Deal>()).Select(d => d.Id).ToList();
+        if (dealIds.Count == 0) return new HashSet<string>();
+
+        var urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var chunk in dealIds.Chunk(50))
+        {
+            var dpResp = await _supabase.From<DealProduct>()
+                .Select("url, deleted")
+                .Filter("deal_id", Op.In, chunk.Select(id => id.ToString()).ToList())
+                .Filter("deleted", Op.Equals, "false")
+                .Get(ct);
+            foreach (var dp in dpResp.Models ?? new List<DealProduct>())
+            {
+                var n = NormalizeUrl(dp.Url);
+                if (!string.IsNullOrWhiteSpace(n)) urls.Add(n);
+            }
+        }
+        return urls;
+    }
+
+    private async Task<HashSet<string>> GetPendingCandidateUrlsForStoreAsync(int storeId, CancellationToken ct)
+    {
+        var resp = await _supabase.From<DealCandidate>()
+            .Select("deal_url_canonical, status, store_id")
+            .Filter("store_id", Op.Equals, storeId.ToString())
+            .Filter("status", Op.Equals, "pending_review")
+            .Get(ct);
+        return new HashSet<string>(
+            (resp.Models ?? new List<DealCandidate>())
+                .Select(dc => dc.DealUrlCanonical ?? string.Empty)
+                .Where(u => !string.IsNullOrWhiteSpace(u)),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<List<Product>> GetCandidateProductsAsync(int? productTypeId, CancellationToken ct)
+    {
+        var query = _supabase.From<Product>()
+            .Select("id, name, brand_id, product_type_id, enable_service, deleted")
+            .Filter("deleted", Op.Equals, "false")
+            .Filter("enable_service", Op.Equals, "true");
+        if (productTypeId.HasValue)
+            query = query.Filter("product_type_id", Op.Equals, productTypeId.Value.ToString());
+
+        var resp = await query.Get(ct);
+        return (resp.Models ?? new List<Product>()).ToList();
+    }
+
+    private static (int? productId, double score) BestFuzzyMatch(string title, IReadOnlyList<Product> candidates)
+    {
+        var titleNorm = NormalizeName(title);
+        if (string.IsNullOrWhiteSpace(titleNorm)) return (null, 0);
+
+        int? bestId = null;
+        double bestScore = 0;
+        foreach (var p in candidates)
+        {
+            var pn = NormalizeName(p.Name);
+            var s = TokenSetScore(titleNorm, pn);
+            if (s > bestScore)
+            {
+                bestScore = s;
+                bestId = p.Id;
+            }
+        }
+        return (bestId, bestScore);
+    }
+
+    private static string NormalizeName(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+        var lower = s.Trim().ToLowerInvariant();
+        var alphanum = Regex.Replace(lower, "[^a-z0-9]+", " ");
+        return Regex.Replace(alphanum, "\\s+", " ").Trim();
+    }
+
+    private static double TokenSetScore(string a, string b)
+    {
+        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return 0;
+        var aTokens = a.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(t => t.Length > 1).ToHashSet();
+        var bTokens = b.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(t => t.Length > 1).ToHashSet();
+        if (aTokens.Count == 0 || bTokens.Count == 0) return 0;
+
+        var lenGate = Math.Max(3, (int)Math.Round(0.5 * Math.Max(a.Length, b.Length)));
+        if (Math.Abs(a.Length - b.Length) > lenGate) return 0;
+
+        var shared = aTokens.Intersect(bTokens).Count();
+        return (2.0 * shared) / (aTokens.Count + bTokens.Count);
+    }
+
+    /// <summary>
+    /// Lowercase host (strip www.), strip fragment + known tracking params,
+    /// trim trailing slash. Matches the API's NormaliseUrl shape for dedup keys.
+    /// </summary>
+    private static string NormalizeUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return string.Empty;
+        try
+        {
+            var uri = new Uri(url);
+            var host = uri.Host.ToLowerInvariant();
+            if (host.StartsWith("www.")) host = host[4..];
+
+            var builder = new UriBuilder(uri)
+            {
+                Scheme = uri.Scheme.ToLowerInvariant(),
+                Host = host,
+                Fragment = string.Empty
+            };
+
+            if (!string.IsNullOrWhiteSpace(uri.Query))
+            {
+                var qs = System.Web.HttpUtility.ParseQueryString(uri.Query);
+                var keysToRemove = qs.AllKeys
+                    .Where(k => k != null && (
+                        k.StartsWith("utm_", StringComparison.OrdinalIgnoreCase) ||
+                        k.Equals("fbclid", StringComparison.OrdinalIgnoreCase) ||
+                        k.Equals("gclid", StringComparison.OrdinalIgnoreCase) ||
+                        k.Equals("ref", StringComparison.OrdinalIgnoreCase) ||
+                        k.Equals("tag", StringComparison.OrdinalIgnoreCase)
+                    ))
+                    .ToList();
+                foreach (var key in keysToRemove) qs.Remove(key);
+                builder.Query = qs.ToString();
+            }
+
+            return builder.Uri.ToString().TrimEnd('/');
+        }
+        catch
+        {
+            return url.Trim().ToLowerInvariant().TrimEnd('/');
+        }
     }
 
     private async Task<List<ProductStorePage>> GetDueStorePageAsync(CancellationToken ct)

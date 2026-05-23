@@ -114,7 +114,8 @@ async function login(email, password) {
       };
     }
 
-    // Store the JWT and basic user info
+    // Store the JWT and basic user info (including admin flag so the popup
+    // can decide whether to show admin-only affordances like Add Product)
     await storageSet({
       [STORAGE_KEYS.API_TOKEN]: data.token,
       [STORAGE_KEYS.USER]: data.user
@@ -122,6 +123,7 @@ async function login(email, password) {
             id: data.user.id,
             email: data.user.email,
             displayName: data.user.displayName || data.user.userName,
+            isAdmin: !!data.user.admin,
           }
         : { email },
     });
@@ -237,6 +239,45 @@ async function submitPriceReport(report) {
     return { ok: true, data };
   } catch (err) {
     console.error("[CartSmart] Error submitting price report:", err);
+    return { ok: false, reason: "network_error" };
+  }
+}
+
+/**
+ * Submit a paired ProductCandidate + DealCandidate from the extension's
+ * admin-only "Add Product" button. Backend returns one of:
+ *   created | suggested_merge | duplicate_candidate | duplicate_live_product
+ */
+async function submitProductCandidate(payload) {
+  const apiBase = await getApiBase();
+  const token = await getApiToken();
+  if (!token) return { ok: false, reason: "not_logged_in" };
+
+  try {
+    const res = await fetch(`${apiBase}/api/extension/product-candidate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.status === 401) {
+      await logout();
+      return { ok: false, reason: "token_expired" };
+    }
+    if (res.status === 403) {
+      return { ok: false, reason: "forbidden" };
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      return { ok: false, reason: "api_error", status: res.status, message: text };
+    }
+    const data = await res.json();
+    return { ok: true, data };
+  } catch (err) {
+    console.error("[CartSmart] Error submitting product candidate:", err);
     return { ok: false, reason: "network_error" };
   }
 }

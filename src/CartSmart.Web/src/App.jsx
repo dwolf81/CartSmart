@@ -34,6 +34,8 @@ import CookieBanner from './components/CookieBanner';
 import AdminManualPriceTasksPage from './components/AdminManualPriceTasksPage';
 import AdminScrapeReportPage from './components/AdminScrapeReportPage';
 import AdminSocialPostsPage from './components/AdminSocialPostsPage';
+import AdminProductCandidatesPage from './components/AdminProductCandidatesPage';
+import AdminDealCandidatesPage from './components/AdminDealCandidatesPage';
 
 function App() {
   const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
@@ -161,6 +163,28 @@ function App() {
                     <>
                       <Header />
                       <AdminSocialPostsPage />
+                    </>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/admin/product-candidates"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <>
+                      <Header />
+                      <AdminProductCandidatesPage />
+                    </>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/admin/deal-candidates"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <>
+                      <Header />
+                      <AdminDealCandidatesPage />
                     </>
                   </ProtectedRoute>
                 }

@@ -328,14 +328,18 @@ public class ListingPageScraper : IListingPageScraper
 
     internal static int? InferConditionCategory(string text)
     {
-        if (string.IsNullOrWhiteSpace(text)) return null;
+        // Default to "New" (1) when no condition keyword matches. Listings
+        // overwhelmingly omit the word "new" on first-party retailer sites, so
+        // leaving condition unset there would mark genuine new-product deals
+        // as "unknown" and break the New / Used / Refurbished filtering downstream.
+        if (string.IsNullOrWhiteSpace(text)) return 1;
 
         // Check refurbished first (more specific than "new")
         if (ConditionRefurbRegex.IsMatch(text)) return 3;
         if (ConditionUsedRegex.IsMatch(text)) return 2;
         if (ConditionNewRegex.IsMatch(text)) return 1;
 
-        return null;
+        return 1;
     }
 
     private static (decimal? price, string? currency) ParsePrice(string? text)

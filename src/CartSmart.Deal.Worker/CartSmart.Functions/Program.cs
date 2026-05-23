@@ -210,6 +210,29 @@ var host = new HostBuilder()
             return new CartSmart.Providers.OpenAiDealExtractor(http, logger);
         });
 
+        // AI product matcher: used by the discovery crawler when deterministic
+        // fuzzy matching is uncertain. Output is recorded in deal_candidate.ai_confidence
+        // — never auto-promoted to a live deal.
+        services.AddHttpClient<CartSmart.Providers.OpenAiProductMatcher>();
+        services.AddSingleton<CartSmart.Providers.IOpenAiProductMatcher>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.OpenAiProductMatcher));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.OpenAiProductMatcher>>();
+            return new CartSmart.Providers.OpenAiProductMatcher(http, logger);
+        });
+
+        // AI listing selector inferrer: infers CSS selectors from a page's HTML
+        // when a store has no listing_selectors in scrape_config.
+        services.AddHttpClient<CartSmart.Providers.OpenAiListingSelectorInferrer>();
+        services.AddSingleton<CartSmart.Providers.IListingSelectorInferrer>(sp =>
+        {
+            var httpFactory = sp.GetRequiredService<System.Net.Http.IHttpClientFactory>();
+            var http = httpFactory.CreateClient(nameof(CartSmart.Providers.OpenAiListingSelectorInferrer));
+            var logger = sp.GetRequiredService<ILogger<CartSmart.Providers.OpenAiListingSelectorInferrer>>();
+            return new CartSmart.Providers.OpenAiListingSelectorInferrer(http, logger);
+        });
+
         // Signal source providers (one per source type)
         services.AddHttpClient<CartSmart.Providers.EmailSignalSourceProvider>();
         services.AddSingleton<ISignalSourceProvider>(sp =>

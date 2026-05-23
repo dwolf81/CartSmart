@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
+import StoreScanEndpointsEditor from './StoreScanEndpointsEditor';
 
 const resolveApiBaseUrl = () => {
   const configured = process.env.REACT_APP_API_URL;
@@ -1086,6 +1087,13 @@ export default function AdminStoreModal({
                   />
                 </div>
               </div>
+
+              {/* Discovery-crawler scan endpoints — only edit-mode (need a saved store id) */}
+              {internalMode === 'edit' && storeId && (
+                <div className="mt-6">
+                  <StoreScanEndpointsEditor storeId={storeId} />
+                </div>
+              )}
 
               <div className="flex justify-end mt-4">
                 <button

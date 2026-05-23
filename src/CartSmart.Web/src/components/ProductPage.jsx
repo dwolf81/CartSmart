@@ -1399,15 +1399,31 @@ const ProductPage = () => {
         <meta name="twitter:title" content={title}  />
         <meta name="twitter:description" content={desc} />
         {imageAbs ? <meta name="twitter:image" content={imageAbs} /> : null}
-        <script type="application/ld+json">{JSON.stringify({
-          '@context': 'https://schema.org',
-          '@type': 'Product',
-          name: product.name,
-          description: desc,
-          image: imageAbs ? [imageAbs] : undefined,
-          brand: product.brandName ? { '@type': 'Brand', name: product.brandName } : undefined,
-          url: canonical
-        })}</script>
+        <script type="application/ld+json">{JSON.stringify((() => {
+          const dealPrices = collapsedStoreDeals
+            .map(d => Number(d.price))
+            .filter(p => Number.isFinite(p) && p > 0);
+
+          return {
+            '@context': 'https://schema.org',
+            '@type': 'Product',
+            name: product.name,
+            description: desc,
+            image: imageAbs ? [imageAbs] : undefined,
+            brand: product.brandName ? { '@type': 'Brand', name: product.brandName } : undefined,
+            url: canonical,
+            ...(dealPrices.length > 0 && {
+              offers: {
+                '@type': 'AggregateOffer',
+                offerCount: dealPrices.length,
+                lowPrice: Math.min(...dealPrices).toFixed(2),
+                highPrice: Math.max(...dealPrices).toFixed(2),
+                priceCurrency: 'USD',
+                availability: 'https://schema.org/InStock',
+              },
+            }),
+          };
+        })())}</script>
       </Helmet>
   
       <div className="flex flex-col md:flex-row gap-8">

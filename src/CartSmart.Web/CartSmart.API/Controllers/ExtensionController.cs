@@ -18,16 +18,34 @@ namespace CartSmart.API.Controllers
         private readonly ISupabaseService _supabase;
         private readonly IMemoryCache _cache;
         private readonly IAuthService _authService;
+        private readonly IUserService _userService;
+        private readonly IUrlSanitizer _urlSanitizer;
+        private readonly IProductImageService _productImageService;
+        private readonly IProductMetadataInferenceService _metadataInference;
+        private readonly ILogger<ExtensionController> _logger;
         private static readonly TimeSpan StoreCacheDuration = TimeSpan.FromMinutes(15);
         private const string StoreCacheKey = "extension_scrape_stores";
         private static readonly TimeSpan PriceReportThrottle = TimeSpan.FromMinutes(15);
         private const string PriceReportThrottlePrefix = "ext_price_throttle:";
 
-        public ExtensionController(ISupabaseService supabase, IMemoryCache cache, IAuthService authService)
+        public ExtensionController(
+            ISupabaseService supabase,
+            IMemoryCache cache,
+            IAuthService authService,
+            IUserService userService,
+            IUrlSanitizer urlSanitizer,
+            IProductImageService productImageService,
+            IProductMetadataInferenceService metadataInference,
+            ILogger<ExtensionController> logger)
         {
             _supabase = supabase;
             _cache = cache;
             _authService = authService;
+            _userService = userService;
+            _urlSanitizer = urlSanitizer;
+            _productImageService = productImageService;
+            _metadataInference = metadataInference;
+            _logger = logger;
         }
 
         /// <summary>
@@ -238,7 +256,17 @@ namespace CartSmart.API.Controllers
             //   - Stacked (type 3): stored price = listing with each combo discount applied
             int updated = 0;
             int msrpSkipped = 0;
+            int sanitySkipped = 0;
             var now = DateTime.UtcNow;
+
+            // Sanity-check bounds. A wrong CSS selector can match a "1 in cart"
+            // badge or a shipping line and post $0.99 against a $400 product;
+            // once that lands in price_history it pollutes the all-time-low and
+            // is painful to undo. Refuse outright when the scraped price is
+            // wildly off the currently-stored price.
+            const decimal MinPriceRatio = 0.30m; // scraped < 30% of stored ⇒ suspect
+            const decimal MaxPriceRatio = 3.00m; // scraped > 3× stored ⇒ suspect (catches non-MSRP products)
+            const decimal AbsoluteMinPrice = 1.00m; // never accept sub-$1 — not a real product price
 
             // Pre-fetch parent deals for all matched deal products
             var matchedDealIds = matched.Select(dp => dp.DealId).Distinct().ToList();
@@ -299,6 +327,34 @@ namespace CartSmart.API.Controllers
             foreach (var dp in matched)
             {
                 var scrapedPrice = report.price!.Value;
+
+                // ── Sanity check: reject prices that are wildly different from
+                //    the stored price or below an absolute floor. Wrong CSS
+                //    selectors are the usual culprit; refuse before anything
+                //    lands in price_history.
+                if (scrapedPrice < AbsoluteMinPrice)
+                {
+                    Console.WriteLine($"[Extension] Sanity skip dp.Id={dp.Id}: scraped ${scrapedPrice} below absolute floor ${AbsoluteMinPrice}");
+                    dp.LastCheckedAt = now;
+                    dp.NextCheckAt = now.AddHours(24);
+                    await client.From<DealProduct>().Update(dp);
+                    sanitySkipped++;
+                    continue;
+                }
+
+                if (dp.Price > 0)
+                {
+                    var ratio = scrapedPrice / dp.Price;
+                    if (ratio < MinPriceRatio || ratio > MaxPriceRatio)
+                    {
+                        Console.WriteLine($"[Extension] Sanity skip dp.Id={dp.Id}: scraped ${scrapedPrice} is {ratio:P0} of stored ${dp.Price} (out of [{MinPriceRatio:P0}, {MaxPriceRatio:P0}])");
+                        dp.LastCheckedAt = now;
+                        dp.NextCheckAt = now.AddHours(24);
+                        await client.From<DealProduct>().Update(dp);
+                        sanitySkipped++;
+                        continue;
+                    }
+                }
 
                 // Don't accept scraped prices above MSRP (may be quantity-discount pricing)
                 if (productsMap.TryGetValue(dp.ProductId, out var msrpProduct) && msrpProduct.MSRP is > 0)
@@ -483,6 +539,9 @@ namespace CartSmart.API.Controllers
                 message = updated > 0
                     ? $"Updated {updated} deal product(s) with new price ${report.price:F2}."
                         + (msrpSkipped > 0 ? $" Skipped {msrpSkipped} where price exceeds MSRP." : "")
+                        + (sanitySkipped > 0 ? $" Skipped {sanitySkipped} as suspicious (out of sanity bounds)." : "")
+                    : sanitySkipped > 0
+                        ? $"Skipped {sanitySkipped} deal product(s) where ${report.price:F2} looked like a bad scrape (out of sanity bounds)."
                     : msrpSkipped > 0
                         ? $"Skipped {msrpSkipped} deal product(s) where price ${report.price:F2} exceeds MSRP."
                         : "Price unchanged; timestamps updated."
@@ -574,7 +633,363 @@ namespace CartSmart.API.Controllers
             return Ok(new { accepted = true, message = "Failure logged." });
         }
 
+        /// <summary>
+        /// POST /api/extension/product-candidate
+        /// Admin-only "Add Product" submission from the Chrome extension on an
+        /// approved retailer page. Captures product + paired deal data and
+        /// performs tiered dedup before inserting a product_candidate (and
+        /// linked deal_candidate) row for admin review.
+        /// </summary>
+        [HttpPost("product-candidate")]
+        [Authorize]
+        public async Task<ActionResult<ExtensionProductCandidateResponseDTO>> SubmitProductCandidate(
+            [FromBody] ExtensionProductCandidateDTO body)
+        {
+            // ── Auth + admin gate ────────────────────────────────────────────
+            var userIdStr = _authService.GetCurrentUserId();
+            if (string.IsNullOrWhiteSpace(userIdStr) || !int.TryParse(userIdStr, out var submitterId))
+                return Unauthorized();
+            var submitter = await _userService.GetUserByIdAsync(submitterId);
+            if (submitter == null) return Unauthorized();
+            if (!submitter.Admin) return Forbid();
+
+            if (body == null || body.storeId <= 0 || string.IsNullOrWhiteSpace(body.url) || string.IsNullOrWhiteSpace(body.name))
+                return BadRequest(new ExtensionProductCandidateResponseDTO
+                {
+                    status = "invalid",
+                    message = "storeId, url, and name are required."
+                });
+
+            var client = _supabase.GetServiceRoleClient();
+
+            // ── Store gate: must be approved + browser-scrape allowed ────────
+            var storeResp = await client
+                .From<Store>()
+                .Where(s => s.Id == body.storeId)
+                .Limit(1)
+                .Get();
+            var store = storeResp.Models.FirstOrDefault();
+            if (store == null || !store.Approved || !ScrapeMode.AllowsBrowserScrape(store.ScrapeModeId))
+                return Ok(new ExtensionProductCandidateResponseDTO
+                {
+                    status = "invalid",
+                    message = "Store is not approved for browser submissions."
+                });
+
+            // ── Canonicalize URL (no affiliate injection; we want clean dedup keys) ──
+            var canonical = _urlSanitizer.CleanForStore(body.url, store, injectAffiliate: false)
+                ?? NormaliseUrl(body.url);
+            if (string.IsNullOrWhiteSpace(canonical))
+                return BadRequest(new ExtensionProductCandidateResponseDTO
+                {
+                    status = "invalid",
+                    message = "URL could not be parsed."
+                });
+
+            // ── Tier 1: URL matches a live deal_product for this store ──────
+            var liveDealIdsResp = await client
+                .From<Deal>()
+                .Select("id")
+                .Filter("store_id", Supabase.Postgrest.Constants.Operator.Equals, store.Id.ToString())
+                .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                .Get();
+            var liveDealIds = (liveDealIdsResp.Models ?? new List<Deal>()).Select(d => d.Id).ToList();
+
+            var liveDealProducts = new List<DealProduct>();
+            foreach (var dealId in liveDealIds)
+            {
+                var dpResp = await client
+                    .From<DealProduct>()
+                    .Filter("deal_id", Supabase.Postgrest.Constants.Operator.Equals, dealId.ToString())
+                    .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                    .Get();
+                liveDealProducts.AddRange(dpResp.Models ?? new List<DealProduct>());
+            }
+
+            var liveMatch = liveDealProducts.FirstOrDefault(dp => UrlsMatch(dp.Url, canonical));
+            if (liveMatch != null)
+            {
+                _logger.LogInformation(
+                    "[ProductCandidate] duplicate_live_product url={Url} productId={ProductId} submitter={UserId}",
+                    canonical, liveMatch.ProductId, submitterId);
+                return Ok(new ExtensionProductCandidateResponseDTO
+                {
+                    status = "duplicate_live_product",
+                    productId = liveMatch.ProductId,
+                    message = "This product is already tracked at this store."
+                });
+            }
+
+            // ── Tier 2: same canonical URL already submitted as a candidate ─
+            var candidateResp = await client
+                .From<ProductCandidate>()
+                .Filter("source_url_canonical", Supabase.Postgrest.Constants.Operator.Equals, canonical)
+                .Limit(1)
+                .Get();
+            var existingCandidate = candidateResp.Models.FirstOrDefault();
+            if (existingCandidate != null)
+            {
+                existingCandidate.SubmissionCount += 1;
+                existingCandidate.LastSubmittedAt = DateTime.UtcNow;
+                existingCandidate.SubmittersJsonb = AppendSubmitter(
+                    existingCandidate.SubmittersJsonb,
+                    submitterId,
+                    body.url ?? canonical);
+                await client.From<ProductCandidate>().Update(existingCandidate);
+
+                _logger.LogInformation(
+                    "[ProductCandidate] duplicate_candidate id={Id} count={Count} submitter={UserId}",
+                    existingCandidate.Id, existingCandidate.SubmissionCount, submitterId);
+
+                return Ok(new ExtensionProductCandidateResponseDTO
+                {
+                    status = "duplicate_candidate",
+                    candidateId = existingCandidate.Id,
+                    submissionCount = existingCandidate.SubmissionCount,
+                    suggestedMergeProductId = existingCandidate.SuggestedMergeProductId,
+                    message = "Already queued for admin review."
+                });
+            }
+
+            // ── Tier 3: brand + normalized-name fuzzy match against live products ──
+            var nameNormalized = NormalizeProductName(body.name);
+            int? brandId = await ResolveBrandIdAsync(client, body.brand);
+            int? productTypeId = null;
+            int? suggestedMergeProductId = null;
+
+            // AI inference: fill in brand_id (when name lookup missed) and
+            // product_type_id (never scraped). Best-effort; on failure we just
+            // leave the fields null and let the admin set them on approval.
+            if (!brandId.HasValue || !productTypeId.HasValue)
+            {
+                try
+                {
+                    var inferred = await _metadataInference.InferAsync(
+                        body.name!, body.brand, HttpContext.RequestAborted);
+                    brandId ??= inferred.BrandId;
+                    productTypeId ??= inferred.ProductTypeId;
+                    if (inferred.BrandId.HasValue || inferred.ProductTypeId.HasValue)
+                    {
+                        _logger.LogInformation(
+                            "[ProductCandidate] AI inferred brand={Brand} type={Type} conf={Conf} reason={Reason}",
+                            inferred.BrandId, inferred.ProductTypeId, inferred.Confidence, inferred.Reason);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[ProductCandidate] Metadata inference failed for \"{Name}\"", body.name);
+                }
+            }
+
+            if (brandId.HasValue && !string.IsNullOrWhiteSpace(nameNormalized))
+            {
+                var brandProductsResp = await client
+                    .From<Product>()
+                    .Select("id, name, slug, brand_id, deleted, product_type_id")
+                    .Filter("brand_id", Supabase.Postgrest.Constants.Operator.Equals, brandId.Value.ToString())
+                    .Filter("deleted", Supabase.Postgrest.Constants.Operator.Equals, "false")
+                    .Get();
+
+                var brandProducts = brandProductsResp.Models ?? new List<Product>();
+                var bestScore = 0.0;
+                int? bestId = null;
+                foreach (var p in brandProducts)
+                {
+                    var pn = NormalizeProductName(p.Name);
+                    var score = FuzzyScore(nameNormalized, pn);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestId = p.Id;
+                    }
+                }
+
+                if (bestScore >= 0.70 && bestId.HasValue)
+                    suggestedMergeProductId = bestId;
+            }
+
+            // ── Insert fresh product_candidate ───────────────────────────────
+            // Seed image_url with the original URL so the admin grid shows
+            // something immediately; the async rehost below overwrites it
+            // with the WebP-rehosted URL when (and if) that succeeds.
+            var insertRow = new ProductCandidateInsertRow
+            {
+                Source = "extension",
+                SourceStoreId = store.Id,
+                SourceUrlCanonical = canonical,
+                Name = body.name!,
+                NameNormalized = nameNormalized,
+                BrandText = body.brand,
+                BrandId = brandId,
+                ProductTypeId = productTypeId,
+                MSRP = body.msrp,
+                ImageUrlOriginal = body.imageUrl,
+                ImageUrl = body.imageUrl,
+                Description = body.description,
+                SuggestedMergeProductId = suggestedMergeProductId,
+                SubmittedByUserId = submitterId,
+                SubmittersJsonb = AppendSubmitter("[]", submitterId, body.url ?? canonical)
+            };
+
+            var insertResp = await client.From<ProductCandidateInsertRow>().Insert(insertRow);
+            var created = await client
+                .From<ProductCandidate>()
+                .Filter("source_url_canonical", Supabase.Postgrest.Constants.Operator.Equals, canonical)
+                .Limit(1)
+                .Get();
+            var candidate = created.Models.FirstOrDefault();
+            if (candidate == null)
+            {
+                _logger.LogError("[ProductCandidate] Insert succeeded but lookup returned no row for url={Url}", canonical);
+                return StatusCode(StatusCodes.Status500InternalServerError, new ExtensionProductCandidateResponseDTO
+                {
+                    status = "invalid",
+                    message = "Candidate was created but could not be loaded."
+                });
+            }
+
+            // ── Linked deal_candidate (paired submission) ────────────────────
+            if (body.dealPrice is > 0)
+            {
+                var dealCandidate = new DealCandidateInsertRow
+                {
+                    Source = "extension",
+                    StoreId = store.Id,
+                    ProductCandidateId = candidate.Id,
+                    DealUrlCanonical = canonical,
+                    ListingPrice = body.dealPrice,
+                    ListingCurrency = string.IsNullOrWhiteSpace(body.currency) ? "USD" : body.currency,
+                    ListingMsrp = body.msrp,
+                    ConditionCategoryId = body.conditionCategoryId,
+                    InStock = body.inStock,
+                    RawTitle = body.rawTitle
+                };
+                try
+                {
+                    await client.From<DealCandidateInsertRow>().Insert(dealCandidate);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[ProductCandidate] Failed to insert linked deal_candidate for candidate {Id}", candidate.Id);
+                }
+            }
+
+            // ── Image rehost (fire-and-forget into the 'candidates' bucket) ──
+            if (!string.IsNullOrWhiteSpace(body.imageUrl))
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var basePath = $"candidates/{candidate.Id}/{Guid.NewGuid():N}";
+                        var result = await _productImageService.RehostAsync(body.imageUrl!, "products", basePath);
+                        if (result.Success && !string.IsNullOrWhiteSpace(result.PublicUrl))
+                        {
+                            var serviceClient = _supabase.GetServiceRoleClient();
+                            candidate.ImageUrl = result.PublicUrl;
+                            await serviceClient.From<ProductCandidate>().Update(candidate);
+                        }
+                        else
+                        {
+                            _logger.LogInformation("[ProductCandidate] Image rehost skipped for candidate {Id}: {Error}", candidate.Id, result.Error);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "[ProductCandidate] Image rehost failed for candidate {Id}", candidate.Id);
+                    }
+                });
+            }
+
+            var status = suggestedMergeProductId.HasValue ? "suggested_merge" : "created";
+            _logger.LogInformation(
+                "[ProductCandidate] {Status} id={Id} url={Url} brandId={BrandId} mergeSuggest={Merge}",
+                status, candidate.Id, canonical, brandId, suggestedMergeProductId);
+
+            return Ok(new ExtensionProductCandidateResponseDTO
+            {
+                status = status,
+                candidateId = candidate.Id,
+                suggestedMergeProductId = suggestedMergeProductId,
+                submissionCount = 1,
+                message = suggestedMergeProductId.HasValue
+                    ? "Looks similar to an existing product — admin will confirm."
+                    : "Queued for admin review."
+            });
+        }
+
         // ─── Helpers ──────────────────────────────────────────────────────
+
+        /// <summary>Lowercase + collapse anything non-alphanumeric to a single space.</summary>
+        private static string NormalizeProductName(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return string.Empty;
+            var lower = input.Trim().ToLowerInvariant();
+            var stripped = System.Text.RegularExpressions.Regex.Replace(lower, "[^a-z0-9]+", " ");
+            return System.Text.RegularExpressions.Regex.Replace(stripped, "\\s+", " ").Trim();
+        }
+
+        /// <summary>
+        /// Token-set similarity in [0,1]: shared-token ratio with a length-tolerance gate.
+        /// 0.85+ ≈ strong match. 0.70+ ≈ admin-confirm merge suggestion.
+        /// </summary>
+        private static double FuzzyScore(string a, string b)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return 0;
+            var aTokens = a.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(t => t.Length > 1).ToHashSet();
+            var bTokens = b.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(t => t.Length > 1).ToHashSet();
+            if (aTokens.Count == 0 || bTokens.Count == 0) return 0;
+
+            // Length gate so "Pro V1" doesn't 70%-match "Pro V1x Left Dash Yellow 2024 Limited Edition"
+            var lenA = a.Length;
+            var lenB = b.Length;
+            var lenGate = Math.Max(3, (int)Math.Round(0.5 * Math.Max(lenA, lenB)));
+            if (Math.Abs(lenA - lenB) > lenGate) return 0;
+
+            var shared = aTokens.Intersect(bTokens).Count();
+            var ratio = (2.0 * shared) / (aTokens.Count + bTokens.Count);
+            return ratio;
+        }
+
+        private static async Task<int?> ResolveBrandIdAsync(Supabase.Client client, string? brandText)
+        {
+            if (string.IsNullOrWhiteSpace(brandText)) return null;
+            var trimmed = brandText.Trim();
+            var resp = await client
+                .From<Brand>()
+                .Select("id, name")
+                .Filter("name", Supabase.Postgrest.Constants.Operator.ILike, trimmed)
+                .Limit(1)
+                .Get();
+            var brand = resp.Models.FirstOrDefault();
+            return brand?.Id;
+        }
+
+        /// <summary>
+        /// Append {user_id, at, url} to a JSON array string. Tolerates malformed input
+        /// by resetting to a single-element array.
+        /// </summary>
+        private static string AppendSubmitter(string existingJsonArray, int userId, string url)
+        {
+            JArray arr;
+            try
+            {
+                arr = string.IsNullOrWhiteSpace(existingJsonArray)
+                    ? new JArray()
+                    : JArray.Parse(existingJsonArray);
+            }
+            catch
+            {
+                arr = new JArray();
+            }
+            arr.Add(new JObject
+            {
+                ["user_id"] = userId,
+                ["at"] = DateTime.UtcNow.ToString("o"),
+                ["url"] = url
+            });
+            return arr.ToString(Newtonsoft.Json.Formatting.None);
+        }
 
         private static JToken? TryParseScrapeConfig(string? raw)
         {

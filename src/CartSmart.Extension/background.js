@@ -343,6 +343,80 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // ── Admin "Add Product" submission ───────────────────────────────────
+  if (message.type === "SUBMIT_PRODUCT_CANDIDATE") {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.url || !tab.id) {
+          sendResponse({ ok: false, reason: "no_tab" });
+          return;
+        }
+
+        await ensureStoresLoaded();
+        const store = findMatchingStore(tab.url, storeConfigs);
+        if (!store) {
+          sendResponse({ ok: false, reason: "no_store_match" });
+          return;
+        }
+
+        // Collect this store's price selectors so the same dealPrice we'd
+        // capture for a normal price report ends up in the candidate too.
+        let priceSelectors = [...DEFAULT_PRICE_SELECTORS];
+        if (store.scrapeConfig) {
+          try {
+            const cfg = typeof store.scrapeConfig === "string"
+              ? JSON.parse(store.scrapeConfig)
+              : store.scrapeConfig;
+            if (cfg.price_selectors?.length) priceSelectors = cfg.price_selectors;
+          } catch { /* fall back to defaults */ }
+        }
+
+        const extractResp = await sendToContentScript(tab.id, {
+          type: "EXTRACT_PRODUCT",
+          selectors: priceSelectors,
+        });
+
+        if (!extractResp?.ok || !extractResp?.result) {
+          sendResponse({ ok: false, reason: "extract_failed", error: extractResp?.error });
+          return;
+        }
+
+        const m = extractResp.result;
+        // Refuse to submit if the page lacks product signals (no JSON-LD
+        // Product, no og:type=product, no microdata, no scraped price). The
+        // name fallback would otherwise capture an <h1>/<title> from a home
+        // or category page and queue a junk candidate.
+        if (!m.isProductPage || !m.name) {
+          sendResponse({ ok: false, reason: "not_product_page" });
+          return;
+        }
+
+        const payload = {
+          storeId: store.id,
+          url: m.url || tab.url,
+          name: m.name,
+          brand: m.brand,
+          msrp: m.msrp,
+          imageUrl: m.imageUrl,
+          description: m.description,
+          dealPrice: m.dealPrice,
+          currency: m.currency,
+          conditionCategoryId: m.conditionCategoryId,
+          inStock: m.inStock,
+          rawTitle: m.rawTitle,
+        };
+
+        const result = await submitProductCandidate(payload);
+        sendResponse(result);
+      } catch (err) {
+        console.error("[CartSmart] SUBMIT_PRODUCT_CANDIDATE error:", err);
+        sendResponse({ ok: false, reason: "exception", error: err?.message });
+      }
+    })();
+    return true; // keep channel open for async response
+  }
+
   // ── Auto-scan messages ────────────────────────────────────────────────
   if (message.type === "START_AUTOSCAN") {
     if (autoScanRunning) {

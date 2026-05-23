@@ -92,6 +92,30 @@ document.addEventListener("DOMContentLoaded", async () => {
               setTimeout(() => { extractBtn.textContent = "Extract Price Now"; }, 2000);
             });
           });
+
+          // Admin-only Add Product button. Reveal it asynchronously once we
+          // confirm the signed-in user is an admin — we don't want to flash
+          // it for non-admins.
+          chrome.storage.local.get(["cartsmart_user"], (storeResult) => {
+            if (!storeResult?.cartsmart_user?.isAdmin) return;
+
+            const addBtn = document.getElementById("add-product-btn");
+            const resultBox = document.getElementById("add-product-result");
+            addBtn.style.display = "block";
+            addBtn.addEventListener("click", () => {
+              addBtn.textContent = "Submitting…";
+              addBtn.disabled = true;
+              resultBox.style.display = "none";
+              resultBox.textContent = "";
+
+              chrome.runtime.sendMessage({ type: "SUBMIT_PRODUCT_CANDIDATE" }, (res) => {
+                addBtn.disabled = false;
+                addBtn.textContent = "Add Product";
+                resultBox.style.display = "block";
+                resultBox.textContent = formatCandidateResult(res);
+              });
+            });
+          });
         } else {
           dot.className = "status-indicator inactive";
           label.textContent = "Not a tracked store";
@@ -132,6 +156,31 @@ function renderReports(reports) {
     li.appendChild(price);
     li.appendChild(time);
     list.appendChild(li);
+  }
+}
+
+function formatCandidateResult(res) {
+  if (!res) return "No response from extension.";
+  if (!res.ok) {
+    if (res.reason === "no_store_match") return "This page isn't on an approved store.";
+    if (res.reason === "not_logged_in" || res.reason === "token_expired") return "Please sign in again.";
+    if (res.reason === "forbidden") return "Admin access required.";
+    if (res.reason === "extract_failed") return "Could not read product details from this page.";
+    if (res.reason === "not_product_page") return "This doesn't look like a product page — nothing to add.";
+    return res.message || `Submission failed (${res.reason || "unknown"}).`;
+  }
+  const d = res.data || {};
+  switch (d.status) {
+    case "created":
+      return `Submitted for review (candidate #${d.candidateId}).`;
+    case "suggested_merge":
+      return `Looks similar to product #${d.suggestedMergeProductId} — admin will confirm.`;
+    case "duplicate_candidate":
+      return `Already queued for review (${d.submissionCount} submission${d.submissionCount === 1 ? "" : "s"}).`;
+    case "duplicate_live_product":
+      return `Already tracked as product #${d.productId}.`;
+    default:
+      return d.message || "Submitted.";
   }
 }
 

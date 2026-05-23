@@ -266,10 +266,249 @@ function extractPrice(selectors) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Product metadata extraction
+//   Returns { name, brand, msrp, imageUrl, description, dealPrice, currency,
+//             condition, inStock, rawTitle } for admin "Add Product" submissions.
+//   Reuses extractPrice() for dealPrice and isStruckThrough() for MSRP detection.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function readMetaContent(selectors) {
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    const v = el?.getAttribute("content") || el?.textContent;
+    if (v && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+function extractJsonLdProduct() {
+  const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+  for (const s of scripts) {
+    try {
+      const raw = JSON.parse(s.textContent || "null");
+      const items = Array.isArray(raw) ? raw : [raw];
+      for (const item of items) {
+        if (!item) continue;
+        const t = item["@type"];
+        const isProduct = t === "Product" ||
+          (Array.isArray(t) && t.includes("Product"));
+        if (isProduct) return item;
+        // Some sites nest under graph
+        if (Array.isArray(item["@graph"])) {
+          for (const g of item["@graph"]) {
+            const gt = g?.["@type"];
+            if (gt === "Product" || (Array.isArray(gt) && gt.includes("Product")))
+              return g;
+          }
+        }
+      }
+    } catch {
+      /* ignore malformed JSON-LD */
+    }
+  }
+  return null;
+}
+
+function extractProductName(jsonLd) {
+  return (
+    jsonLd?.name ||
+    readMetaContent([
+      'meta[property="og:title"]',
+      'meta[name="twitter:title"]',
+      'meta[itemprop="name"]',
+    ]) ||
+    document.querySelector("h1")?.textContent?.trim() ||
+    document.title?.trim() ||
+    null
+  );
+}
+
+function extractProductBrand(jsonLd) {
+  const fromLd = jsonLd?.brand;
+  if (typeof fromLd === "string") return fromLd;
+  if (fromLd && typeof fromLd === "object" && fromLd.name) return String(fromLd.name);
+
+  return readMetaContent([
+    'meta[itemprop="brand"]',
+    '[itemprop="brand"]',
+    'meta[property="product:brand"]',
+    'meta[property="og:brand"]',
+  ]);
+}
+
+function extractProductDescription(jsonLd) {
+  return (
+    jsonLd?.description ||
+    readMetaContent([
+      'meta[property="og:description"]',
+      'meta[name="description"]',
+      'meta[name="twitter:description"]',
+    ])
+  );
+}
+
+function extractProductImage(jsonLd) {
+  // JSON-LD image can be string, array, or object with `url`
+  const ld = jsonLd?.image;
+  if (typeof ld === "string") return absolutizeUrl(ld);
+  if (Array.isArray(ld) && ld.length > 0) {
+    const first = ld[0];
+    if (typeof first === "string") return absolutizeUrl(first);
+    if (first?.url) return absolutizeUrl(first.url);
+  }
+  if (ld && typeof ld === "object" && ld.url) return absolutizeUrl(ld.url);
+
+  const og = readMetaContent([
+    'meta[property="og:image:secure_url"]',
+    'meta[property="og:image"]',
+    'meta[name="twitter:image"]',
+  ]);
+  if (og) return absolutizeUrl(og);
+
+  // Last resort: largest <img> inside a product/main area
+  const containers = document.querySelectorAll(
+    '[class*="product"], [id*="product"], main, [class*="gallery"]'
+  );
+  let best = null;
+  let bestArea = 0;
+  for (const c of containers) {
+    for (const img of c.querySelectorAll("img")) {
+      const w = img.naturalWidth || img.width || 0;
+      const h = img.naturalHeight || img.height || 0;
+      const area = w * h;
+      if (area > bestArea && img.src) {
+        bestArea = area;
+        best = img.src;
+      }
+    }
+  }
+  return best ? absolutizeUrl(best) : null;
+}
+
+function absolutizeUrl(maybeRelative) {
+  try {
+    return new URL(maybeRelative, window.location.href).toString();
+  } catch {
+    return maybeRelative;
+  }
+}
+
+function extractMsrp(jsonLd) {
+  // Common JSON-LD shapes — listPrice / priceSpecification.listPrice are
+  // explicit MSRP fields. highPrice is the top of an offer range and only
+  // counts as MSRP when there's a real range (highPrice > lowPrice);
+  // otherwise it's just the current selling price.
+  const offers = jsonLd?.offers;
+  const offerList = Array.isArray(offers) ? offers : offers ? [offers] : [];
+  for (const o of offerList) {
+    const explicit = [o.listPrice, o.priceSpecification?.listPrice];
+    for (const c of explicit) {
+      const n = tryParsePrice(String(c ?? ""));
+      if (n) return n;
+    }
+    const high = tryParsePrice(String(o.highPrice ?? ""));
+    const low = tryParsePrice(String(o.lowPrice ?? ""));
+    if (high && low && high > low) return high;
+  }
+
+  // DOM-based: any element whose class/id hints at a "was / list / strike" price
+  const selectors = [
+    '[class*="was-price" i]',
+    '[class*="list-price" i]',
+    '[class*="compare-at" i]',
+    '[class*="compare-price" i]',
+    '[class*="msrp" i]',
+    '[class*="rrp" i]',
+    '[class*="strike" i]',
+    "del",
+    "s",
+  ];
+  for (const sel of selectors) {
+    for (const el of document.querySelectorAll(sel)) {
+      if (!isStruckThrough(el)) continue;
+      const n = tryParsePrice(el.textContent || "");
+      if (n) return n;
+    }
+  }
+  return null;
+}
+
+// Detect whether the current page is a product detail page. Used to refuse
+// "Add Product" submissions from category/home pages where extractProductName
+// will fall back to <h1>/<title> and silently return a non-product title.
+function detectIsProductPage(jsonLd, dealPrice) {
+  if (jsonLd) return true;
+  const ogType = readMetaContent(['meta[property="og:type"]']);
+  if (ogType && /product/i.test(ogType)) return true;
+  if (document.querySelector('[itemtype*="schema.org/Product" i]')) return true;
+  if (dealPrice && dealPrice > 0) return true;
+  return false;
+}
+
+function detectStock() {
+  const bodyText = (document.body?.textContent || "").toLowerCase();
+  if (OOS_KEYWORDS.some((k) => bodyText.includes(k))) return false;
+  if (STOCK_KEYWORDS.some((k) => bodyText.includes(k))) return true;
+  return null;
+}
+
+// Mirrors the worker-side ConditionNewRegex / ConditionUsedRegex etc.
+// Maps to condition_category_id: 1=New, 2=Used, 3=Refurbished.
+// Defaults to 1 (New) so candidates always carry a condition — matches the
+// ingest store-listing scraper, which also assumes "new" when no keyword hits.
+function detectConditionCategoryId() {
+  const t = (document.body?.textContent || "").toLowerCase();
+  if (/\brefurbished\b|\bmanufacturer refurbished\b|\bcertified pre[- ]?owned\b/.test(t)) return 3;
+  if (/\bopen box\b|\bused\b|\bpre[- ]?owned\b/.test(t)) return 2;
+  return 1;
+}
+
+function extractProductMetadata(priceSelectors) {
+  const jsonLd = extractJsonLdProduct();
+  const priceResult = extractPrice(priceSelectors || []);
+  const dealPrice = priceResult.price;
+
+  // Discard MSRP that isn't actually higher than the current selling price —
+  // common when JSON-LD's highPrice equals the offer price on single-variant
+  // listings, which would otherwise file the deal as having no discount.
+  let msrp = extractMsrp(jsonLd);
+  if (msrp != null && dealPrice != null && msrp <= dealPrice) {
+    msrp = null;
+  }
+
+  return {
+    isProductPage: detectIsProductPage(jsonLd, dealPrice),
+    name: extractProductName(jsonLd),
+    brand: extractProductBrand(jsonLd),
+    msrp,
+    imageUrl: extractProductImage(jsonLd),
+    description: extractProductDescription(jsonLd),
+    dealPrice,
+    currency: priceResult.currency || "USD",
+    conditionCategoryId: detectConditionCategoryId(),
+    inStock: detectStock(),
+    rawTitle: document.title?.trim() || null,
+    url: window.location.href,
+    extractedAt: new Date().toISOString(),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Message listener
 // ═══════════════════════════════════════════════════════════════════════════
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "EXTRACT_PRODUCT") {
+    // Synchronous response — background will await it.
+    try {
+      const result = extractProductMetadata(message.selectors || []);
+      sendResponse({ ok: true, result });
+    } catch (err) {
+      sendResponse({ ok: false, error: err?.message || String(err) });
+    }
+    return; // false: response is synchronous
+  }
+
   if (message.type !== "EXTRACT_PRICE") return;
 
   const { storeId, storeName, selectors } = message;

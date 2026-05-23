@@ -120,6 +120,7 @@ async function handleLogin() {
           id: data.user.id,
           email: data.user.email,
           displayName: data.user.displayName || data.user.userName,
+          isAdmin: !!data.user.admin,
         }
       : { email };
 
@@ -229,6 +230,7 @@ async function handleGoogleLogin() {
           id: data.user.id,
           email: data.user.email,
           displayName: data.user.displayName || data.user.userName,
+          isAdmin: !!data.user.admin,
         }
       : {};
 

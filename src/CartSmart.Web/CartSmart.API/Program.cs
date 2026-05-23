@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using CartSmart.API.Services;
 using Microsoft.OpenApi.Models;
 using DotNetEnv;
@@ -271,6 +272,21 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddSingleton<IUrlSanitizer, UrlSanitizer>();
 
+// Reusable image downloader + WebP rehoster, used by both the live product
+// image importer (ProductsController) and the candidate pipeline.
+builder.Services.AddHttpClient();
+builder.Services.AddScoped<IProductImageService, ProductImageService>();
+
+// OpenAI-backed brand / product-type inference for the extension "Add Product"
+// candidate flow. Uses a typed HttpClient so the SDK pattern matches SocialPostService.
+builder.Services.AddHttpClient<ProductMetadataInferenceService>();
+builder.Services.AddScoped<IProductMetadataInferenceService>(sp =>
+    new ProductMetadataInferenceService(
+        sp.GetRequiredService<ISupabaseService>(),
+        sp.GetRequiredService<IMemoryCache>(),
+        sp.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient(nameof(ProductMetadataInferenceService)),
+        sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ProductMetadataInferenceService>>()));
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -310,6 +326,11 @@ app.Use(async (context, next) =>
 });
 
 
+
+// Sitemap must be mapped before UseStaticFiles so the .xml extension
+// isn't intercepted by the static-file middleware.
+app.MapControllerRoute(name: "sitemap", pattern: "sitemap.xml",
+    defaults: new { controller = "Sitemap", action = "GetSitemap" });
 
 // Use endpoints after routing and auth
 app.UseEndpoints(endpoints =>

@@ -270,7 +270,8 @@ namespace CartSmart.API.Services
                         Level = user.Level,
                         EmailOptIn = user.EmailOptIn,
                         DisplayName = user.DisplayName,
-                        AllowReview = user.AllowReview
+                        AllowReview = user.AllowReview,
+                        Admin = user.Admin
                     }
                 };
             }
@@ -447,7 +448,8 @@ namespace CartSmart.API.Services
                         Level = user.Level,
                         EmailOptIn = user.EmailOptIn,
                         DisplayName = user.DisplayName,
-                        AllowReview = user.AllowReview
+                        AllowReview = user.AllowReview,
+                        Admin = user.Admin
                     }
                 };
             }
@@ -685,7 +687,8 @@ namespace CartSmart.API.Services
             DisplayName = u.DisplayName,
             EmailConfirmed = u.EmailConfirmed,
             SsoProvider = u.SsoProvider,
-            HasPassword = !string.IsNullOrEmpty(u.Password)  // Was u.PasswordHash
+            HasPassword = !string.IsNullOrEmpty(u.Password),  // Was u.PasswordHash
+            Admin = u.Admin
         };
 
         public async Task<User?> FindByIdAsync(int userId)

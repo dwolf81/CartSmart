@@ -237,49 +237,6 @@ const Header = () => {
                                                 </Menu.Item>
                                             )}
 
-                                            {Boolean(user?.admin) && (
-                                                <Menu.Item>
-                                                    {({ active }) => (
-                                                        <Link
-                                                            to="/admin/manual-price"
-                                                            className={`${active ? 'bg-gray-100' : ''} flex items-center justify-between px-4 py-2 text-sm text-gray-700`}
-                                                        >
-                                                            Manual Price Tasks
-                                                            {pendingTasks > 0 && (
-                                                                <span className="ml-2 bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
-                                                                    {pendingTasks}
-                                                                </span>
-                                                            )}
-                                                        </Link>
-                                                    )}
-                                                </Menu.Item>
-                                            )}
-
-                                            {Boolean(user?.admin) && (
-                                                <Menu.Item>
-                                                    {({ active }) => (
-                                                        <Link
-                                                            to="/admin/scrape-report"
-                                                            className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
-                                                        >
-                                                            Scrape Report
-                                                        </Link>
-                                                    )}
-                                                </Menu.Item>
-                                            )}
-
-                                            {Boolean(user?.admin) && (
-                                                <Menu.Item>
-                                                    {({ active }) => (
-                                                        <Link
-                                                            to="/admin/social-posts"
-                                                            className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
-                                                        >
-                                                            Social Posts
-                                                        </Link>
-                                                    )}
-                                                </Menu.Item>
-                                            )}
                                             <Menu.Item>
                                                 {({ active }) => (
                                                     <button
@@ -291,6 +248,67 @@ const Header = () => {
                                                     </button>
                                                 )}
                                             </Menu.Item>
+
+                                            {Boolean(user?.admin) && (
+                                                <>
+                                                    <div className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400 border-t mt-1">Admin</div>
+                                                    <Menu.Item>
+                                                        {({ active }) => (
+                                                            <Link
+                                                                to="/admin/manual-price"
+                                                                className={`${active ? 'bg-gray-100' : ''} flex items-center justify-between px-4 py-2 text-sm text-gray-700`}
+                                                            >
+                                                                Manual Price Tasks
+                                                                {pendingTasks > 0 && (
+                                                                    <span className="ml-2 bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
+                                                                        {pendingTasks}
+                                                                    </span>
+                                                                )}
+                                                            </Link>
+                                                        )}
+                                                    </Menu.Item>
+                                                    <Menu.Item>
+                                                        {({ active }) => (
+                                                            <Link
+                                                                to="/admin/scrape-report"
+                                                                className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                            >
+                                                                Scrape Report
+                                                            </Link>
+                                                        )}
+                                                    </Menu.Item>
+                                                    <Menu.Item>
+                                                        {({ active }) => (
+                                                            <Link
+                                                                to="/admin/social-posts"
+                                                                className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                            >
+                                                                Social Posts
+                                                            </Link>
+                                                        )}
+                                                    </Menu.Item>
+                                                    <Menu.Item>
+                                                        {({ active }) => (
+                                                            <Link
+                                                                to="/admin/product-candidates"
+                                                                className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                            >
+                                                                Product Candidates
+                                                            </Link>
+                                                        )}
+                                                    </Menu.Item>
+                                                    <Menu.Item>
+                                                        {({ active }) => (
+                                                            <Link
+                                                                to="/admin/deal-candidates"
+                                                                className={`${active ? 'bg-gray-100' : ''} block px-4 py-2 text-sm text-gray-700`}
+                                                            >
+                                                                Deal Candidates
+                                                            </Link>
+                                                        )}
+                                                    </Menu.Item>
+                                                </>
+                                            )}
                                         </Menu.Items>
                                     </Menu>
                                 </div>
@@ -449,36 +467,49 @@ const Header = () => {
                                         </Link>
                                     )}
                                     {Boolean(user?.admin) && (
-                                        <Link
-                                            to="/admin/manual-price"
-                                            onClick={() => setMobileOpen(false)}
-                                            className="flex items-center justify-between text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
-                                        >
-                                            Manual Price Tasks
-                                            {pendingTasks > 0 && (
-                                                <span className="bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
-                                                    {pendingTasks}
-                                                </span>
-                                            )}
-                                        </Link>
-                                    )}
-                                    {Boolean(user?.admin) && (
-                                        <Link
-                                            to="/admin/scrape-report"
-                                            onClick={() => setMobileOpen(false)}
-                                            className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
-                                        >
-                                            Scrape Report
-                                        </Link>
-                                    )}
-                                    {Boolean(user?.admin) && (
-                                        <Link
-                                            to="/admin/social-posts"
-                                            onClick={() => setMobileOpen(false)}
-                                            className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
-                                        >
-                                            Social Posts
-                                        </Link>
+                                        <>
+                                            <div className="pt-2 mt-1 border-t text-[11px] font-semibold uppercase tracking-wide text-gray-400 px-2">Admin</div>
+                                            <Link
+                                                to="/admin/manual-price"
+                                                onClick={() => setMobileOpen(false)}
+                                                className="flex items-center justify-between text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                            >
+                                                Manual Price Tasks
+                                                {pendingTasks > 0 && (
+                                                    <span className="bg-red-600 text-white text-[10px] leading-none rounded-full px-1.5 py-[2px] min-w-[18px] text-center font-semibold">
+                                                        {pendingTasks}
+                                                    </span>
+                                                )}
+                                            </Link>
+                                            <Link
+                                                to="/admin/scrape-report"
+                                                onClick={() => setMobileOpen(false)}
+                                                className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                            >
+                                                Scrape Report
+                                            </Link>
+                                            <Link
+                                                to="/admin/social-posts"
+                                                onClick={() => setMobileOpen(false)}
+                                                className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                            >
+                                                Social Posts
+                                            </Link>
+                                            <Link
+                                                to="/admin/product-candidates"
+                                                onClick={() => setMobileOpen(false)}
+                                                className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                            >
+                                                Product Candidates
+                                            </Link>
+                                            <Link
+                                                to="/admin/deal-candidates"
+                                                onClick={() => setMobileOpen(false)}
+                                                className="text-gray-700 py-2 px-2 rounded hover:bg-gray-100"
+                                            >
+                                                Deal Candidates
+                                            </Link>
+                                        </>
                                     )}
                                     <button
                                         type="button"
