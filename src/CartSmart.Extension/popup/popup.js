@@ -93,26 +93,29 @@ document.addEventListener("DOMContentLoaded", async () => {
             });
           });
 
-          // Admin-only Add Product button. Reveal it asynchronously once we
-          // confirm the signed-in user is an admin — we don't want to flash
-          // it for non-admins.
-          chrome.storage.local.get(["cartsmart_user"], (storeResult) => {
-            if (!storeResult?.cartsmart_user?.isAdmin) return;
+          // Admin-only Add Product button. Refresh the cached user from the
+          // server first so a freshly-promoted admin (or anyone whose stored
+          // user predates the isAdmin field being persisted on login) actually
+          // sees the button without needing to re-login.
+          chrome.runtime.sendMessage({ type: "REFRESH_USER" }, () => {
+            chrome.storage.local.get(["cartsmart_user"], (storeResult) => {
+              if (!storeResult?.cartsmart_user?.isAdmin) return;
 
-            const addBtn = document.getElementById("add-product-btn");
-            const resultBox = document.getElementById("add-product-result");
-            addBtn.style.display = "block";
-            addBtn.addEventListener("click", () => {
-              addBtn.textContent = "Submitting…";
-              addBtn.disabled = true;
-              resultBox.style.display = "none";
-              resultBox.textContent = "";
+              const addBtn = document.getElementById("add-product-btn");
+              const resultBox = document.getElementById("add-product-result");
+              addBtn.style.display = "block";
+              addBtn.addEventListener("click", () => {
+                addBtn.textContent = "Submitting…";
+                addBtn.disabled = true;
+                resultBox.style.display = "none";
+                resultBox.textContent = "";
 
-              chrome.runtime.sendMessage({ type: "SUBMIT_PRODUCT_CANDIDATE" }, (res) => {
-                addBtn.disabled = false;
-                addBtn.textContent = "Add Product";
-                resultBox.style.display = "block";
-                resultBox.textContent = formatCandidateResult(res);
+                chrome.runtime.sendMessage({ type: "SUBMIT_PRODUCT_CANDIDATE" }, (res) => {
+                  addBtn.disabled = false;
+                  addBtn.textContent = "Add Product";
+                  resultBox.style.display = "block";
+                  resultBox.textContent = formatCandidateResult(res);
+                });
               });
             });
           });

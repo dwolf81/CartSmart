@@ -107,6 +107,11 @@ public class IngestStoreListingsFunction
 
             foreach (var page in storeGroup)
             {
+                // Hoisted out of the try so the catch can reuse it to log under
+                // the right transport bucket. Playwright wins when both are
+                // enabled because the scraper falls back HTTP→Playwright.
+                var method = playwrightEnabled ? "playwright" : "http";
+
                 try
                 {
                     _logger.LogInformation("Scraping store page: product={ProductId}, store={StoreId}, url={Url}",
@@ -154,13 +159,11 @@ public class IngestStoreListingsFunction
                     _logger.LogInformation("Scraped {Count} listing(s) from {Url} for product {ProductId}",
                         newListings.Count, page.Url, page.ProductId);
 
-                    // Log scrape results
-                    var method = playwrightEnabled ? "playwright" : "http";
                     var logInsert = new ScrapeLogInsert
                     {
                         StoreId = storeId,
                         Url = page.Url,
-                        Method = "listing_scrape",
+                        Method = method,
                         Success = newListings.Count > 0,
                         Price = newListings.FirstOrDefault()?.Price,
                         Currency = newListings.FirstOrDefault()?.Currency,
@@ -179,14 +182,13 @@ public class IngestStoreListingsFunction
                     _logger.LogError(ex, "Failed to scrape store page: product={ProductId}, url={Url}",
                         page.ProductId, page.Url);
 
-                    // Log failure
                     try
                     {
                         var logInsert = new ScrapeLogInsert
                         {
                             StoreId = storeId,
                             Url = page.Url,
-                            Method = "listing_scrape",
+                            Method = method,
                             Success = false,
                             ErrorMessage = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message
                         };
@@ -334,6 +336,7 @@ public class IngestStoreListingsFunction
                     storeId, endpoint.Url, endpoint.ProductTypeId);
 
                 List<ScrapedListing> listings;
+                string? scrapeError = null;
                 try
                 {
                     var scraped = await _listingPageScraper.ScrapeListingsAsync(
@@ -350,6 +353,7 @@ public class IngestStoreListingsFunction
                 {
                     _logger.LogError(ex, "Discovery pass: scrape failed for endpoint {Url}", endpoint.Url);
                     listings = new List<ScrapedListing>();
+                    scrapeError = ex.Message.Length > 500 ? ex.Message[..500] : ex.Message;
                 }
 
                 // Update endpoint observability fields
@@ -366,15 +370,53 @@ public class IngestStoreListingsFunction
                     _logger.LogWarning(ex, "Discovery pass: failed to update endpoint {Id} observability", endpoint.Id);
                 }
 
-                if (listings.Count == 0) continue;
+                if (listings.Count == 0)
+                {
+                    // Log the empty/failed scrape so it surfaces in the admin
+                    // scrape report. Without this, broken endpoints are
+                    // invisible — they just silently produce zero candidates.
+                    try
+                    {
+                        await _supabase.From<ScrapeLogInsert>().Insert(new ScrapeLogInsert
+                        {
+                            StoreId = storeId,
+                            Url = endpoint.Url,
+                            Method = "discovery",
+                            Success = false,
+                            ErrorMessage = scrapeError ?? "no_listings_found"
+                        }, cancellationToken: ct);
+                    }
+                    catch { /* best-effort */ }
+                    continue;
+                }
 
                 // Candidate product set, scoped by endpoint.product_type_id when set
                 var candidateProducts = await GetCandidateProductsAsync(endpoint.ProductTypeId, ct);
                 if (candidateProducts.Count == 0)
                 {
                     _logger.LogInformation("Discovery pass: no candidate products for endpoint {Url}", endpoint.Url);
+                    try
+                    {
+                        await _supabase.From<ScrapeLogInsert>().Insert(new ScrapeLogInsert
+                        {
+                            StoreId = storeId,
+                            Url = endpoint.Url,
+                            Method = "discovery",
+                            Success = false,
+                            ErrorMessage = "no_candidate_products"
+                        }, cancellationToken: ct);
+                    }
+                    catch { /* best-effort */ }
                     continue;
                 }
+
+                // Track per-endpoint counters so we can write one summary row
+                // at the bottom (vs. one row per listing — which would be too
+                // noisy for the report and confusing in the per-store detail
+                // drawer).
+                int emittedCandidates = 0;
+                int skippedDuplicates = 0;
+                int unmatchedListings = 0;
 
                 foreach (var listing in listings)
                 {
@@ -401,6 +443,7 @@ public class IngestStoreListingsFunction
                                 .Update(cancellationToken: ct);
                         }
                         catch { /* best-effort */ }
+                        skippedDuplicates++;
                         continue;
                     }
 
@@ -430,23 +473,16 @@ public class IngestStoreListingsFunction
                         }
                     }
 
-                    if (!finalProductId.HasValue) continue;
+                    if (!finalProductId.HasValue)
+                    {
+                        unmatchedListings++;
+                        continue;
+                    }
 
                     // ── Skip-on-existing-deal check ──────────────────────
                     if (existingDealProductIds.Contains(finalProductId.Value))
                     {
-                        try
-                        {
-                            await _supabase.From<ScrapeLogInsert>().Insert(new ScrapeLogInsert
-                            {
-                                StoreId = storeId,
-                                Url = listing.Url,
-                                Method = "discovery_skip",
-                                Success = false,
-                                ErrorMessage = "duplicate_active_deal"
-                            }, cancellationToken: ct);
-                        }
-                        catch { /* best-effort */ }
+                        skippedDuplicates++;
                         continue;
                     }
 
@@ -466,6 +502,7 @@ public class IngestStoreListingsFunction
                     {
                         await _supabase.From<DealCandidateInsertRow>().Insert(insert, cancellationToken: ct);
                         existingCandidateUrls.Add(canonical);
+                        emittedCandidates++;
                         _logger.LogInformation(
                             "Discovery pass: created deal_candidate productId={ProductId} url={Url} source={Source} conf={Conf}",
                             finalProductId, canonical, source, aiConfidence);
@@ -477,6 +514,35 @@ public class IngestStoreListingsFunction
                         _logger.LogWarning(ex, "Discovery pass: insert failed for url={Url}", canonical);
                     }
                 }
+
+                // ── Per-endpoint summary row ─────────────────────────────
+                //
+                // Success = "the scrape produced usable listings". We consider
+                // it a success when listings were extracted, even if every
+                // listing was a duplicate of an existing live deal — that's
+                // an expected outcome, not a config problem. Failure means
+                // either the scrape errored (handled above) or nothing was
+                // emitted/skipped/matched, which usually points at a stale
+                // selector or a drift in the page structure.
+                try
+                {
+                    var scrapeWorked = emittedCandidates + skippedDuplicates > 0;
+                    string? err = scrapeWorked
+                        ? null
+                        : unmatchedListings > 0
+                            ? $"all_unmatched ({unmatchedListings} listing(s) had no product match)"
+                            : "no_listings_emitted";
+
+                    await _supabase.From<ScrapeLogInsert>().Insert(new ScrapeLogInsert
+                    {
+                        StoreId = storeId,
+                        Url = endpoint.Url,
+                        Method = "discovery",
+                        Success = scrapeWorked,
+                        ErrorMessage = err
+                    }, cancellationToken: ct);
+                }
+                catch { /* best-effort */ }
             }
         }
 

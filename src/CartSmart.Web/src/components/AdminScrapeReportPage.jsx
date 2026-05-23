@@ -141,6 +141,7 @@ export default function AdminScrapeReportPage() {
     if (detailFilter === 'all') return true;
     if (detailFilter === 'success') return l.success;
     if (detailFilter === 'fail') return !l.success;
+    if (detailFilter === 'discovery') return l.method === 'discovery' || l.method === 'discovery_skip';
     return l.method === detailFilter;
   });
 
@@ -181,8 +182,9 @@ export default function AdminScrapeReportPage() {
 
       <div className="space-y-2">
         {stores.map(store => {
-          const totalAll = store.http.totalCount + store.playwright.totalCount + store.extension.totalCount;
-          const successAll = store.http.successCount + store.playwright.successCount + store.extension.successCount;
+          const discovery = store.discovery || { totalCount: 0, successCount: 0, failCount: 0 };
+          const totalAll = store.http.totalCount + store.playwright.totalCount + store.extension.totalCount + discovery.totalCount;
+          const successAll = store.http.successCount + store.playwright.successCount + store.extension.successCount + discovery.successCount;
           const overallRate = totalAll > 0 ? Math.round((successAll / totalAll) * 100) : null;
           const isExpanded = expandedStoreId === store.storeId;
 
@@ -207,6 +209,7 @@ export default function AdminScrapeReportPage() {
                     </>
                   )}
                   <MethodBadge label="Ext" summary={store.extension} />
+                  <MethodBadge label="Disc" summary={discovery} />
                   {overallRate !== null && (
                     <span className={`text-xs font-mono font-medium ml-1 ${
                       overallRate >= 80 ? 'text-emerald-600' : overallRate >= 40 ? 'text-amber-600' : 'text-red-600'
@@ -253,7 +256,7 @@ export default function AdminScrapeReportPage() {
 
                   {/* Detail filter tabs */}
                   <div className="flex items-center gap-1.5 mb-3">
-                    {['all', 'success', 'fail', 'http', 'playwright', 'extension'].map(f => (
+                    {['all', 'success', 'fail', 'http', 'playwright', 'extension', 'discovery'].map(f => (
                       <button
                         key={f}
                         onClick={() => setDetailFilter(f)}

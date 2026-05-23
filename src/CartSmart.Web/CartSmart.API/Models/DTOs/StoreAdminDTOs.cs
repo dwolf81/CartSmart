@@ -122,6 +122,7 @@ namespace CartSmart.API.Models.DTOs
         public ScrapeMethodSummaryDTO http { get; set; } = new();
         public ScrapeMethodSummaryDTO playwright { get; set; } = new();
         public ScrapeMethodSummaryDTO extension { get; set; } = new();
+        public ScrapeMethodSummaryDTO discovery { get; set; } = new();
         public DateTime? lastLogAt { get; set; }
     }
 

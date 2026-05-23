@@ -300,6 +300,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // keep channel open for async response
   }
 
+  // Popup-on-open refresh of cached user object (especially the isAdmin flag).
+  // Without this, a user promoted to admin after their last login — or anyone
+  // whose stored user predates the isAdmin field — never sees the
+  // "Add Product" button.
+  if (message.type === "REFRESH_USER") {
+    refreshCurrentUser().then((user) => {
+      sendResponse({ ok: true, user });
+    }).catch(() => sendResponse({ ok: false, user: null }));
+    return true; // keep channel open for async response
+  }
+
   if (message.type === "GET_STORE_MATCH") {
     ensureStoresLoaded().then(() => {
       const store = findMatchingStore(message.url, storeConfigs);

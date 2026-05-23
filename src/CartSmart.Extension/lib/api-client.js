@@ -136,6 +136,51 @@ async function login(email, password) {
 }
 
 /**
+ * Refresh the cached user object from the server. The login flow only sets
+ * cartsmart_user.isAdmin at the moment of login, so a freshly-promoted admin
+ * (or anyone who logged in before isAdmin was being stored) won't see admin
+ * affordances like the "Add Product" button until this refresh runs. Called
+ * from the popup on open. Returns the refreshed user object or null if the
+ * token is missing/invalid.
+ */
+async function refreshCurrentUser() {
+  const apiBase = await getApiBase();
+  const token = await getApiToken();
+  if (!token) return null;
+
+  try {
+    const res = await fetch(`${apiBase}/api/auth/check-auth`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) {
+      // Token expired or revoked — clear it so the popup shows the sign-in CTA.
+      await storageRemove([STORAGE_KEYS.API_TOKEN, STORAGE_KEYS.USER]);
+      return null;
+    }
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const u = data?.user;
+    if (!u) return null;
+
+    const refreshed = {
+      id: u.id,
+      email: u.email,
+      displayName: u.displayName || u.userName,
+      isAdmin: !!u.admin,
+    };
+    await storageSet({ [STORAGE_KEYS.USER]: refreshed });
+    return refreshed;
+  } catch (err) {
+    // Network failure — leave the cached user object in place so the popup
+    // continues to work in offline mode.
+    console.warn("[CartSmart] refreshCurrentUser failed:", err);
+    return null;
+  }
+}
+
+/**
  * Log out – clear stored token and user info.
  */
 async function logout() {

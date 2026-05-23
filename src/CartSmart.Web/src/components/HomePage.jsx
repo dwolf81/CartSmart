@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import SubmitDealModal from './SubmitDealModal';
 import LoadingSpinner from './LoadingSpinner';
 
@@ -10,6 +10,7 @@ const SITE_URL = process.env.REACT_APP_SITE_URL || (typeof window !== 'undefined
 
 const HomePage = () => {
   const [displayCount, setDisplayCount] = useState(6);
+  const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [featuredDeals, setFeaturedDeals] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -52,11 +53,15 @@ useEffect(() => {
   };
 
   const handleViewMore = () => {
-    setDisplayCount(prevCount => Math.min(prevCount + 6, featuredDeals.length));
+    if (displayCount < 12) {
+      setDisplayCount(12);
+    } else {
+      navigate('/categories');
+    }
   };
 
   const visibleDeals = featuredDeals.slice(0, displayCount);
-  const hasMoreDeals = displayCount < featuredDeals.length;
+  const showViewMore = !loadingProducts && featuredDeals.length > 6;
 
   if (loading) return <LoadingSpinner />;
 
@@ -208,7 +213,7 @@ useEffect(() => {
           </div>
         )}
         {/* View More Section */}
-        {!loadingProducts && hasMoreDeals && (
+        {showViewMore && (
           <div className="text-center mt-12">
             <button
               onClick={handleViewMore}

@@ -1194,6 +1194,13 @@ Rules:
                         successCount = storeLogs.Count(l => l.Method == "extension" && l.Success),
                         failCount = storeLogs.Count(l => l.Method == "extension" && !l.Success)
                     },
+                    discovery = new ScrapeMethodSummaryDTO
+                    {
+                        // One row per store_scan_endpoint visit, plus legacy
+                        // per-listing "discovery_skip" rows from older runs.
+                        successCount = storeLogs.Count(l => (l.Method == "discovery" || l.Method == "discovery_skip") && l.Success),
+                        failCount = storeLogs.Count(l => (l.Method == "discovery" || l.Method == "discovery_skip") && !l.Success)
+                    },
                     lastLogAt = storeLogs.FirstOrDefault()?.CreatedAt
                 };
 
