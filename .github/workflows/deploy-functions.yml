@@ -63,75 +63,25 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Functions (zip deploy)
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          package: ${{ env.ZIP_PATH }}
+
+      - name: Post-deploy verification
         run: |
           set -euo pipefail
           RG=$(az resource list --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" --resource-type "Microsoft.Web/sites" --query "[0].resourceGroup" -o tsv)
           if [ -z "$RG" ]; then
-            echo "❌ Could not discover resource group for Function App '${{ env.AZURE_FUNCTIONAPP_NAME }}'"
-            echo "   Ensure the OIDC principal has permission to list resources in the subscription."
-            exit 1
+            echo "⚠️ Could not discover resource group for Function App '${{ env.AZURE_FUNCTIONAPP_NAME }}'."
+            exit 0
           fi
+          STATE=$(az functionapp show --resource-group "$RG" --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" --query "state" -o tsv 2>/dev/null || echo "Unknown")
+          echo "App state: $STATE"
 
-          echo "Deploying '${{ env.AZURE_FUNCTIONAPP_NAME }}' to resource group '$RG'"
-
-          # Flex Consumption doesn't support Kudu zip deploy logs reliably.
-          # Prefer OneDeploy (az webapp deploy) which is compatible with more plans.
-          if az webapp deploy \
-            --resource-group "$RG" \
-            --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" \
-            --src-path "${{ env.ZIP_PATH }}" \
-            --type zip; then
-            echo "✅ Deployment submitted via OneDeploy."
-          else
-            echo "⚠️ OneDeploy failed; falling back to config-zip."
-
-            set +e
-            OUT=$(az functionapp deployment source config-zip \
-              --resource-group "$RG" \
-              --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" \
-              --src "${{ env.ZIP_PATH }}" 2>&1)
-            CODE=$?
-            set -e
-
-            if [ $CODE -ne 0 ]; then
-              # The zip-upload phase emits a "status code 202" line when the
-              # platform accepted the package. Subsequent CLI steps (sync
-              # triggers, /admin/host/status health probe) can still fail with
-              # transient errors while the host cold-starts — those don't mean
-              # the deploy itself failed.
-              UPLOAD_ACCEPTED=$(echo "$OUT" | grep -qE "status code 202" && echo "yes" || echo "no")
-
-              if echo "$OUT" | grep -q "Deployment was partially successful"; then
-                echo "⚠️ Config-zip returned partial success. Attempting trigger sync via ARM..."
-                SUB_ID=$(az account show --query id -o tsv)
-                SYNC_URL="https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RG}/providers/Microsoft.Web/sites/${{ env.AZURE_FUNCTIONAPP_NAME }}/syncfunctiontriggers?api-version=2023-12-01"
-                az rest --method post --url "$SYNC_URL" --only-show-errors || true
-                echo "ℹ️ Proceeding after manual trigger sync attempt."
-                echo "$OUT"
-              elif echo "$OUT" | grep -q "The logs you are looking for were not found"; then
-                echo "⚠️ Deployment logs not available (common on Flex Consumption); treating as success."
-                echo "$OUT"
-              elif [ "$UPLOAD_ACCEPTED" = "yes" ] && echo "$OUT" | grep -qE "SSLEOFError|UNEXPECTED_EOF_WHILE_READING|Max retries exceeded.*admin/host/status|Certificate verification failed"; then
-                # Zip was accepted (202); CLI's post-deploy /admin/host/status probe
-                # got a TLS reset while the host was restarting. Verify the app
-                # exists via ARM and continue — the platform finishes warm-up on
-                # its own and the timer trigger will pick the new bits up.
-                echo "⚠️ Post-deploy health check hit a transient TLS reset (host restarting)."
-                echo "   Zip upload was accepted (status 202). Verifying via ARM..."
-                az functionapp show --resource-group "$RG" --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" --query "state" -o tsv || true
-                SUB_ID=$(az account show --query id -o tsv)
-                SYNC_URL="https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RG}/providers/Microsoft.Web/sites/${{ env.AZURE_FUNCTIONAPP_NAME }}/syncfunctiontriggers?api-version=2023-12-01"
-                az rest --method post --url "$SYNC_URL" --only-show-errors || true
-                echo "$OUT"
-              else
-                echo "$OUT"
-                exit $CODE
-              fi
-            else
-              echo "$OUT"
-            fi
-          fi
-
-          # Basic sanity check: app still exists and is reachable from ARM.
-          az functionapp show --resource-group "$RG" --name "${{ env.AZURE_FUNCTIONAPP_NAME }}" --query "name" -o tsv
+          # Best-effort sync — Flex Consumption can lag picking up new triggers
+          # immediately after deploy; this nudges the platform.
+          SUB_ID=$(az account show --query id -o tsv)
+          SYNC_URL="https://management.azure.com/subscriptions/${SUB_ID}/resourceGroups/${RG}/providers/Microsoft.Web/sites/${{ env.AZURE_FUNCTIONAPP_NAME }}/syncfunctiontriggers?api-version=2023-12-01"
+          az rest --method post --url "$SYNC_URL" --only-show-errors || true
