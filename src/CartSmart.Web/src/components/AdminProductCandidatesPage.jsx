@@ -123,14 +123,14 @@ export default function AdminProductCandidatesPage() {
     } finally { setActionBusy(false); }
   };
 
-  const mergeInto = async (id, productId) => {
+  const mergeInto = async (id, productId, conditionCategoryId) => {
     if (!Number.isFinite(productId) || productId <= 0) return;
     setActionBusy(true);
     try {
       const res = await authFetch(`${API_URL}/api/admin/product-candidates/${id}/merge-into`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productId }),
+        body: JSON.stringify({ productId, conditionCategoryId }),
       });
       if (!res.ok) {
         const t = await res.text();
@@ -241,6 +241,10 @@ function DetailDrawer({ detail, busy, brands, productTypes, onClose, onApprove, 
   const [msrp, setMsrp] = useState(c.msrp ?? '');
   const [productTypeId, setProductTypeId] = useState(c.productTypeId || '');
   const [brandId, setBrandId] = useState(c.brandId || '');
+  // Default to New (1). We don't seed from the linked deal candidate because
+  // the extension's body-text scan false-positives on "used"/"pre-owned"
+  // retailer nav links and would silently push the deal_product to Used.
+  const [conditionCategoryId, setConditionCategoryId] = useState(1);
   const [description, setDescription] = useState(c.description || '');
   const [imageUrl, setImageUrl] = useState(c.imageUrl || '');
   const [imageUrlInput, setImageUrlInput] = useState('');
@@ -433,18 +437,32 @@ function DetailDrawer({ detail, busy, brands, productTypes, onClose, onApprove, 
                 </select>
               </div>
             </div>
-            <div>
-              <label className="text-xs text-slate-500">Product type (required for approval)</label>
-              <select
-                value={productTypeId}
-                onChange={(e) => setProductTypeId(e.target.value)}
-                className="border rounded px-2 py-1 w-full text-sm bg-white"
-              >
-                <option value="">— select —</option>
-                {(productTypes || []).map((t) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
+            <div className="grid grid-cols-[1fr,140px] gap-2">
+              <div>
+                <label className="text-xs text-slate-500">Product type (required for approval)</label>
+                <select
+                  value={productTypeId}
+                  onChange={(e) => setProductTypeId(e.target.value)}
+                  className="border rounded px-2 py-1 w-full text-sm bg-white"
+                >
+                  <option value="">— select —</option>
+                  {(productTypes || []).map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500">Condition</label>
+                <select
+                  value={conditionCategoryId}
+                  onChange={(e) => setConditionCategoryId(Number(e.target.value))}
+                  className="border rounded px-2 py-1 w-full text-sm bg-white"
+                >
+                  <option value={1}>New</option>
+                  <option value={2}>Used</option>
+                  <option value={3}>Refurbished</option>
+                </select>
+              </div>
             </div>
             <div>
               <div className="flex items-center justify-between">
@@ -558,7 +576,7 @@ function DetailDrawer({ detail, busy, brands, productTypes, onClose, onApprove, 
         <div className="flex items-center justify-end gap-2 p-4 border-t bg-slate-50">
           <button
             disabled={busy || !selectedMergeProduct}
-            onClick={() => onMerge(c.id, selectedMergeProduct?.id)}
+            onClick={() => onMerge(c.id, selectedMergeProduct?.id, conditionCategoryId)}
             title={selectedMergeProduct ? '' : 'Select a product first'}
             className="px-3 py-1 rounded border bg-white hover:bg-slate-100 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >Merge into existing</button>
@@ -574,6 +592,7 @@ function DetailDrawer({ detail, busy, brands, productTypes, onClose, onApprove, 
               msrp: msrp === '' ? null : Number(msrp),
               productTypeId: productTypeId === '' ? null : Number(productTypeId),
               brandId: brandId === '' ? null : Number(brandId),
+              conditionCategoryId,
               description,
             })}
             className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm disabled:opacity-50"

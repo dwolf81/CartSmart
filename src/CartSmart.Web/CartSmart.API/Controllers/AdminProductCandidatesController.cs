@@ -173,6 +173,11 @@ public sealed class AdminProductCandidatesController : ControllerBase
         public decimal? Msrp { get; set; }
         public string? Description { get; set; }
         public string? AdminNotes { get; set; }
+        // 1 = New, 2 = Used, 3 = Refurbished. Admin choice in the modal wins;
+        // the candidate's scraped value is unreliable (extension keyword scan
+        // routinely false-positives on retailer pages with "used"/"pre-owned"
+        // navigation links).
+        public int? ConditionCategoryId { get; set; }
     }
 
     [HttpPost("{id:long}/approve")]
@@ -299,7 +304,9 @@ public sealed class AdminProductCandidatesController : ControllerBase
         int? promotedDealId = null;
         if (dealCandidate != null)
         {
-            promotedDealId = await PromoteDealCandidateAsync(client, dealCandidate, insertedProduct.Id, admin.Id);
+            promotedDealId = await PromoteDealCandidateAsync(
+                client, dealCandidate, insertedProduct.Id, admin.Id,
+                conditionOverride: body?.ConditionCategoryId);
         }
 
         // ── Update candidate row to approved ─────────────────────────────
@@ -412,7 +419,13 @@ public sealed class AdminProductCandidatesController : ControllerBase
 
     // ── Merge into existing product ───────────────────────────────────────
 
-    public sealed class MergeRequest { public int ProductId { get; set; } public string? AdminNotes { get; set; } }
+    public sealed class MergeRequest
+    {
+        public int ProductId { get; set; }
+        public string? AdminNotes { get; set; }
+        // 1 = New, 2 = Used, 3 = Refurbished. Defaults to New when unset.
+        public int? ConditionCategoryId { get; set; }
+    }
 
     [HttpPost("{id:long}/merge-into")]
     [Authorize]
@@ -452,7 +465,9 @@ public sealed class AdminProductCandidatesController : ControllerBase
         int? lastDealId = null;
         foreach (var dc in deals.Models ?? new List<DealCandidate>())
         {
-            lastDealId = await PromoteDealCandidateAsync(client, dc, body.ProductId, admin.Id);
+            lastDealId = await PromoteDealCandidateAsync(
+                client, dc, body.ProductId, admin.Id,
+                conditionOverride: body.ConditionCategoryId);
         }
 
         candidate.Status = "merged";
@@ -734,7 +749,8 @@ public sealed class AdminProductCandidatesController : ControllerBase
         Supabase.Client client,
         DealCandidate dc,
         int productId,
-        int adminUserId)
+        int adminUserId,
+        int? conditionOverride = null)
     {
         var storeResp = await client.From<Store>()
             .Filter("id", Supabase.Postgrest.Constants.Operator.Equals, dc.StoreId.ToString())
@@ -777,6 +793,10 @@ public sealed class AdminProductCandidatesController : ControllerBase
             .Get();
         var variant = variantResp.Models.FirstOrDefault();
 
+        // Condition: admin's modal pick wins; otherwise default to New (1).
+        // We don't fall back to dc.ConditionCategoryId because the extension's
+        // keyword scan false-positives on "used" / "pre-owned" navigation links
+        // and would silently mark new-product deals as used.
         var dp = new DealProduct
         {
             DealId = insertedDeal.Id,
@@ -786,7 +806,7 @@ public sealed class AdminProductCandidatesController : ControllerBase
             Url = liveUrl,
             Primary = true,
             DealStatusId = 2,
-            ConditionId = dc.ConditionCategoryId,
+            ConditionId = conditionOverride ?? 1,
             ItemCount = 1,
             FreeShipping = false,
             LastCheckedAt = DateTime.UtcNow,

@@ -452,14 +452,42 @@ function detectStock() {
   return null;
 }
 
-// Mirrors the worker-side ConditionNewRegex / ConditionUsedRegex etc.
 // Maps to condition_category_id: 1=New, 2=Used, 3=Refurbished.
-// Defaults to 1 (New) so candidates always carry a condition — matches the
-// ingest store-listing scraper, which also assumes "new" when no keyword hits.
-function detectConditionCategoryId() {
-  const t = (document.body?.textContent || "").toLowerCase();
-  if (/\brefurbished\b|\bmanufacturer refurbished\b|\bcertified pre[- ]?owned\b/.test(t)) return 3;
-  if (/\bopen box\b|\bused\b|\bpre[- ]?owned\b/.test(t)) return 2;
+// Defaults to 1 (New). We deliberately only check authoritative product-context
+// fields here — JSON-LD itemCondition, schema.org microdata, page title, and
+// the first product heading — and NOT the full body text. A retailer page for
+// a new putter typically contains "used"/"pre-owned" strings in nav links,
+// footer ("Sell your used clubs"), and related-category widgets; scanning the
+// whole body silently mis-classifies new product candidates as used.
+function detectConditionCategoryId(jsonLd) {
+  // 1. JSON-LD itemCondition (most authoritative).
+  const ldCond = jsonLd?.itemCondition || jsonLd?.offers?.itemCondition;
+  if (typeof ldCond === "string") {
+    const c = ldCond.toLowerCase();
+    if (c.includes("refurbished")) return 3;
+    if (c.includes("used") || c.includes("preowned") || c.includes("pre-owned") || c.includes("damaged")) return 2;
+    if (c.includes("new")) return 1;
+  }
+
+  // 2. Schema.org microdata.
+  const itemCondEl = document.querySelector('[itemprop="itemCondition"]');
+  if (itemCondEl) {
+    const v = (itemCondEl.getAttribute("content") || itemCondEl.textContent || "").toLowerCase();
+    if (v.includes("refurbished")) return 3;
+    if (v.includes("used") || v.includes("preowned") || v.includes("pre-owned")) return 2;
+    if (v.includes("new")) return 1;
+  }
+
+  // 3. Narrow text scan: title + first H1 only. Anything outside this window
+  //    (footer links, related categories, reviews) gets ignored to prevent
+  //    false-positive "used" matches.
+  const productText = [
+    document.title || "",
+    document.querySelector("h1")?.textContent || ""
+  ].join(" ").toLowerCase();
+
+  if (/\brefurbished\b|\bcertified pre[- ]?owned\b|\bmanufacturer refurbished\b/.test(productText)) return 3;
+  if (/\bopen box\b|\bused\b|\bpre[- ]?owned\b/.test(productText)) return 2;
   return 1;
 }
 
@@ -485,7 +513,7 @@ function extractProductMetadata(priceSelectors) {
     description: extractProductDescription(jsonLd),
     dealPrice,
     currency: priceResult.currency || "USD",
-    conditionCategoryId: detectConditionCategoryId(),
+    conditionCategoryId: detectConditionCategoryId(jsonLd),
     inStock: detectStock(),
     rawTitle: document.title?.trim() || null,
     url: window.location.href,
