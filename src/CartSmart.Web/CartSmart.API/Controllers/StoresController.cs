@@ -640,6 +640,7 @@ namespace CartSmart.API.Controllers
             var url = (request?.url ?? string.Empty).Trim();
             var configJson = (request?.scrapeConfig ?? string.Empty).Trim();
             var method = (request?.method ?? "http").Trim().ToLowerInvariant();
+            var mode = (request?.mode ?? "price").Trim().ToLowerInvariant();
 
             if (string.IsNullOrWhiteSpace(url))
                 return BadRequest(new TestScrapeResponseDTO { success = false, error = "URL is required." });
@@ -647,26 +648,50 @@ namespace CartSmart.API.Controllers
             if (method != "http" && method != "playwright")
                 return BadRequest(new TestScrapeResponseDTO { success = false, error = "method must be \"http\" or \"playwright\"." });
 
-            // Parse price selectors from the scrape config JSON
-            string[] selectors;
+            if (mode != "price" && mode != "listing")
+                return BadRequest(new TestScrapeResponseDTO { success = false, error = "mode must be \"price\" or \"listing\"." });
+
+            // Parse the relevant selectors out of the scrape config JSON. The
+            // listing branch needs the listing_selectors object; the price
+            // branch needs the price_selectors array. We do the parsing up
+            // front so a bad config fails fast before we hit Playwright.
+            string[]? priceSelectors = null;
+            ListingSelectorsConfig? listingSelectors = null;
+
             try
             {
                 using var doc = System.Text.Json.JsonDocument.Parse(configJson);
-                if (!doc.RootElement.TryGetProperty("price_selectors", out var selArr)
-                    || selArr.ValueKind != System.Text.Json.JsonValueKind.Array)
+
+                if (mode == "price")
                 {
-                    return BadRequest(new TestScrapeResponseDTO { success = false, error = "scrapeConfig must contain a \"price_selectors\" array." });
+                    if (!doc.RootElement.TryGetProperty("price_selectors", out var selArr)
+                        || selArr.ValueKind != System.Text.Json.JsonValueKind.Array)
+                    {
+                        return BadRequest(new TestScrapeResponseDTO { success = false, error = "scrapeConfig must contain a \"price_selectors\" array." });
+                    }
+
+                    priceSelectors = selArr.EnumerateArray()
+                        .Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String)
+                        .Select(e => e.GetString()!)
+                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                        .Distinct()
+                        .ToArray();
+
+                    if (priceSelectors.Length == 0)
+                        return BadRequest(new TestScrapeResponseDTO { success = false, error = "price_selectors array is empty." });
                 }
+                else // mode == "listing"
+                {
+                    if (!doc.RootElement.TryGetProperty("listing_selectors", out var lsEl)
+                        || lsEl.ValueKind != System.Text.Json.JsonValueKind.Object)
+                    {
+                        return BadRequest(new TestScrapeResponseDTO { success = false, error = "scrapeConfig must contain a \"listing_selectors\" object." });
+                    }
 
-                selectors = selArr.EnumerateArray()
-                    .Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String)
-                    .Select(e => e.GetString()!)
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .Distinct()
-                    .ToArray();
-
-                if (selectors.Length == 0)
-                    return BadRequest(new TestScrapeResponseDTO { success = false, error = "price_selectors array is empty." });
+                    listingSelectors = System.Text.Json.JsonSerializer.Deserialize<ListingSelectorsConfig>(lsEl.GetRawText());
+                    if (listingSelectors == null || string.IsNullOrWhiteSpace(listingSelectors.Container))
+                        return BadRequest(new TestScrapeResponseDTO { success = false, error = "listing_selectors.container is required." });
+                }
             }
             catch (System.Text.Json.JsonException)
             {
@@ -686,8 +711,10 @@ namespace CartSmart.API.Controllers
                     html = await FetchHtmlWithHttpClientAsync(url);
                 }
 
-                // Parse with AngleSharp and extract prices
-                return Ok(await ParseHtmlAndExtractPrices(html, selectors));
+                if (mode == "listing")
+                    return Ok(await ParseHtmlAndExtractListings(html, listingSelectors!));
+
+                return Ok(await ParseHtmlAndExtractPrices(html, priceSelectors!));
             }
             catch (TaskCanceledException)
             {
@@ -720,9 +747,13 @@ namespace CartSmart.API.Controllers
 
             var url = (request?.url ?? string.Empty).Trim();
             var method = (request?.method ?? "http").Trim().ToLowerInvariant();
+            var mode = (request?.mode ?? "price").Trim().ToLowerInvariant();
 
             if (string.IsNullOrWhiteSpace(url))
                 return BadRequest(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "URL is required." });
+
+            if (mode != "price" && mode != "listing")
+                return BadRequest(new AutoGenerateScrapeConfigResponseDTO { success = false, error = "mode must be \"price\" or \"listing\"." });
 
             if (!Uri.TryCreate(url, UriKind.Absolute, out var parsedUri)
                 || (parsedUri.Scheme != "http" && parsedUri.Scheme != "https"))
@@ -750,14 +781,26 @@ namespace CartSmart.API.Controllers
                 const int maxHtmlChars = 60_000;
                 var truncatedHtml = html.Length > maxHtmlChars ? html[..maxHtmlChars] : html;
 
-                // 3. Call OpenAI to extract scrape config
-                var systemPrompt = @"You are an expert web scraping assistant. Given the HTML source of a page from an e-commerce store, analyze the DOM structure and identify CSS selectors for extracting product data.
+                // 3. Call OpenAI with a prompt tailored to the requested mode.
+                //    Each mode returns ONLY its own subset so the caller can
+                //    merge the result into the existing scrape_config without
+                //    overwriting the other half.
+                var systemPrompt = mode == "price"
+                    ? @"You are an expert web scraping assistant. The HTML below is a single PRODUCT page from an e-commerce store. Identify the CSS selectors that point to the product's current/sale price.
 
-The page is very likely a product listing page (showing multiple products in a grid or list). Look carefully for repeating product card/item structures even if the class names are unusual or obfuscated.
+Return ONLY a JSON object with this exact shape:
+{ ""price_selectors"": [""<css-selector-1>"", ""<css-selector-2>""] }
 
-Your task is to return a JSON object with the following structure:
+Rules:
+- price_selectors: 1-5 CSS selectors that target elements containing the product's current/sale price.
+- Prefer selectors that use data-* attributes, IDs, or specific class names. Avoid generic ones like ""span"" or "".price"" alone if a more specific selector exists.
+- Exclude struck-through ""was""/""original""/""MSRP"" prices.
+- If the page is a listing/category page rather than a single product page, still return selectors that would match individual price elements on it.
+- Return ONLY the JSON object — no markdown fences, no explanation, no listing_selectors field."
+                    : @"You are an expert web scraping assistant. The HTML below is a LISTING / CATEGORY / SEARCH-RESULTS page from an e-commerce store, showing many products in a grid or list. Identify the CSS selectors for the repeating product-card structure and the fields inside it.
+
+Return ONLY a JSON object with this exact shape:
 {
-  ""price_selectors"": [""<css-selector-1>"", ""<css-selector-2>""],
   ""listing_selectors"": {
     ""container"": ""<css-selector>"",
     ""title"": ""<css-selector or null>"",
@@ -769,17 +812,15 @@ Your task is to return a JSON object with the following structure:
 }
 
 Rules:
-- price_selectors: Array of 1-5 CSS selectors that target elements containing the product's current/sale price on a single-product page. Prefer selectors using data attributes, IDs, or specific class names. Exclude struck-through/original prices. If the page is clearly a listing page (not a single product page), still provide selectors that would match individual price elements on the page.
-- listing_selectors: Identify the repeating product card structure on the page. This is critical — most pages sent to you WILL be listing pages.
-  - container: CSS selector for each product card/item wrapper. Look for repeating <div>, <li>, <article>, or <a> elements that each represent one product. This is the most important selector.
-  - title: Selector WITHIN the container for the product title/name (usually a heading or link text). Can be null if title is not needed.
-  - price: Selector WITHIN the container for the price
-  - url: Selector WITHIN the container for the product link (usually an <a> tag with an href)
-  - condition: Selector for condition text (New/Used/Mint/Average/Excellent etc.) if present, null if not found
-  - next_page: Selector for the 'next page' pagination link, null if not found
-- Return ONLY the JSON object, no markdown fences, no explanation.
-- Be as specific as possible with selectors to avoid false matches.
-- Set individual listing_selectors fields to null only if truly not present in the HTML.";
+- container: REQUIRED. CSS selector for each product card/item wrapper. Look for repeating <div>, <li>, <article>, or <a> elements representing one product each. This is the most important selector — get this right.
+- title, price, url, condition: selectors evaluated WITHIN each container element.
+  - title: heading or link text for the product
+  - price: element containing the per-item price
+  - url: <a> tag inside the card whose href points to the product detail page
+  - condition: text like ""New"" / ""Used"" / ""Mint"" / ""Open Box"" / ""Refurbished"" if visible per item
+- next_page: pagination next-link selector (evaluated against the whole document), null if pagination isn't visible.
+- Set individual fields to null only if truly absent in the HTML.
+- Return ONLY the JSON object — no markdown fences, no explanation, no price_selectors field.";
 
                 var userPrompt = $"Analyze this HTML and extract the scrape configuration:\n\n{truncatedHtml}";
 
@@ -932,13 +973,13 @@ Rules:
             bool blockedByBot = ScrapeTestLooksBotBlocked(document);
             if (blockedByBot)
             {
-                return new TestScrapeResponseDTO
+                return AttachHtmlPreview(new TestScrapeResponseDTO
                 {
                     success = false,
                     error = "Page appears to be blocked by bot protection (JavaScript challenge page).",
                     blockedByBotProtection = true,
                     htmlLength = html.Length
-                };
+                }, html);
             }
 
             // Extract price candidates using the provided selectors
@@ -1008,13 +1049,13 @@ Rules:
 
             if (candidates.Count == 0)
             {
-                return new TestScrapeResponseDTO
+                return AttachHtmlPreview(new TestScrapeResponseDTO
                 {
                     success = false,
                     error = "No prices found with the provided selectors.",
                     candidates = candidates,
                     htmlLength = html.Length
-                };
+                }, html);
             }
 
             // Select the best price (same logic as GenericHtmlScraper)
@@ -1053,7 +1094,7 @@ Rules:
             if (bodyText.Contains("in stock") || bodyText.Contains("available")) inStock = true;
             if (bodyText.Contains("out of stock") || bodyText.Contains("unavailable")) inStock = false;
 
-            return new TestScrapeResponseDTO
+            return AttachHtmlPreview(new TestScrapeResponseDTO
             {
                 success = true,
                 price = bestPrice,
@@ -1061,7 +1102,190 @@ Rules:
                 inStock = inStock,
                 candidates = candidates,
                 htmlLength = html.Length
-            };
+            }, html);
+        }
+
+        // Local mirror of the Worker's ListingScrapeConfig — defined here so the
+        // API project doesn't need a reference to CartSmart.Deal.Worker just to
+        // parse the listing_selectors object out of the store's scrape_config.
+        // Keep the JSON property names in sync with the Worker's type.
+        private sealed class ListingSelectorsConfig
+        {
+            [System.Text.Json.Serialization.JsonPropertyName("container")]
+            public string? Container { get; set; }
+
+            [System.Text.Json.Serialization.JsonPropertyName("title")]
+            public string? Title { get; set; }
+
+            [System.Text.Json.Serialization.JsonPropertyName("price")]
+            public string? Price { get; set; }
+
+            [System.Text.Json.Serialization.JsonPropertyName("url")]
+            public string? Url { get; set; }
+
+            [System.Text.Json.Serialization.JsonPropertyName("condition")]
+            public string? Condition { get; set; }
+
+            [System.Text.Json.Serialization.JsonPropertyName("next_page")]
+            public string? NextPage { get; set; }
+        }
+
+        // Walks the listing containers and surfaces a preview of the first N
+        // parsed listings so admins can verify the selectors before saving.
+        // Mirrors what the Worker's ListingPageScraper does, but limited to a
+        // single page (no pagination) and bounded to a small sample.
+        private async Task<TestScrapeResponseDTO> ParseHtmlAndExtractListings(string html, ListingSelectorsConfig selectors)
+        {
+            var browsingContext = BrowsingContext.New(AngleSharp.Configuration.Default);
+            var document = await browsingContext.OpenAsync(req => req.Content(html));
+
+            if (ScrapeTestLooksBotBlocked(document))
+            {
+                return AttachHtmlPreview(new TestScrapeResponseDTO
+                {
+                    success = false,
+                    error = "Page appears to be blocked by bot protection (JavaScript challenge page).",
+                    blockedByBotProtection = true,
+                    htmlLength = html.Length
+                }, html);
+            }
+
+            IHtmlCollection<IElement> containers;
+            try
+            {
+                containers = document.QuerySelectorAll(selectors.Container!);
+            }
+            catch (Exception ex)
+            {
+                return AttachHtmlPreview(new TestScrapeResponseDTO
+                {
+                    success = false,
+                    error = $"Container selector is invalid: {ex.Message}",
+                    htmlLength = html.Length,
+                    containerCount = 0
+                }, html);
+            }
+
+            if (containers.Length == 0)
+            {
+                return AttachHtmlPreview(new TestScrapeResponseDTO
+                {
+                    success = false,
+                    error = "Container selector matched no elements on the page.",
+                    htmlLength = html.Length,
+                    containerCount = 0,
+                    listings = new List<TestScrapeListingSampleDTO>()
+                }, html);
+            }
+
+            const int sampleCap = 10;
+            var samples = new List<TestScrapeListingSampleDTO>();
+            foreach (var container in containers)
+            {
+                if (samples.Count >= sampleCap) break;
+
+                string? title = null;
+                if (!string.IsNullOrWhiteSpace(selectors.Title))
+                {
+                    var titleEl = SafeQuerySelector(container, selectors.Title);
+                    title = titleEl?.GetAttribute("title") ?? titleEl?.TextContent?.Trim();
+                }
+
+                string? linkHref = null;
+                if (!string.IsNullOrWhiteSpace(selectors.Url))
+                {
+                    var linkEl = SafeQuerySelector(container, selectors.Url);
+                    linkHref = linkEl?.GetAttribute("href")?.Trim();
+                }
+
+                decimal? price = null;
+                string? currency = null;
+                if (!string.IsNullOrWhiteSpace(selectors.Price))
+                {
+                    var priceEl = SafeQuerySelector(container, selectors.Price);
+                    var rawPrice = priceEl?.GetAttribute("content")
+                        ?? priceEl?.GetAttribute("aria-label")
+                        ?? priceEl?.TextContent;
+                    if (!string.IsNullOrWhiteSpace(rawPrice))
+                    {
+                        var cleaned = ScrapeTestCleanPriceText(rawPrice);
+                        if (ScrapeTestTryParsePrice(cleaned, out var p))
+                        {
+                            price = p;
+                            currency = ScrapeTestDetectCurrency(rawPrice) ?? "USD";
+                        }
+                    }
+                }
+
+                string? conditionText = null;
+                if (!string.IsNullOrWhiteSpace(selectors.Condition))
+                {
+                    var condEl = SafeQuerySelector(container, selectors.Condition);
+                    conditionText = condEl?.TextContent?.Trim();
+                }
+
+                samples.Add(new TestScrapeListingSampleDTO
+                {
+                    title = string.IsNullOrWhiteSpace(title) ? null : title,
+                    url = string.IsNullOrWhiteSpace(linkHref) ? null : linkHref,
+                    price = price,
+                    currency = currency,
+                    conditionText = string.IsNullOrWhiteSpace(conditionText) ? null : conditionText
+                });
+            }
+
+            // The scrape is considered successful if we found containers AND
+            // most of the sampled rows have at least a title-or-url + price —
+            // mirrors the worker's "drop listings with no price" filter.
+            var withPrice = samples.Count(s => s.price.HasValue);
+            var success = containers.Length > 0 && withPrice > 0;
+
+            return AttachHtmlPreview(new TestScrapeResponseDTO
+            {
+                success = success,
+                error = success
+                    ? null
+                    : $"Container matched {containers.Length} element(s) but no prices were extracted from the sample.",
+                htmlLength = html.Length,
+                containerCount = containers.Length,
+                listings = samples
+            }, html);
+        }
+
+        private static IElement? SafeQuerySelector(IElement parent, string? selector)
+        {
+            if (string.IsNullOrWhiteSpace(selector)) return null;
+            try { return parent.QuerySelector(selector); }
+            catch { return null; }
+        }
+
+        // Cap the source we ship back to admin testers. 64 KB is enough to see
+        // a full <head>, JS-rendered-shell markup, bot-challenge bodies, and
+        // the first chunk of product/listing structure — without bloating
+        // the response payload for a routine test.
+        private const int TestHtmlPreviewCap = 64 * 1024;
+
+        private static TestScrapeResponseDTO AttachHtmlPreview(TestScrapeResponseDTO resp, string html)
+        {
+            if (string.IsNullOrEmpty(html))
+            {
+                resp.htmlLength ??= 0;
+                resp.html = string.Empty;
+                resp.htmlTruncated = false;
+                return resp;
+            }
+            resp.htmlLength ??= html.Length;
+            if (html.Length > TestHtmlPreviewCap)
+            {
+                resp.html = html[..TestHtmlPreviewCap];
+                resp.htmlTruncated = true;
+            }
+            else
+            {
+                resp.html = html;
+                resp.htmlTruncated = false;
+            }
+            return resp;
         }
 
         // ────────────────────────────────────────────────────────────

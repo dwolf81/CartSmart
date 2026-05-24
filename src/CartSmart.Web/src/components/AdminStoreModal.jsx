@@ -35,6 +35,135 @@ const slugify = (value) => {
     .replace(/^-|-$/g, '');
 };
 
+/* ─── Source-viewer toggle: collapsible <pre> showing the HTML the server
+       actually received, plus a search box and a "find selector" hit count.
+       Lets admins distinguish "my selectors are wrong" from "the server got
+       a bot-block / SPA shell / wrong page back" without leaving the modal. ─── */
+function SourceViewer({ html, htmlTruncated, htmlLength }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  if (!html) return null;
+  const matches = query.trim() ? (html.match(new RegExp(escapeRegExp(query.trim()), 'gi')) || []).length : null;
+  return (
+    <div className="mt-2 border-t border-current/10 pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="text-[11px] underline opacity-70 hover:opacity-100"
+      >
+        {open ? 'Hide' : 'View'} page source
+        {htmlLength != null && <span className="ml-1 opacity-60">({(htmlLength / 1024).toFixed(1)} KB{htmlTruncated ? ', truncated' : ''})</span>}
+      </button>
+      {open && (
+        <div className="mt-1">
+          <div className="flex items-center gap-2 mb-1">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Find in source (e.g. class name, tag, selector token)…"
+              className="flex-1 px-2 py-1 text-[11px] border rounded font-mono bg-white text-gray-900"
+            />
+            {matches != null && (
+              <span className="text-[11px] opacity-70">{matches} match{matches === 1 ? '' : 'es'}</span>
+            )}
+          </div>
+          <pre className="text-[10px] leading-tight bg-gray-900 text-gray-100 rounded p-2 max-h-72 overflow-auto whitespace-pre-wrap break-all">
+            {html}
+          </pre>
+          {htmlTruncated && (
+            <div className="text-[10px] opacity-60 mt-1">Showing the first {(html.length / 1024).toFixed(0)} KB of {(htmlLength / 1024).toFixed(0)} KB.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/* ─── Merge a partial scrape-config (price_selectors OR listing_selectors)
+       into the existing JSON string non-destructively. Returns the merged
+       JSON string. Falls back to the partial alone if the existing is blank
+       or unparseable. ─── */
+function mergeScrapeConfig(existingJson, partialJson) {
+  let partial;
+  try { partial = JSON.parse(partialJson); }
+  catch { return partialJson; }
+
+  let existing = {};
+  if (existingJson && existingJson.trim()) {
+    try { existing = JSON.parse(existingJson); } catch { existing = {}; }
+  }
+
+  const merged = { ...existing };
+  if (partial && typeof partial === 'object') {
+    if (Array.isArray(partial.price_selectors)) merged.price_selectors = partial.price_selectors;
+    if (partial.listing_selectors && typeof partial.listing_selectors === 'object') {
+      merged.listing_selectors = { ...(existing.listing_selectors || {}), ...partial.listing_selectors };
+    }
+  }
+  return JSON.stringify(merged, null, 2);
+}
+
+/* ─── Listing-mode result panel ─── */
+function ListingResultPanel({ result }) {
+  if (!result) return null;
+  const ok = result.success;
+  const samples = Array.isArray(result.listings) ? result.listings : [];
+  return (
+    <div className={`text-xs rounded-md p-2 border ${
+      ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+         : 'bg-red-50 border-red-200 text-red-800'
+    }`}>
+      <div className="font-semibold text-sm mb-1">
+        {ok ? '✅ ' : '❌ '}
+        {result.containerCount != null
+          ? `${result.containerCount} container${result.containerCount === 1 ? '' : 's'} matched`
+          : (result.error || 'Failed')}
+        {result.htmlLength != null && (
+          <span className="ml-2 text-xs font-normal text-gray-500">HTML: {(result.htmlLength / 1024).toFixed(1)} KB</span>
+        )}
+      </div>
+      {!ok && result.error && (
+        <div className="mb-1">
+          {result.blockedByBotProtection && <span className="font-semibold">{'🛡️'} Bot Protection: </span>}
+          {result.error}
+        </div>
+      )}
+      {samples.length > 0 && (
+        <details className="mt-1" open={ok && samples.length <= 5}>
+          <summary className="cursor-pointer">
+            Sample of {samples.length} listing{samples.length !== 1 ? 's' : ''}
+          </summary>
+          <ul className="mt-1 space-y-1">
+            {samples.map((s, i) => (
+              <li key={i} className="border-t border-current/10 pt-1">
+                <div className="font-medium truncate">{s.title || <span className="opacity-50">(no title)</span>}</div>
+                <div className="flex items-center gap-2 text-[11px]">
+                  {s.price != null ? (
+                    <span className="font-mono">
+                      {s.currency === 'USD' ? '$' : ''}{s.price.toFixed(2)}
+                    </span>
+                  ) : (
+                    <span className="opacity-50">(no price)</span>
+                  )}
+                  {s.conditionText && <span className="opacity-70">{s.conditionText}</span>}
+                </div>
+                {s.url && (
+                  <div className="font-mono opacity-60 break-all">{s.url}</div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <SourceViewer html={result.html} htmlTruncated={result.htmlTruncated} htmlLength={result.htmlLength} />
+    </div>
+  );
+}
+
 /* ─── Reusable result panel for test-scrape methods ─── */
 function TestResultPanel({ result }) {
   if (!result) return null;
@@ -84,6 +213,10 @@ function TestResultPanel({ result }) {
           )}
         </div>
       )}
+      {/* Source toggle is rendered outside the ok/error branches so admins can
+          inspect what the server actually fetched in either case \u2014 distinguishes
+          "my selectors are wrong" from "the server got a different page back". */}
+      <SourceViewer html={result.html} htmlTruncated={result.htmlTruncated} htmlLength={result.htmlLength} />
     </div>
   );
 }
@@ -110,15 +243,30 @@ export default function AdminStoreModal({
   const [brands, setBrands] = useState([]);
   const [addNewBrand, setAddNewBrand] = useState(false);
 
+  // Two URL slots: one for product-page tests (price selectors), one for
+  // listing-page tests (listing selectors). They're separate URLs by nature so
+  // we don't share state — switching between them shouldn't wipe results.
   const [testScrapeUrl, setTestScrapeUrl] = useState('');
+  const [testListingUrl, setTestListingUrl] = useState('');
+
   const [testHttpLoading, setTestHttpLoading] = useState(false);
   const [testHttpResult, setTestHttpResult] = useState(null);
   const [testPlaywrightLoading, setTestPlaywrightLoading] = useState(false);
   const [testPlaywrightResult, setTestPlaywrightResult] = useState(null);
   const [testBrowserLoading, setTestBrowserLoading] = useState(false);
   const [testBrowserResult, setTestBrowserResult] = useState(null);
+
+  // Listing-mode test results (HTTP + Playwright only; the extension flow is
+  // single-product so it doesn't apply here).
+  const [testListingHttpLoading, setTestListingHttpLoading] = useState(false);
+  const [testListingHttpResult, setTestListingHttpResult] = useState(null);
+  const [testListingPlaywrightLoading, setTestListingPlaywrightLoading] = useState(false);
+  const [testListingPlaywrightResult, setTestListingPlaywrightResult] = useState(null);
+
   const [autoGenLoading, setAutoGenLoading] = useState(false);
   const [autoGenError, setAutoGenError] = useState(null);
+  const [autoGenListingLoading, setAutoGenListingLoading] = useState(false);
+  const [autoGenListingError, setAutoGenListingError] = useState(null);
 
   const [slugEdited, setSlugEdited] = useState(false);
 
@@ -856,61 +1004,113 @@ export default function AdminStoreModal({
                     disabled={saving}
                   />
 
-                  {/* Auto Generate Scrape Config via AI */}
+                  {/* Auto Generate Scrape Config via AI — two independent
+                      generators that merge into the existing config without
+                      overwriting each other. */}
                   {draft.scrapeModeId !== '0' && (
-                    <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-md space-y-2">
+                    <div className="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-md space-y-3">
                       <div className="text-xs font-medium text-gray-700">Auto Generate Scrape Config (AI)</div>
-                      <p className="text-[10px] text-gray-500">Enter a product page URL and click Generate. The page will be fetched and sent to OpenAI to auto-detect CSS selectors.</p>
-                      <div className="flex items-center gap-2">
-                        <input
-                          value={testScrapeUrl}
-                          onChange={(e) => { setTestScrapeUrl(e.target.value); setTestBrowserResult(null); }}
-                          className="flex-1 px-2 py-1.5 border rounded-md text-xs font-mono"
-                          placeholder="https://store.com/product-page"
-                          disabled={saving || autoGenLoading}
-                        />
-                        <button
-                          type="button"
-                          disabled={saving || autoGenLoading || !testScrapeUrl.trim()}
-                          onClick={async () => {
-                            setAutoGenLoading(true);
-                            setAutoGenError(null);
-                            try {
-                              const fetchMethod = draft.scrapeHttpEnabled ? 'http' : 'playwright';
-                              const res = await authFetch(`${API_URL}/api/stores/admin/auto-generate-scrape-config`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ url: testScrapeUrl.trim(), method: fetchMethod })
-                              });
-                              if (!res.ok) throw new Error(`Server returned ${res.status}`);
-                              const data = await res.json();
-                              if (data.success && data.scrapeConfig) {
-                                setDraft((p) => ({ ...p, scrapeConfig: data.scrapeConfig }));
-                                setAutoGenError(null);
-                              } else {
-                                setAutoGenError(data.error || 'Failed to generate scrape config.');
+
+                      {/* ── Generate price_selectors from a product page ── */}
+                      <div className="bg-white/50 rounded p-2 border border-amber-200/60">
+                        <div className="text-[11px] font-semibold text-gray-700 mb-1">Price Selectors <span className="font-normal text-gray-500">(from a product page URL)</span></div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={testScrapeUrl}
+                            onChange={(e) => { setTestScrapeUrl(e.target.value); setTestBrowserResult(null); }}
+                            className="flex-1 px-2 py-1.5 border rounded-md text-xs font-mono"
+                            placeholder="https://store.com/products/specific-item"
+                            disabled={saving || autoGenLoading}
+                          />
+                          <button
+                            type="button"
+                            disabled={saving || autoGenLoading || !testScrapeUrl.trim()}
+                            onClick={async () => {
+                              setAutoGenLoading(true);
+                              setAutoGenError(null);
+                              try {
+                                const fetchMethod = draft.scrapeHttpEnabled ? 'http' : 'playwright';
+                                const res = await authFetch(`${API_URL}/api/stores/admin/auto-generate-scrape-config`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ url: testScrapeUrl.trim(), method: fetchMethod, mode: 'price' })
+                                });
+                                if (!res.ok) throw new Error(`Server returned ${res.status}`);
+                                const data = await res.json();
+                                if (data.success && data.scrapeConfig) {
+                                  setDraft((p) => ({ ...p, scrapeConfig: mergeScrapeConfig(p.scrapeConfig, data.scrapeConfig) }));
+                                } else {
+                                  setAutoGenError(data.error || 'Failed to generate price selectors.');
+                                }
+                              } catch (e) {
+                                setAutoGenError(e.message || 'Request failed');
+                              } finally {
+                                setAutoGenLoading(false);
                               }
-                            } catch (e) {
-                              setAutoGenError(e.message || 'Request failed');
-                            } finally {
-                              setAutoGenLoading(false);
-                            }
-                          }}
-                          className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 whitespace-nowrap"
-                        >
-                          {autoGenLoading ? 'Generating…' : 'Generate'}
-                        </button>
+                            }}
+                            className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {autoGenLoading ? 'Generating…' : 'Generate Price'}
+                          </button>
+                        </div>
+                        {autoGenError && (
+                          <div className="mt-1 text-xs text-red-600 bg-red-50 rounded px-2 py-1">{autoGenError}</div>
+                        )}
                       </div>
-                      {autoGenError && (
-                        <div className="text-xs text-red-600 bg-red-50 rounded px-2 py-1">{autoGenError}</div>
-                      )}
+
+                      {/* ── Generate listing_selectors from a listing/category page ── */}
+                      <div className="bg-white/50 rounded p-2 border border-amber-200/60">
+                        <div className="text-[11px] font-semibold text-gray-700 mb-1">Listing Selectors <span className="font-normal text-gray-500">(from a category/listing page URL)</span></div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={testListingUrl}
+                            onChange={(e) => setTestListingUrl(e.target.value)}
+                            className="flex-1 px-2 py-1.5 border rounded-md text-xs font-mono"
+                            placeholder="https://store.com/category/clearance"
+                            disabled={saving || autoGenListingLoading}
+                          />
+                          <button
+                            type="button"
+                            disabled={saving || autoGenListingLoading || !testListingUrl.trim()}
+                            onClick={async () => {
+                              setAutoGenListingLoading(true);
+                              setAutoGenListingError(null);
+                              try {
+                                const fetchMethod = draft.scrapeHttpEnabled ? 'http' : 'playwright';
+                                const res = await authFetch(`${API_URL}/api/stores/admin/auto-generate-scrape-config`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ url: testListingUrl.trim(), method: fetchMethod, mode: 'listing' })
+                                });
+                                if (!res.ok) throw new Error(`Server returned ${res.status}`);
+                                const data = await res.json();
+                                if (data.success && data.scrapeConfig) {
+                                  setDraft((p) => ({ ...p, scrapeConfig: mergeScrapeConfig(p.scrapeConfig, data.scrapeConfig) }));
+                                } else {
+                                  setAutoGenListingError(data.error || 'Failed to generate listing selectors.');
+                                }
+                              } catch (e) {
+                                setAutoGenListingError(e.message || 'Request failed');
+                              } finally {
+                                setAutoGenListingLoading(false);
+                              }
+                            }}
+                            className="px-3 py-1.5 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {autoGenListingLoading ? 'Generating…' : 'Generate Listing'}
+                          </button>
+                        </div>
+                        {autoGenListingError && (
+                          <div className="mt-1 text-xs text-red-600 bg-red-50 rounded px-2 py-1">{autoGenListingError}</div>
+                        )}
+                      </div>
                     </div>
                   )}
 
-                  {/* Test Scrape Config — multi-method diagnostic */}
+                  {/* Test Price Selectors — multi-method diagnostic against a product page */}
                   {draft.scrapeConfig && draft.scrapeModeId !== '0' && (
                     <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md space-y-3">
-                      <div className="text-xs font-medium text-gray-700">Test Scrape Config</div>
+                      <div className="text-xs font-medium text-gray-700">Test Price Selectors <span className="font-normal text-gray-500">(against a product page)</span></div>
 
                       {/* Shared URL input */}
                       <input
@@ -1071,6 +1271,89 @@ export default function AdminStoreModal({
                           {draft.scrapeModeId === '2' && ' Since scrape mode is "Browser Extension Only", this is the primary test.'}
                         </p>
                         {testBrowserResult && <TestResultPanel result={testBrowserResult} />}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Test Listing Selectors — diagnoses listing_selectors against a category/listing page */}
+                  {draft.scrapeConfig && draft.scrapeModeId !== '0' && (
+                    <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-md space-y-3">
+                      <div className="text-xs font-medium text-gray-700">Test Listing Selectors <span className="font-normal text-gray-500">(against a category/listing page)</span></div>
+
+                      <input
+                        value={testListingUrl}
+                        onChange={(e) => setTestListingUrl(e.target.value)}
+                        className="w-full px-2 py-1.5 border rounded-md text-xs font-mono"
+                        placeholder="https://store.com/category/clearance"
+                        disabled={saving}
+                      />
+
+                      {/* Simple GET */}
+                      <div className="border border-slate-200 rounded-md p-2.5 bg-white">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="text-xs font-semibold text-gray-700">Simple GET <span className="font-normal text-gray-500">(HttpClient)</span></div>
+                          <button
+                            type="button"
+                            disabled={saving || testListingHttpLoading || !testListingUrl.trim() || !draft.scrapeConfig.trim()}
+                            onClick={async () => {
+                              setTestListingHttpLoading(true);
+                              setTestListingHttpResult(null);
+                              try {
+                                const res = await authFetch(`${API_URL}/api/stores/admin/test-scrape`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ url: testListingUrl.trim(), scrapeConfig: draft.scrapeConfig.trim(), method: 'http', mode: 'listing' })
+                                });
+                                if (!res.ok) throw new Error(`Server returned ${res.status}`);
+                                const data = await res.json();
+                                setTestListingHttpResult(data);
+                              } catch (e) {
+                                setTestListingHttpResult({ success: false, error: e.message || 'Request failed' });
+                              } finally {
+                                setTestListingHttpLoading(false);
+                              }
+                            }}
+                            className="px-2.5 py-1 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {testListingHttpLoading ? 'Testing…' : 'Run'}
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-gray-500 mb-1.5">Raw HTTP fetch — no JavaScript. Fastest, but JS-rendered listings will look empty.</p>
+                        {testListingHttpResult && <ListingResultPanel result={testListingHttpResult} />}
+                      </div>
+
+                      {/* Playwright */}
+                      <div className="border border-slate-200 rounded-md p-2.5 bg-white">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="text-xs font-semibold text-gray-700">Playwright <span className="font-normal text-gray-500">(Headless Browser)</span></div>
+                          <button
+                            type="button"
+                            disabled={saving || testListingPlaywrightLoading || !testListingUrl.trim() || !draft.scrapeConfig.trim()}
+                            onClick={async () => {
+                              setTestListingPlaywrightLoading(true);
+                              setTestListingPlaywrightResult(null);
+                              try {
+                                const res = await authFetch(`${API_URL}/api/stores/admin/test-scrape`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ url: testListingUrl.trim(), scrapeConfig: draft.scrapeConfig.trim(), method: 'playwright', mode: 'listing' })
+                                });
+                                if (!res.ok) throw new Error(`Server returned ${res.status}`);
+                                const data = await res.json();
+                                setTestListingPlaywrightResult(data);
+                              } catch (e) {
+                                setTestListingPlaywrightResult({ success: false, error: e.message || 'Request failed' });
+                              } finally {
+                                setTestListingPlaywrightLoading(false);
+                              }
+                            }}
+                            className="px-2.5 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {testListingPlaywrightLoading ? 'Testing…' : 'Run'}
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-gray-500 mb-1.5">Headless Chromium — executes JavaScript. Matches what the discovery crawler uses.</p>
+                        {testListingPlaywrightResult && <ListingResultPanel result={testListingPlaywrightResult} />}
                       </div>
                     </div>
                   )}

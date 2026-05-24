@@ -66,6 +66,18 @@ namespace CartSmart.API.Models.DTOs
         public string scrapeConfig { get; set; } = string.Empty;
         /// <summary>"http" (default) or "playwright"</summary>
         public string method { get; set; } = "http";
+        /// <summary>"price" (default) — exercise price_selectors. "listing" — exercise listing_selectors.</summary>
+        public string mode { get; set; } = "price";
+    }
+
+    public class TestScrapeListingSampleDTO
+    {
+        public string? title { get; set; }
+        public string? url { get; set; }
+        public decimal? price { get; set; }
+        public string? currency { get; set; }
+        public string? conditionText { get; set; }
+        public int? conditionCategoryId { get; set; }
     }
 
     public class TestScrapeResponseDTO
@@ -79,6 +91,19 @@ namespace CartSmart.API.Models.DTOs
         public bool blockedByBotProtection { get; set; }
         /// <summary>Length of fetched HTML in characters (diagnostic info).</summary>
         public int? htmlLength { get; set; }
+        /// <summary>
+        /// Fetched HTML, truncated to a transport-safe size. Returned so admins
+        /// can diagnose selector mismatches by seeing exactly what the server
+        /// got back (e.g. JS-rendered SPA shell, bot-block challenge, geo-block
+        /// page) instead of guessing whether their selectors are wrong.
+        /// </summary>
+        public string? html { get; set; }
+        /// <summary>True when the html field has been truncated below htmlLength.</summary>
+        public bool htmlTruncated { get; set; }
+        /// <summary>Populated only when mode=listing: count of container matches found.</summary>
+        public int? containerCount { get; set; }
+        /// <summary>Populated only when mode=listing: a preview of the first N parsed listings.</summary>
+        public List<TestScrapeListingSampleDTO>? listings { get; set; }
     }
 
     public class TestScrapePriceCandidateDTO
@@ -100,6 +125,13 @@ namespace CartSmart.API.Models.DTOs
         public string url { get; set; } = string.Empty;
         /// <summary>"http" (default) or "playwright"</summary>
         public string method { get; set; } = "http";
+        /// <summary>
+        /// "price" (default) — analyze a product page and return only price_selectors.
+        /// "listing" — analyze a listing/category page and return only listing_selectors.
+        /// The caller is responsible for merging the returned subset into the existing
+        /// scrape_config so the two halves don't overwrite each other.
+        /// </summary>
+        public string mode { get; set; } = "price";
     }
 
     public class AutoGenerateScrapeConfigResponseDTO
