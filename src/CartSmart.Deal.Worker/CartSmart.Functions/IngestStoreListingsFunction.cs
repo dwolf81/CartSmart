@@ -29,6 +29,12 @@ public class IngestStoreListingsFunction
     private const double FuzzyAutoMatchScore = 0.85;
     private const double FuzzyAiFloorScore = 0.50;
     private const decimal AiConfidenceThreshold = 0.85m;
+    // Per-endpoint discovery cadence. Most product catalogs change on a
+    // multi-day timescale and re-hitting category pages every 5 minutes wastes
+    // scraper budget. We bypass this when a new active product of the
+    // endpoint's product_type_id was created since last_crawled_at, so newly
+    // added products get checked on the next timer tick instead of waiting.
+    private const int DiscoveryIntervalHours = 72;
 
     public IngestStoreListingsFunction(
         IDealUpdateOrchestrator orchestrator,
@@ -331,9 +337,92 @@ public class IngestStoreListingsFunction
             foreach (var endpoint in storeGroup)
             {
                 if (ct.IsCancellationRequested) break;
+
+                // ── 72-hour throttle ───────────────────────────────────────
+                // Skip the endpoint if we crawled it within the cadence window
+                // AND no new active product of this endpoint's product_type has
+                // been added since the last crawl. A freshly added product
+                // bypasses the throttle so the next timer tick goes hunting
+                // for it instead of waiting up to three days.
+                if (endpoint.LastCrawledAt.HasValue)
+                {
+                    var hoursSinceLastCrawl = (DateTime.UtcNow - endpoint.LastCrawledAt.Value).TotalHours;
+                    if (hoursSinceLastCrawl < DiscoveryIntervalHours)
+                    {
+                        var hasNewMatchingProduct = await AnyNewMatchingProductSinceAsync(
+                            endpoint.ProductTypeId, endpoint.LastCrawledAt.Value, ct);
+                        if (!hasNewMatchingProduct)
+                        {
+                            _logger.LogInformation(
+                                "Discovery pass: skipping endpoint {Id} ({Url}) — last crawled {Hours:F1}h ago (<{Interval}h) and no new product_type={Type} products since",
+                                endpoint.Id, endpoint.Url, hoursSinceLastCrawl, DiscoveryIntervalHours, endpoint.ProductTypeId);
+                            continue;
+                        }
+                        _logger.LogInformation(
+                            "Discovery pass: endpoint {Id} ({Url}) is within the {Interval}h throttle window but a new product_type={Type} product was added — running early",
+                            endpoint.Id, endpoint.Url, DiscoveryIntervalHours, endpoint.ProductTypeId);
+                    }
+                }
+
+                // ── Missing-products gate ─────────────────────────────────
+                // Compute the products this endpoint could realistically
+                // discover BEFORE we pay for a scrape. If every active product
+                // of this type already has a deal at this store, the scrape
+                // can't produce any new candidates — skip outright and bump
+                // last_crawled_at so the 72h throttle takes over next tick.
+                var candidateProducts = await GetCandidateProductsAsync(endpoint.ProductTypeId, ct);
+                var missingProducts = candidateProducts
+                    .Where(p => !existingDealProductIds.Contains(p.Id))
+                    .ToList();
+
+                if (missingProducts.Count == 0)
+                {
+                    var reason = candidateProducts.Count == 0
+                        ? "no_candidate_products"
+                        : "all_matching_products_already_attached";
+
+                    if (candidateProducts.Count == 0)
+                    {
+                        // Catalog-level gap — surface it in the scrape report so
+                        // an admin notices nothing exists for this type.
+                        _logger.LogInformation("Discovery pass: no candidate products for endpoint {Url}", endpoint.Url);
+                        try
+                        {
+                            await _supabase.From<ScrapeLogInsert>().Insert(new ScrapeLogInsert
+                            {
+                                StoreId = storeId,
+                                Url = endpoint.Url,
+                                Method = "discovery",
+                                Success = false,
+                                ErrorMessage = reason
+                            }, cancellationToken: ct);
+                        }
+                        catch { /* best-effort */ }
+                    }
+                    else
+                    {
+                        // Coverage is full — quiet skip (no scrape_log noise),
+                        // but still bump last_crawled_at so we don't recompute
+                        // this gate on every 5-minute tick.
+                        _logger.LogInformation(
+                            "Discovery pass: skipping endpoint {Id} ({Url}) — all {Count} active product_type={Type} product(s) already have an active deal at this store",
+                            endpoint.Id, endpoint.Url, candidateProducts.Count, endpoint.ProductTypeId);
+                    }
+
+                    try
+                    {
+                        await _supabase.From<StoreScanEndpoint>()
+                            .Filter("id", Op.Equals, endpoint.Id.ToString())
+                            .Set(x => x.LastCrawledAt!, DateTime.UtcNow)
+                            .Update(cancellationToken: ct);
+                    }
+                    catch { /* best-effort */ }
+                    continue;
+                }
+
                 _logger.LogInformation(
-                    "Discovery pass: scanning store={StoreId} endpoint={Url} (productType={Type})",
-                    storeId, endpoint.Url, endpoint.ProductTypeId);
+                    "Discovery pass: scanning store={StoreId} endpoint={Url} (productType={Type}, {Missing} missing of {Total} matching products)",
+                    storeId, endpoint.Url, endpoint.ProductTypeId, missingProducts.Count, candidateProducts.Count);
 
                 List<ScrapedListing> listings;
                 string? scrapeError = null;
@@ -390,25 +479,11 @@ public class IngestStoreListingsFunction
                     continue;
                 }
 
-                // Candidate product set, scoped by endpoint.product_type_id when set
-                var candidateProducts = await GetCandidateProductsAsync(endpoint.ProductTypeId, ct);
-                if (candidateProducts.Count == 0)
-                {
-                    _logger.LogInformation("Discovery pass: no candidate products for endpoint {Url}", endpoint.Url);
-                    try
-                    {
-                        await _supabase.From<ScrapeLogInsert>().Insert(new ScrapeLogInsert
-                        {
-                            StoreId = storeId,
-                            Url = endpoint.Url,
-                            Method = "discovery",
-                            Success = false,
-                            ErrorMessage = "no_candidate_products"
-                        }, cancellationToken: ct);
-                    }
-                    catch { /* best-effort */ }
-                    continue;
-                }
+                // Candidate-product sets (candidateProducts / missingProducts)
+                // were computed at the top of the loop — see the missing-products
+                // gate. The per-listing matching below uses missingProducts so we
+                // never bother fuzzy/AI-matching against products that already
+                // have a deal at this store.
 
                 // Track per-endpoint counters so we can write one summary row
                 // at the bottom (vs. one row per listing — which would be too
@@ -448,7 +523,10 @@ public class IngestStoreListingsFunction
                     }
 
                     // ── Match the listing to a known product ─────────────
-                    var (matchedId, matchScore) = BestFuzzyMatch(listing.Title, candidateProducts);
+                    // Match against missingProducts only so we don't waste an
+                    // AI call (or a fuzzy false-positive) on a product that's
+                    // already attached to this store.
+                    var (matchedId, matchScore) = BestFuzzyMatch(listing.Title, missingProducts);
                     int? finalProductId = null;
                     decimal? aiConfidence = null;
                     string source = "crawler";
@@ -460,7 +538,7 @@ public class IngestStoreListingsFunction
                     else if (matchScore >= FuzzyAiFloorScore && aiCallsThisRun < MaxAiCallsPerRun)
                     {
                         aiCallsThisRun++;
-                        var aiInput = candidateProducts
+                        var aiInput = missingProducts
                             .Select(p => new ProductMatchCandidate(p.Id, p.Name ?? string.Empty, null))
                             .Take(25)
                             .ToList();
@@ -689,6 +767,28 @@ public class IngestStoreListingsFunction
 
         var resp = await query.Get(ct);
         return (resp.Models ?? new List<Product>()).ToList();
+    }
+
+    /// <summary>
+    /// True when at least one active product matching <paramref name="productTypeId"/>
+    /// (or any type, when null) was created strictly after <paramref name="since"/>.
+    /// Used to bypass the per-endpoint 72-hour throttle when a fresh product
+    /// gets added — we want the next timer tick to start looking for it
+    /// instead of waiting up to three more days.
+    /// </summary>
+    private async Task<bool> AnyNewMatchingProductSinceAsync(int? productTypeId, DateTime since, CancellationToken ct)
+    {
+        var query = _supabase.From<Product>()
+            .Select("id, created_at")
+            .Filter("deleted", Op.Equals, "false")
+            .Filter("enable_service", Op.Equals, "true")
+            .Filter("created_at", Op.GreaterThan, since.ToString("o"))
+            .Limit(1);
+        if (productTypeId.HasValue)
+            query = query.Filter("product_type_id", Op.Equals, productTypeId.Value.ToString());
+
+        var resp = await query.Get(ct);
+        return (resp.Models?.Count ?? 0) > 0;
     }
 
     private static (int? productId, double score) BestFuzzyMatch(string title, IReadOnlyList<Product> candidates)
