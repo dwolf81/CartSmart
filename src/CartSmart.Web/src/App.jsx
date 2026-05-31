@@ -25,6 +25,7 @@ import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
 import CookiePolicy from './pages/CookiePolicy';
 import Disclaimer from './pages/Disclaimer';
+import NotFound from './pages/NotFound';
 import ForgotPasswordPage from './components/ForgotPasswordPage';
 import ResetPasswordPage from './components/ResetPasswordPage';
 import ActivateAccountPage from './components/ActivateAccountPage';
@@ -253,6 +254,11 @@ function App() {
               <Route path="/cookies" element={<CookiePolicy />} />
               <Route path="/disclaimer" element={<Disclaimer />} />
               <Route path="/cookie-policy" element={<CookiePolicy />} />
+
+              {/* Catch-all 404. Paired with the server-side fallback in
+                  Program.cs which sets HTTP 404 + X-Robots-Tag for these URLs
+                  so Search Console stops flagging them as "Soft 404". */}
+              <Route path="*" element={<NotFound />} />
 
             </Routes>
           </div>

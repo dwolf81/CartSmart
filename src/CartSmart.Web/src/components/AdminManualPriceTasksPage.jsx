@@ -24,6 +24,7 @@ export default function AdminManualPriceTasksPage() {
   const [pageError, setPageError] = useState('');
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [draftById, setDraftById] = useState({});
+  const [draftStatusById, setDraftStatusById] = useState({});
   const [savingById, setSavingById] = useState({});
   const [bulkSaving, setBulkSaving] = useState(false);
   const [filter, setFilter] = useState('');
@@ -44,11 +45,15 @@ export default function AdminManualPriceTasksPage() {
 
       // seed draft prices from current price for speed
       const nextDraft = {};
+      const nextStatus = {};
       for (const row of data || []) {
         const currentPrice = row?.current?.price;
         if (currentPrice != null) nextDraft[row.id] = formatMoney(currentPrice);
+        const currentStatus = row?.current?.dealStatusId;
+        if (currentStatus != null) nextStatus[row.id] = String(currentStatus);
       }
       setDraftById(nextDraft);
+      setDraftStatusById(nextStatus);
 
       if (focus) {
         setTimeout(() => {
@@ -87,10 +92,12 @@ export default function AdminManualPriceTasksPage() {
 
       const rawDraft = draftById[taskId];
       const price = forcePrice != null ? forcePrice : (rawDraft != null && rawDraft !== '' ? Number(rawDraft) : null);
+      const dealStatusId = draftStatusById[taskId] ? Number(draftStatusById[taskId]) : null;
 
       const payload = {
         price: price != null && !Number.isNaN(price) ? price : null,
         currency: 'USD',
+        dealStatusId: dealStatusId || null,
       };
 
       const res = await authFetch(`${API_URL}/api/admin/manual-price/tasks/${taskId}/submit`, {
@@ -107,6 +114,11 @@ export default function AdminManualPriceTasksPage() {
       // remove row for speed
       setTasks(prev => prev.filter(t => t.id !== taskId));
       setDraftById(prev => {
+        const next = { ...prev };
+        delete next[taskId];
+        return next;
+      });
+      setDraftStatusById(prev => {
         const next = { ...prev };
         delete next[taskId];
         return next;
@@ -254,20 +266,32 @@ export default function AdminManualPriceTasksPage() {
                     </td>
 
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <input
-                          ref={idx === 0 ? firstInputRef : null}
-                          className="w-28 rounded-md border border-gray-300 px-2 py-1"
-                          inputMode="decimal"
-                          value={draft}
-                          onChange={e => setDraftById(d => ({ ...d, [t.id]: e.target.value }))}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') submitTask(t.id);
-                          }}
-                        />
-                        <div className="text-xs text-gray-500">
-                          {currentPrice != null ? `Current: $${formatMoney(currentPrice)}` : 'Current: —'}
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            ref={idx === 0 ? firstInputRef : null}
+                            className="w-28 rounded-md border border-gray-300 px-2 py-1"
+                            inputMode="decimal"
+                            value={draft}
+                            onChange={e => setDraftById(d => ({ ...d, [t.id]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') submitTask(t.id);
+                            }}
+                          />
+                          <div className="text-xs text-gray-500">
+                            {currentPrice != null ? `Current: $${formatMoney(currentPrice)}` : 'Current: —'}
+                          </div>
                         </div>
+                        <select
+                          className="w-40 rounded-md border border-gray-300 px-2 py-1 text-sm"
+                          value={draftStatusById[t.id] ?? ''}
+                          onChange={e => setDraftStatusById(s => ({ ...s, [t.id]: e.target.value }))}
+                        >
+                          <option value="">— status —</option>
+                          <option value="2">Active</option>
+                          <option value="8">Out of Stock</option>
+                          <option value="7">Sold</option>
+                        </select>
                       </div>
                     </td>
 

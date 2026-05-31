@@ -277,6 +277,12 @@ builder.Services.AddSingleton<IUrlSanitizer, UrlSanitizer>();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<IProductImageService, ProductImageService>();
 
+// SPA route validator — decides whether an arbitrary URL should resolve to the
+// SPA shell (200) or a real 404. Used by the catch-all fallback to stop
+// Google's Search Console from flagging "Soft 404" on invalid product/store/
+// category slugs that were previously returning 200 + an empty SPA shell.
+builder.Services.AddScoped<ISpaRouteValidator, SpaRouteValidator>();
+
 // OpenAI-backed brand / product-type inference for the extension "Add Product"
 // candidate flow. Uses a typed HttpClient so the SDK pattern matches SocialPostService.
 builder.Services.AddHttpClient<ProductMetadataInferenceService>();
@@ -343,7 +349,41 @@ app.UseStaticFiles();    // serve files in wwwroot (your CRA build goes here)
 
 app.MapControllers();    // maps your API controllers
 
-// fallback: if no controller/static file matched, return index.html
-app.MapFallbackToFile("index.html");
+// Fallback: when no controller/static file matched, ask the SPA route
+// validator whether the URL corresponds to a real page (200) or should be
+// flagged as not-found (404). Either way we still stream index.html so the
+// React app can render — but the HTTP status code is what Google reads to
+// decide whether to keep the URL in its index. Fixes Search Console "Soft 404".
+app.MapFallback(async ctx =>
+{
+    var validator = ctx.RequestServices.GetRequiredService<ISpaRouteValidator>();
+    var env = ctx.RequestServices.GetRequiredService<IWebHostEnvironment>();
+
+    var path = ctx.Request.Path.Value ?? "/";
+    int status;
+    try
+    {
+        status = await validator.ResolveStatusAsync(path, ctx.RequestAborted);
+    }
+    catch
+    {
+        // Validator failures shouldn't take the site down — assume 200 so the
+        // SPA continues to render. The soft-404 fix degrades gracefully.
+        status = 200;
+    }
+
+    ctx.Response.StatusCode = status;
+    if (status == 404)
+        ctx.Response.Headers["X-Robots-Tag"] = "noindex";
+
+    ctx.Response.ContentType = "text/html; charset=utf-8";
+    // Disable caching on the SPA shell so a path that flips from 404→200
+    // (e.g. a newly created product slug) isn't served the stale 404 entry.
+    ctx.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+
+    var indexPath = Path.Combine(env.WebRootPath ?? "wwwroot", "index.html");
+    if (File.Exists(indexPath))
+        await ctx.Response.SendFileAsync(indexPath);
+});
 
 app.Run();

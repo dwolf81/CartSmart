@@ -187,6 +187,7 @@ public sealed class AdminManualPriceTasksController : ControllerBase
     {
         public decimal? Price { get; set; }
         public string? Currency { get; set; }
+        public int? DealStatusId { get; set; }
         public bool? InStock { get; set; }
         public bool? Sold { get; set; }
         public string? Notes { get; set; }
@@ -228,9 +229,22 @@ public sealed class AdminManualPriceTasksController : ControllerBase
 
         var now = DateTime.UtcNow;
         var priceChanged = false;
+        var statusChanged = false;
 
-        // TODO: Re-enable status updates once stock detection is more reliable.
-        // For now, manual price tasks only update price — status changes are ignored.
+        // Apply explicit status change if provided
+        if (request.DealStatusId.HasValue)
+        {
+            var newStatusId = request.DealStatusId.Value;
+            // Only allow known statuses: Active, Sold, OutOfStock
+            if (newStatusId == DealStatusActive || newStatusId == DealStatusSold || newStatusId == DealStatusOutOfStock)
+            {
+                if (dp.DealStatusId != newStatusId)
+                {
+                    dp.DealStatusId = newStatusId;
+                    statusChanged = true;
+                }
+            }
+        }
 
         if (request.Price.HasValue && request.Price.Value > 0 && dp.Price != request.Price.Value)
         {
@@ -307,7 +321,7 @@ public sealed class AdminManualPriceTasksController : ControllerBase
             }
         }
 
-        if (priceChanged)
+        if (priceChanged || statusChanged)
         {
             try
             {
